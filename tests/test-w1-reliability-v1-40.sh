@@ -117,6 +117,34 @@ helper_payload="$(bash -c "
 ")"
 assert "helper passes small payload through" "${helper_payload}" "hello-world"
 
+# Raw NUL must be rejected before command substitution can normalize it into
+# a different JSON authority envelope. Oversized input is likewise a failed
+# read, never a usable prefix.
+helper_nul_output="$(bash -c "
+  set -uo pipefail
+  STATE_ROOT='${STATE_ROOT}' \
+    OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+    SESSION_ID='test-helper-raw-nul' \
+    source '${COMMON_SH}' </dev/null
+  printf '{\"session_id\":\"valid\"}\\0suffix' | _omc_read_hook_stdin
+" 2>/dev/null)"
+helper_nul_rc=$?
+assert "helper rejects raw-NUL input" "${helper_nul_rc}" "1"
+assert "helper publishes no normalized raw-NUL prefix" "${helper_nul_output}" ""
+
+helper_oversize_output="$(bash -c "
+  set -uo pipefail
+  STATE_ROOT='${STATE_ROOT}' \
+    OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+    OMC_HOOK_STDIN_MAX_BYTES=5 \
+    SESSION_ID='test-helper-oversized' \
+    source '${COMMON_SH}' </dev/null
+  printf '123456' | _omc_read_hook_stdin
+" 2>/dev/null)"
+helper_oversize_rc=$?
+assert "helper rejects oversized input" "${helper_oversize_rc}" "1"
+assert "helper publishes no oversized prefix" "${helper_oversize_output}" ""
+
 # The caller PATH is repository-controlled input. On Linux, the GNU timeout
 # branch launches its child by name; on macOS a shadowed timeout/gtimeout can
 # force the same branch. Neither the wrapper nor `cat` may come from that PATH.
@@ -178,6 +206,7 @@ hang_result="$(bash -c "
   source '${COMMON_SH}' </dev/null
   _omc_read_hook_stdin <'${hang_fifo}'
 " 2>/dev/null)"
+hang_rc=$?
 end_ts="$(date +%s)"
 elapsed=$((end_ts - start_ts))
 kill "${hang_writer_pid}" 2>/dev/null || true
@@ -191,6 +220,7 @@ else
   fail=$((fail + 1))
 fi
 assert "helper returns empty on timeout" "${hang_result}" ""
+assert "helper propagates timeout failure" "${hang_rc}" "1"
 
 # All hot-path hooks must source common.sh BEFORE invoking the helper
 # (regression net: the v1.40.x sweep had a bug where this order was

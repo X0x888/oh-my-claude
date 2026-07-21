@@ -56,6 +56,94 @@ assert_exit() {
 }
 
 # ===========================================================================
+# JSON-to-shell boundary
+# ===========================================================================
+printf 'json_get JSON-to-shell boundary:\n'
+HOOK_JSON='{"plain":"safe","count":7}'
+assert_eq "json_get preserves ordinary strings" "safe" \
+  "$(json_get '.plain')"
+assert_eq "json_get preserves non-string scalar behavior" "7" \
+  "$(json_get '.count')"
+HOOK_JSON='{"plain":"safe","poison":"safe\u0000suffix","count":7}'
+assert_eq "json_get rejects decoded NUL before Bash normalization" "" \
+  "$(json_get '.poison')"
+assert_eq "json_get rejects the complete poisoned hook envelope" "" \
+  "$(json_get '.plain')"
+HOOK_JSON=''
+
+# The stock-macOS fallback must cancel its timer process after a successful
+# finite stdin read. The former synchronous `sleep` watchdog made every hook
+# pay the complete timeout even though the reader had already reached EOF.
+_stdin_fast_started="$(now_epoch)"
+_stdin_fast_payload="$({
+  printf '%s\n' '{"session_id":"stdin-fast-path"}'
+} | OMC_TEST_FORCE_HOOK_STDIN_FALLBACK=1 \
+    OMC_HOOK_STDIN_TIMEOUT_S=5 _omc_read_hook_stdin)"
+_stdin_fast_finished="$(now_epoch)"
+assert_eq "native stdin fallback preserves a finite payload" \
+  '{"session_id":"stdin-fast-path"}' "${_stdin_fast_payload}"
+if [[ "${_stdin_fast_started}" =~ ^[0-9]+$ \
+    && "${_stdin_fast_finished}" =~ ^[0-9]+$ \
+    && $((_stdin_fast_finished - _stdin_fast_started)) -le 2 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: native stdin fallback retained its five-second timer (elapsed=%s)\n' \
+    "$((_stdin_fast_finished - _stdin_fast_started))" >&2
+  fail=$((fail + 1))
+fi
+
+# ===========================================================================
+# now_epoch observer authority
+# ===========================================================================
+printf 'now_epoch observer authority:\n'
+_clock_poison_dir="${TEST_STATE_ROOT}/clock-poison-bin"
+_clock_poison_marker="${TEST_STATE_ROOT}/clock-poison-ran"
+mkdir -p "${_clock_poison_dir}"
+printf '%s\n' '#!/usr/bin/env bash' \
+  ': >"${OMC_TEST_CLOCK_POISON_MARKER}"' \
+  "printf '999999999999999999999999'" \
+  >"${_clock_poison_dir}/date"
+chmod +x "${_clock_poison_dir}/date"
+_trusted_now="$(PATH="${_clock_poison_dir}:${PATH}" \
+  OMC_TEST_CLOCK_POISON_MARKER="${_clock_poison_marker}" now_epoch)"
+if _omc_canonical_uint_in_range \
+    "${_trusted_now}" 1 999999999999999; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: trusted now_epoch returned malformed authority: %q\n' \
+    "${_trusted_now}" >&2
+  fail=$((fail + 1))
+fi
+assert_eq "hostile PATH date shim is not executed" "0" \
+  "$([[ -e "${_clock_poison_marker}" ]] && printf 1 || printf 0)"
+_clock_bash_env="${TEST_STATE_ROOT}/clock-bash-env.sh"
+_clock_command_marker="${TEST_STATE_ROOT}/clock-command-function-ran"
+_clock_date_marker="${TEST_STATE_ROOT}/clock-date-function-ran"
+printf '%s\n' \
+  'command() { : >"${OMC_TEST_CLOCK_COMMAND_MARKER}"; "$@"; }' \
+  'date() { : >"${OMC_TEST_CLOCK_DATE_MARKER}"; printf "999999999999999999999999"; }' \
+  >"${_clock_bash_env}"
+_fresh_trusted_now="$(
+  OMC_TEST_CLOCK_COMMAND_MARKER="${_clock_command_marker}" \
+  OMC_TEST_CLOCK_DATE_MARKER="${_clock_date_marker}" \
+  BASH_ENV="${_clock_bash_env}" \
+    bash -c '. "$1"; now_epoch' -- \
+      "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
+)"
+if _omc_canonical_uint_in_range \
+    "${_fresh_trusted_now}" 1 999999999999999; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: fresh-shell trusted clock returned malformed authority: %q\n' \
+    "${_fresh_trusted_now}" >&2
+  fail=$((fail + 1))
+fi
+assert_eq "BASH_ENV command function cannot intercept the clock" "0" \
+  "$([[ -e "${_clock_command_marker}" ]] && printf 1 || printf 0)"
+assert_eq "BASH_ENV date function cannot intercept the clock" "0" \
+  "$([[ -e "${_clock_date_marker}" ]] && printf 1 || printf 0)"
+
+# ===========================================================================
 # normalize_task_prompt
 # ===========================================================================
 printf 'normalize_task_prompt:\n'
@@ -612,6 +700,25 @@ assert_eq "conf excellence_file_count=5" "5" "${OMC_EXCELLENCE_FILE_COUNT}"
 assert_eq "conf state_ttl_days=14" "14" "${OMC_STATE_TTL_DAYS}"
 assert_eq "conf model_tier=balanced" "balanced" "${OMC_MODEL_TIER:-}"
 
+# The legacy debug reader bypasses load_conf, but must still honor the public
+# exact-key/edge-trim/last-valid contract instead of enabling on any earlier
+# true row forever.
+cat >> "${conf_file}" <<'CONF'
+hook_debug=maybe
+CONF
+printf 'hook_debug=  false  \n' >> "${conf_file}"
+HOME="${FAKE_HOME_DIR}"
+_hook_debug_checked=0
+_hook_debug_enabled=""
+if is_hook_debug; then hook_debug_actual=on; else hook_debug_actual=off; fi
+assert_eq "hook_debug last valid padded false wins" "off" "${hook_debug_actual}"
+printf 'hook_debug=  true  \n' >> "${conf_file}"
+_hook_debug_checked=0
+_hook_debug_enabled=""
+if is_hook_debug; then hook_debug_actual=on; else hook_debug_actual=off; fi
+assert_eq "hook_debug later padded true wins" "on" "${hook_debug_actual}"
+HOME="${OLD_HOME}"
+
 # Test 3: partial conf only overrides specified keys
 _omc_conf_loaded=0
 _omc_env_stall=""
@@ -771,7 +878,7 @@ cd "${OLD_PWD_CONF}"
 
 # Test 6: non-numeric and zero conf values are ignored
 cat > "${conf_file}" <<'CONF'
-stall_threshold=high
+stall_threshold=12abc
 excellence_file_count=0
 state_ttl_days=-5
 CONF
@@ -786,9 +893,161 @@ HOME="${FAKE_HOME_DIR}"
 load_conf
 HOME="${OLD_HOME}"
 
-assert_eq "non-numeric stall_threshold ignored" "12" "${OMC_STALL_THRESHOLD}"
+assert_eq "suffixed-numeric stall_threshold ignored" "12" "${OMC_STALL_THRESHOLD}"
 assert_eq "zero excellence_file_count ignored" "3" "${OMC_EXCELLENCE_FILE_COUNT}"
 assert_eq "negative state_ttl_days ignored" "7" "${OMC_STATE_TTL_DAYS}"
+
+# The generic lexical comparator must admit every canonical single digit and
+# reject digit-prefixed junk. This catches accidental regex-style use of a
+# shell glob (`[0-9]*`), whose `*` matches arbitrary characters.
+while IFS='|' read -r uint_value uint_expected uint_label; do
+  [[ -n "${uint_value}" ]] || continue
+  if _omc_canonical_uint_in_range "${uint_value}" 1 2147483647; then
+    uint_actual=valid
+  else
+    uint_actual=invalid
+  fi
+  assert_eq "canonical uint helper ${uint_label}" \
+    "${uint_expected}" "${uint_actual}"
+done <<'CANONICAL_UINT_CASES'
+1|valid|accepts 1
+5|valid|accepts 5
+9|valid|accepts 9
+12abc|invalid|rejects digit-prefixed junk
+CANONICAL_UINT_CASES
+
+# record_gate_skip performs a state-backed read/modify/write. Durable state can
+# be malformed after a manual edit or interrupted migration, so the counter
+# must never feed Bash arithmetic until it passes the canonical uint guard.
+saved_gate_skips_file="${_GATE_SKIPS_FILE}"
+saved_gate_skips_lock="${_GATE_SKIPS_LOCK}"
+_GATE_SKIPS_FILE="${TEST_STATE_ROOT}/gate-skips.jsonl"
+_GATE_SKIPS_LOCK="${TEST_STATE_ROOT}/.gate-skips.lock"
+write_state "skip_count" '7*7'
+record_gate_skip "malformed-counter-regression"
+assert_eq "gate skip rejects arithmetic-expression state" \
+  "1" "$(read_state "skip_count")"
+write_state "skip_count" "7"
+record_gate_skip "canonical-counter-regression"
+assert_eq "gate skip increments canonical counter" \
+  "8" "$(read_state "skip_count")"
+write_state "skip_count" "999999999999999999"
+record_gate_skip "overflow-counter-regression"
+assert_eq "gate skip resets counter outside safe increment range" \
+  "1" "$(read_state "skip_count")"
+_GATE_SKIPS_FILE="${saved_gate_skips_file}"
+_GATE_SKIPS_LOCK="${saved_gate_skips_lock}"
+
+single_digit_env_actual="$(HOME="${FAKE_HOME_DIR}" \
+  OMC_STALL_THRESHOLD=5 BASH_ENV=/dev/null bash -c '
+    cd "$1" || exit 1
+    . "$2"
+    printf "%s" "${OMC_STALL_THRESHOLD}"
+  ' bash "${FAKE_HOME_DIR}" \
+    "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh")"
+assert_eq "single-digit numeric environment override accepted" \
+  "5" "${single_digit_env_actual}"
+
+suffixed_env_actual="$(HOME="${FAKE_HOME_DIR}" \
+  OMC_STALL_THRESHOLD=12abc BASH_ENV=/dev/null bash -c '
+    cd "$1" || exit 1
+    . "$2"
+    printf "%s" "${OMC_STALL_THRESHOLD}"
+  ' bash "${FAKE_HOME_DIR}" \
+    "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh")"
+assert_eq "suffixed numeric environment override ignored" \
+  "12" "${suffixed_env_actual}"
+
+control_char_bin="${FAKE_HOME_DIR}/claude"$'\033'"shim"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${control_char_bin}"
+chmod +x "${control_char_bin}"
+if _omc_claude_bin_value_is_valid "${control_char_bin}"; then
+  assert_eq "claude_bin validator rejects control-character path" \
+    "invalid" "valid"
+else
+  assert_eq "claude_bin validator rejects control-character path" \
+    "invalid" "invalid"
+fi
+rm -f "${control_char_bin}"
+
+for control_key in custom_verify_mcp_tools custom_verify_patterns; do
+  if _omc_normalize_config_value "${control_key}" \
+      "trusted"$'\t'"matcher" >/dev/null 2>&1; then
+    control_actual=valid
+  else
+    control_actual=invalid
+  fi
+  assert_eq "${control_key} rejects non-newline control bytes" \
+    "invalid" "${control_actual}"
+done
+
+# Constitution context bounds are compared lexically, never as attacker-sized
+# Bash integers (which can wrap or interpret leading zeroes as octal).
+while IFS='|' read -r cap_value cap_expected cap_label; do
+  [[ -n "${cap_value}" ]] || continue
+  if _omc_quality_constitution_context_cap_is_valid "${cap_value}"; then
+    cap_actual=valid
+  else
+    cap_actual=invalid
+  fi
+  assert_eq "context cap helper ${cap_label}" "${cap_expected}" "${cap_actual}"
+done <<'CONTEXT_CAP_CASES'
+511|invalid|rejects 511
+512|valid|accepts 512
+12000|valid|accepts 12000
+12001|invalid|rejects 12001
+99999999999999999999999999999999999999999999999999|invalid|rejects huge decimal
+0512|invalid|rejects leading-zero 512
+08|invalid|rejects octal-looking decimal
+CONTEXT_CAP_CASES
+
+rm -f "${conf_file}"
+while IFS='|' read -r cap_value cap_expected cap_label; do
+  [[ -n "${cap_value}" ]] || continue
+  cap_actual="$(HOME="${FAKE_HOME_DIR}" \
+    OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS="${cap_value}" \
+    BASH_ENV=/dev/null bash -c '
+      cd "$1" || exit 1
+      . "$2"
+      printf "%s" "${OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS}"
+    ' bash "${FAKE_HOME_DIR}" \
+      "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh")"
+  assert_eq "context cap environment ${cap_label}" \
+    "${cap_expected}" "${cap_actual}"
+done <<'CONTEXT_CAP_ENV_CASES'
+511|2400|rejects 511
+512|512|accepts 512
+12000|12000|accepts 12000
+12001|2400|rejects 12001
+99999999999999999999999999999999999999999999999999|2400|rejects huge decimal
+0512|2400|rejects leading-zero 512
+08|2400|rejects octal-looking decimal
+CONTEXT_CAP_ENV_CASES
+
+OLD_PWD_CONTEXT_CAP="${PWD}"
+cd "${FAKE_HOME_DIR}"
+while IFS='|' read -r cap_value cap_expected cap_label; do
+  [[ -n "${cap_value}" ]] || continue
+  printf 'quality_constitution_max_context_chars=%s\n' \
+    "${cap_value}" >"${conf_file}"
+  _omc_conf_loaded=0
+  _omc_env_quality_constitution_max_context_chars=""
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=2400
+  HOME="${FAKE_HOME_DIR}"
+  load_conf
+  HOME="${OLD_HOME}"
+  assert_eq "context cap config ${cap_label}" \
+    "${cap_expected}" "${OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS}"
+done <<'CONTEXT_CAP_CONF_CASES'
+511|2400|rejects 511
+512|512|accepts 512
+12000|12000|accepts 12000
+12001|2400|rejects 12001
+99999999999999999999999999999999999999999999999999|2400|rejects huge decimal
+0512|2400|rejects leading-zero 512
+08|2400|rejects octal-looking decimal
+CONTEXT_CAP_CONF_CASES
+cd "${OLD_PWD_CONTEXT_CAP}"
 
 rm -rf "${FAKE_HOME_DIR}"
 
@@ -1272,6 +1531,125 @@ write_state "bash_edit_event_count" "8"
 assert_eq "review cycle event delta includes current same-second unknown Bash" \
   "current" "$(review_cycle_unknown_bash_current && printf current || printf stale)"
 
+# Pathless connector events use an independent per-surface portfolio. They
+# select adaptive reviewers without contaminating Bash uncertainty or
+# fabricating unique local files.
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1050"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "review_cycle_external_event_base" "0"
+write_state "review_cycle_external_doc_event_base" "0"
+write_state "review_cycle_external_ui_event_base" "0"
+write_state "review_cycle_external_native_event_base" "0"
+write_state "review_cycle_external_unknown_event_base" "0"
+assert_eq "fresh zero connector baselines accept absent legacy counters" \
+  "0,0,0,0,0" "$(_review_cycle_external_edit_snapshot 1 | paste -sd, -)"
+write_state "last_external_edit_ts" "1050"
+write_state "external_edit_scope" "doc"
+assert_eq "absent legacy counters retain current-cycle timestamp fallback" \
+  "1,0,0,0,1" "$(_review_cycle_external_edit_snapshot 1 | paste -sd, -)"
+
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1100"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "review_cycle_external_event_base" "4"
+write_state "review_cycle_external_doc_event_base" "2"
+write_state "review_cycle_external_ui_event_base" "1"
+write_state "review_cycle_external_native_event_base" "1"
+write_state "review_cycle_external_unknown_event_base" "0"
+write_state "external_edit_event_count" "4"
+write_state "external_doc_edit_event_count" "2"
+write_state "external_ui_edit_event_count" "1"
+write_state "external_native_edit_event_count" "1"
+write_state "external_unknown_edit_event_count" "0"
+assert_eq "review cycle connector baseline excludes prior remote edits" \
+  "0,0,0,0,0,0" "$(review_cycle_edit_snapshot | paste -sd, -)"
+write_state "external_edit_event_count" "18446744073709551616"
+assert_eq "oversized connector counters fail conservative without signed wrap" \
+  "0,0,0,1,1" "$(_review_cycle_external_edit_snapshot 1 | paste -sd, -)"
+write_state "external_edit_event_count" "4"
+write_state "review_cycle_external_event_base" "04"
+assert_eq "non-canonical connector baselines cannot enter Bash arithmetic" \
+  "0,0,0,1,1" "$(_review_cycle_external_edit_snapshot 1 | paste -sd, -)"
+write_state "review_cycle_external_event_base" "4"
+write_state "external_edit_event_count" "5"
+write_state "external_doc_edit_event_count" "3"
+assert_eq "review cycle connector delta maps document surface without unique path" \
+  "0,1,0,0,0,1" "$(review_cycle_edit_snapshot | paste -sd, -)"
+assert_eq "document connector selects prose only at narrow scope" \
+  "prose" "$(get_required_dimensions)"
+# A known pathless remote surface is still material work. The closeout
+# fallback must not require either a fabricated local path or an "unknown"
+# connector classification before it arms the seal.
+write_state "closeout_preflight_required" "1"
+write_state "task_intent" "execution"
+assert_eq "document connector requires closeout seal without a local path" \
+  "required" \
+  "$(closeout_seal_is_required && printf required || printf skipped)"
+write_state "review_cycle_broad_scope" "1"
+assert_eq "broad document connector also selects completeness" \
+  "prose,completeness" "$(get_required_dimensions)"
+
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1200"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "review_cycle_external_event_base" "0"
+write_state "review_cycle_external_doc_event_base" "0"
+write_state "review_cycle_external_ui_event_base" "0"
+write_state "review_cycle_external_native_event_base" "0"
+write_state "review_cycle_external_unknown_event_base" "0"
+write_state "external_edit_event_count" "1"
+write_state "external_doc_edit_event_count" "0"
+write_state "external_ui_edit_event_count" "1"
+write_state "external_native_edit_event_count" "0"
+write_state "external_unknown_edit_event_count" "0"
+write_state "review_cycle_ui_semantic" "1"
+assert_eq "UI connector maps code/UI surfaces without unique path" \
+  "1,0,1,0,0,1" "$(review_cycle_edit_snapshot | paste -sd, -)"
+assert_eq "UI connector selects code and design reviewers" \
+  "bug_hunt,code_quality,design_quality" "$(get_required_dimensions)"
+
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1300"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "review_cycle_external_event_base" "0"
+write_state "review_cycle_external_doc_event_base" "0"
+write_state "review_cycle_external_ui_event_base" "0"
+write_state "review_cycle_external_native_event_base" "0"
+write_state "review_cycle_external_unknown_event_base" "0"
+write_state "external_edit_event_count" "1"
+write_state "external_doc_edit_event_count" "0"
+write_state "external_ui_edit_event_count" "0"
+write_state "external_native_edit_event_count" "1"
+write_state "external_unknown_edit_event_count" "0"
+write_state "review_cycle_broad_scope" "1"
+assert_eq "native connector maps document and UI surfaces without unique path" \
+  "1,1,1,0,0,2" "$(review_cycle_edit_snapshot | paste -sd, -)"
+assert_eq "broad native connector selects cross-surface coverage" \
+  "bug_hunt,code_quality,prose,design_quality,completeness" \
+  "$(get_required_dimensions)"
+
+reset_dim_state
+write_state "review_cycle_prompt_ts" "1400"
+write_state "review_cycle_edit_log_offset" "0"
+write_state "review_cycle_external_event_base" "0"
+write_state "review_cycle_external_doc_event_base" "0"
+write_state "review_cycle_external_ui_event_base" "0"
+write_state "review_cycle_external_native_event_base" "0"
+write_state "review_cycle_external_unknown_event_base" "0"
+write_state "external_edit_event_count" "1"
+write_state "external_doc_edit_event_count" "0"
+write_state "external_ui_edit_event_count" "0"
+write_state "external_native_edit_event_count" "0"
+write_state "external_unknown_edit_event_count" "1"
+write_state "review_cycle_ui_semantic" "1"
+write_state "review_cycle_prose_semantic" "1"
+assert_eq "unknown connector remains pathless and conservative" \
+  "1,0,0,0,1,1" "$(review_cycle_edit_snapshot | paste -sd, -)"
+assert_eq "unknown connector selects semantic reviewers plus completeness" \
+  "bug_hunt,code_quality,prose,design_quality,completeness" \
+  "$(get_required_dimensions)"
+
 reset_dim_state
 write_state "review_cycle_prompt_ts" "2000"
 write_state "review_cycle_edit_log_offset" "0"
@@ -1299,6 +1677,12 @@ printf '{"updated_ts":%s,"generation":2,"waves":[{"status":"pending"}]}\n' "${wa
   >"$(session_file "findings.json")"
 assert_eq "review cycle signature delta includes current same-second wave" \
   "current" "$(review_cycle_has_active_wave_plan && printf current || printf stale)"
+printf '%s\0%s\n' \
+  '{"updated_ts":'"${wave_now}" \
+  ',"generation":3,"waves":[{"status":"pending"}]}' \
+  >"$(session_file "findings.json")"
+assert_eq "raw-NUL wave timestamp cannot become current plan authority" \
+  "stale" "$(review_cycle_has_active_wave_plan && printf current || printf stale)"
 
 # Six cross-surface paths require traceability; file count alone above did not.
 reset_dim_state
@@ -1383,16 +1767,16 @@ assert_eq "detect_verification_method framework keyword" \
   "framework_keyword" \
   "$(detect_verification_method "pytest -q" "12 passed" "")"
 
-assert_eq "detect_verification_method output signal" \
-  "output_signal" \
+assert_eq "detect_verification_method named verifier" \
+  "framework_keyword" \
   "$(detect_verification_method "./validate.sh" "test result: ok. 5 passed" "")"
 
 assert_eq "score_verification_confidence all signals = 100" \
   "100" \
   "$(score_verification_confidence "npm test -- --runInBand" "PASS auth\nTests: 10 passed, 0 failed" "npm test")"
 
-assert_eq "score_verification_confidence command keyword only = 30" \
-  "30" \
+assert_eq "score_verification_confidence executed verifier reaches floor = 40" \
+  "40" \
   "$(score_verification_confidence "shellcheck script.sh" "" "")"
 
 # ===========================================================================
@@ -1846,6 +2230,17 @@ assert_eq "read_agent_metric reads legacy flat entry" "7" \
   "$(read_agent_metric "legacy-reader" | jq -r '.invocations')"
 assert_eq "get_all_agent_metrics normalizes legacy flat entry" "7" \
   "$(get_all_agent_metrics | jq -r '.agents["legacy-reader"].invocations')"
+
+# A literal NUL in an otherwise parseable numeric token must not be normalized
+# and folded into lifetime metrics by jq.
+printf '{"legacy-reader":{"invocations":7\0,"clean_verdicts":6,"finding_verdicts":1}}\n' \
+  >"${_AGENT_METRICS_FILE}"
+metrics_corrupt_before="$(cksum <"${_AGENT_METRICS_FILE}")"
+record_agent_metric "legacy-reader" "clean"
+assert_eq "raw-NUL metrics are not mutated" \
+  "${metrics_corrupt_before}" "$(cksum <"${_AGENT_METRICS_FILE}")"
+assert_eq "raw-NUL metrics are not projected to readers" "" \
+  "$(read_agent_metric "legacy-reader")"
 
 rm -rf "${TEST_METRICS_DIR}"
 _AGENT_METRICS_FILE="${_ORIG_METRICS_FILE}"
@@ -2404,6 +2799,18 @@ assert_eq "examples capped at 5" "5" "${num_examples}"
 last_example="$(jq -r '.edge_case.examples[-1]' "${_DEFECT_PATTERNS_FILE}" 2>/dev/null)"
 assert_eq "most recent example is last" "edge case example 7" "${last_example}"
 
+# Count text crosses into Bash arithmetic. Invalid stored text must become the
+# zero baseline without being evaluated as an arithmetic expression.
+defect_arithmetic_marker="${TEST_DEFECT_DIR}/arithmetic-poison-ran"
+printf '%s\n' \
+  '{"poison":{"count":"x[$(touch '"${defect_arithmetic_marker}"')]","last_seen_ts":1,"examples":[]}}' \
+  >"${_DEFECT_PATTERNS_FILE}"
+record_defect_pattern "poison" "safe increment"
+assert_eq "defect count arithmetic text is never evaluated" "0" \
+  "$([[ -e "${defect_arithmetic_marker}" ]] && printf 1 || printf 0)"
+assert_eq "invalid defect count restarts canonically" "1" \
+  "$(jq -r '.poison.count' "${_DEFECT_PATTERNS_FILE}")"
+
 # Cleanup
 rm -rf "${TEST_DEFECT_DIR}"
 _DEFECT_PATTERNS_FILE="${_ORIG_DEFECT_FILE}"
@@ -2441,6 +2848,15 @@ assert_eq "corrupted file reset to object" "object" "${val}"
 # Verify archive was created
 archive_count="$(find "${TEST_DEFECT_DIR2}" -name '*.corrupt.*' 2>/dev/null | wc -l | tr -d '[:space:]')"
 assert_eq "corrupt archive created" "1" "${archive_count}"
+
+# jq may accept a literal NUL embedded in a numeric token. The byte envelope,
+# not jq's recovery behavior, decides whether persistent learning is valid.
+printf '{"test":{"count":1\0,"last_seen_ts":100,"examples":[]}}\n' \
+  >"${_DEFECT_PATTERNS_FILE}"
+_defect_patterns_validated=0
+_ensure_valid_defect_patterns
+assert_eq "raw-NUL defect patterns reset to empty object" "0" \
+  "$(jq -r 'length' "${_DEFECT_PATTERNS_FILE}")"
 
 # Test 4: read-path recovery — get_defect_watch_list heals corrupt file
 printf '{"valid":{"count":3,"last_seen_ts":9999999999,"examples":["test"]}}' > "${_DEFECT_PATTERNS_FILE}"
@@ -2714,6 +3130,29 @@ write_state "pretool_intent_blocks" "1"
 detect_classifier_misfire "do it" "1"
 assert_eq "stale prior row (>15min) does not log misfire" \
   "0" "$(_count_misfires "${_tel_file}")"
+
+# Numeric state is untrusted text until it passes the shared canonical-decimal
+# validator. Shell arithmetic must never interpret expressions from a restored
+# or hand-edited telemetry row/counter.
+rm -f "${_tel_file}"
+record_classifier_telemetry "advisory" "coding" "what do you think?" "0"
+detect_classifier_misfire "do it" "1+1" 2>/dev/null || true
+assert_eq "non-canonical current block counter cannot drive arithmetic" \
+  "0" "$(_count_misfires "${_tel_file}")"
+printf '{"ts":"%s","intent":"advisory","domain":"coding","prompt":"x","pretool_blocks_observed":"1+1"}\n' \
+  "$(now_epoch)" > "${_tel_file}"
+detect_classifier_misfire "do it" "2" 2>/dev/null || true
+assert_eq "non-canonical stored block counter cannot drive arithmetic" \
+  "0" "$(_count_misfires "${_tel_file}")"
+
+# A sparse oversized leaf is rejected before grep/tail scans it. This keeps a
+# corrupted session artifact from turning prompt routing into an unbounded read.
+dd if=/dev/null of="${_tel_file}" bs=1 seek=8388609 2>/dev/null
+oversized_detect_rc=0
+detect_classifier_misfire "do it" "2" 2>/dev/null \
+  || oversized_detect_rc=$?
+assert_eq "oversized classifier telemetry fails closed" "1" \
+  "$([[ "${oversized_detect_rc}" -ne 0 ]] && printf 1 || printf 0)"
 
 # Opt-out: classifier_telemetry=off disables recording and detection.
 rm -f "${_tel_file}"
@@ -3087,6 +3526,18 @@ warning_text="$(OMC_CLAUDE_BIN="/tmp/evil" bash -c "
 ")"
 assert_contains "rejection warning surfaces on stderr" \
   "rejecting OMC_CLAUDE_BIN" "${warning_text}"
+warning_text="$(OMC_CLAUDE_BIN="/bad"$'\033'"[31m-path" bash -c "
+  set +e
+  source '${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh' 2>&1 >/dev/null
+")"
+if [[ "${warning_text}" != *$'\033'* ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: rejected claude_bin warning emitted a literal terminal ESC\n' >&2
+  fail=$((fail + 1))
+fi
+assert_contains "escaped claude_bin warning remains diagnosable" \
+  "rejecting OMC_CLAUDE_BIN=" "${warning_text}"
 
 # ===========================================================================
 # omc_redact_secrets (v1.34.1+, security-lens Z-003)
@@ -3154,6 +3605,621 @@ if [[ "${_oh1}" =~ ^[A-Za-z0-9._-]+$ ]]; then
 else
   printf '  FAIL: omc_host not sanitized to [A-Za-z0-9._-]: %q\n' "${_oh1}" >&2; fail=$((fail+1))
 fi
+
+# ===========================================================================
+# publication recovery ledger schema
+# ===========================================================================
+
+printf 'publication recovery ledger schema:\n'
+publication_dir="${STATE_ROOT}/${SESSION_ID}"
+plan_waiters="${publication_dir}/plan_summary_waiters.jsonl"
+plan_receipts="${publication_dir}/plan_publication_outcomes.jsonl"
+reviewer_waiters="${publication_dir}/reviewer_summary_waiters.jsonl"
+reviewer_receipts="${publication_dir}/reviewer_publication_outcomes.jsonl"
+rm -f "${plan_waiters}" "${plan_receipts}" \
+  "${reviewer_waiters}" "${reviewer_receipts}"
+
+dispatch_stage="${publication_dir}/.dispatch-txn.inert"
+mkdir "${dispatch_stage}"
+assert_exit "retained pre-ready dispatch intent requires recovery" 0 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+touch "${dispatch_stage}/.ready"
+assert_exit "ready dispatch transaction requires recovery" 0 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+rm -f "${dispatch_stage}/.ready"
+rmdir "${dispatch_stage}"
+printf '%s\n' 'malformed-node' \
+  >"${publication_dir}/.dispatch-txn.malformed"
+assert_exit "malformed dispatch authority fails closed" 0 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+rm -f "${publication_dir}/.dispatch-txn.malformed"
+
+# The exact reset quarantines journals before committing inactive state. A
+# crash in that window must remain fenced, while a successfully committed or
+# prior-generation quarantine is inert after reactivation.
+dispatch_state_before="$(<"${publication_dir}/session_state.json")"
+deactivate_stage="${publication_dir}/.deactivate-txn.staged"
+mkdir -p \
+  "${deactivate_stage}/journals/.dispatch-txn.interrupted"
+touch "${deactivate_stage}/journals/.dispatch-txn.interrupted/.ready"
+printf '%s\n' '11' >"${deactivate_stage}/.enforcement-generation"
+jq '.workflow_mode="ultrawork"
+    | .ulw_enforcement_active="1"
+    | .ulw_enforcement_generation="11"' \
+  "${publication_dir}/session_state.json" \
+  >"${publication_dir}/session_state.json.tmp"
+mv "${publication_dir}/session_state.json.tmp" \
+  "${publication_dir}/session_state.json"
+assert_exit "mid-reset staged dispatch remains fail-closed" 0 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+
+# Generation markers are an exact byte-level protocol. Malformed spellings
+# must never compare as an old generation and make staged authority inert.
+for malformed_generation in leading-zero embedded-space missing-newline \
+    extra-newline embedded-nul; do
+  case "${malformed_generation}" in
+    leading-zero)
+      printf '011\n' >"${deactivate_stage}/.enforcement-generation"
+      ;;
+    embedded-space)
+      printf '11 12\n' >"${deactivate_stage}/.enforcement-generation"
+      ;;
+    missing-newline)
+      printf '11' >"${deactivate_stage}/.enforcement-generation"
+      ;;
+    extra-newline)
+      printf '11\n\n' >"${deactivate_stage}/.enforcement-generation"
+      ;;
+    embedded-nul)
+      printf '11\0\n' >"${deactivate_stage}/.enforcement-generation"
+      ;;
+  esac
+  assert_exit "malformed ${malformed_generation} generation fails closed" 0 \
+    omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+done
+printf '%s\n' '11' >"${deactivate_stage}/.enforcement-generation"
+mv "${deactivate_stage}/journals/.dispatch-txn.interrupted" \
+  "${publication_dir}/dispatch-quarantine-fixture"
+printf '%s\n' '{"agent_type":"quality-reviewer"}' \
+  >"${deactivate_stage}/pending_agents.jsonl"
+assert_exit "mid-reset staged transient authority remains fail-closed" 0 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+rm -f "${deactivate_stage}/pending_agents.jsonl"
+mv "${publication_dir}/dispatch-quarantine-fixture" \
+  "${deactivate_stage}/journals/.dispatch-txn.interrupted"
+jq '.workflow_mode="" | .ulw_enforcement_active="0"' \
+  "${publication_dir}/session_state.json" \
+  >"${publication_dir}/session_state.json.tmp"
+mv "${publication_dir}/session_state.json.tmp" \
+  "${publication_dir}/session_state.json"
+assert_exit "committed inactive reset quarantine is inert" 1 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+jq '.workflow_mode="ultrawork"
+    | .ulw_enforcement_active="1"
+    | .ulw_enforcement_generation="12"' \
+  "${publication_dir}/session_state.json" \
+  >"${publication_dir}/session_state.json.tmp"
+mv "${publication_dir}/session_state.json.tmp" \
+  "${publication_dir}/session_state.json"
+assert_exit "prior-generation reset quarantine is inert" 1 \
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}"
+rm -rf "${deactivate_stage}"
+printf '%s\n' "${dispatch_state_before}" \
+  >"${publication_dir}/session_state.json"
+
+# Versioned ignored outcomes are mutation authority for two causal ledgers.
+# Every journal field must validate as JSON before Bash sees a projection:
+# escaped NUL suffixes must not normalize into a valid enum, fingerprint, or
+# immutable lifecycle identity and retire the named rows.
+cleanup_pending="${publication_dir}/pending_agents.jsonl"
+cleanup_starts="${publication_dir}/agent_dispatch_starts.jsonl"
+cleanup_outcomes="${publication_dir}/agent_completion_outcomes.jsonl"
+cleanup_line="$(jq -nc '{
+  ts:100,agent_type:"quality-reviewer",description:"cleanup schema target",
+  lifecycle_dispatch_id:"dispatch-cleanup-schema-target",
+  edit_revision:1,code_revision:1,doc_revision:0,bash_revision:0,
+  ui_revision:0,plan_revision:0,review_revision:1,
+  objective_prompt_ts:100,objective_prompt_revision:1,
+  objective_cycle_id:1,ulw_enforcement_generation:"1",
+  native_agent_id:"native-cleanup-schema-target"
+}')"
+cleanup_fingerprint="$(_omc_token_digest "${cleanup_line}")"
+cleanup_valid_outcome="$(jq -nc --arg fp "${cleanup_fingerprint}" '{
+  ts:101,agent_type:"quality-reviewer",status:"ignored",
+  reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
+  findings_count:0,finding_ids:"none",objective_cycle_id:1,
+  objective_prompt_ts:100,review_revision:1,
+  ulw_enforcement_generation:"1",cleanup_journal_version:2,
+  lifecycle_dispatch_id:"dispatch-cleanup-schema-target",
+  cleanup_lifecycle_dispatch_id:"dispatch-cleanup-schema-target",
+  cleanup_pending_fingerprint:$fp,cleanup_start_fingerprint:$fp
+}')"
+for cleanup_corruption in status reason identity fingerprint; do
+  printf '%s\n' "${cleanup_line}" >"${cleanup_pending}"
+  printf '%s\n' "${cleanup_line}" >"${cleanup_starts}"
+  case "${cleanup_corruption}" in
+    status)
+      cleanup_malformed_outcome="$(jq -c \
+        '.status += "\u0000"' <<<"${cleanup_valid_outcome}")"
+      ;;
+    reason)
+      cleanup_malformed_outcome="$(jq -c \
+        '.reason += "\u0000"' <<<"${cleanup_valid_outcome}")"
+      ;;
+    identity)
+      cleanup_malformed_outcome="$(jq -c \
+        '.cleanup_lifecycle_dispatch_id += "\u0000"' \
+        <<<"${cleanup_valid_outcome}")"
+      ;;
+    fingerprint)
+      cleanup_malformed_outcome="$(jq -c \
+        '.cleanup_pending_fingerprint += "\u0000"' \
+        <<<"${cleanup_valid_outcome}")"
+      ;;
+  esac
+  printf '%s\n' "${cleanup_malformed_outcome}" >"${cleanup_outcomes}"
+  cleanup_pending_before="$(<"${cleanup_pending}")"
+  cleanup_starts_before="$(<"${cleanup_starts}")"
+  cleanup_outcomes_before="$(<"${cleanup_outcomes}")"
+  assert_exit "NUL-tailed cleanup ${cleanup_corruption} fails closed" 1 \
+    omc_reconcile_all_ignored_completion_cleanups_unlocked
+  assert_eq "NUL-tailed cleanup ${cleanup_corruption} preserves pending" \
+    "${cleanup_pending_before}" "$(<"${cleanup_pending}")"
+  assert_eq "NUL-tailed cleanup ${cleanup_corruption} preserves start" \
+    "${cleanup_starts_before}" "$(<"${cleanup_starts}")"
+  assert_eq "NUL-tailed cleanup ${cleanup_corruption} preserves outcome" \
+    "${cleanup_outcomes_before}" "$(<"${cleanup_outcomes}")"
+done
+
+# The cleanup outcome may itself be valid while the exact pending/start source
+# is corrupt. A raw NUL in that deletion ledger must be rejected before Bash
+# read can erase it and match the immutable lifecycle fallback.
+cleanup_line_prefix="${cleanup_line%%\"ts\":100*}"
+cleanup_line_suffix="${cleanup_line#*\"ts\":100}"
+printf '%s"ts":100\0%s\n' \
+  "${cleanup_line_prefix}" "${cleanup_line_suffix}" >"${cleanup_pending}"
+printf '%s\n' "${cleanup_line}" >"${cleanup_starts}"
+printf '%s\n' "${cleanup_valid_outcome}" >"${cleanup_outcomes}"
+cleanup_pending_before="$(cksum <"${cleanup_pending}")"
+cleanup_starts_before="$(cksum <"${cleanup_starts}")"
+cleanup_outcomes_before="$(cksum <"${cleanup_outcomes}")"
+assert_exit "raw-NUL pending cleanup target fails closed" 1 \
+  omc_reconcile_all_ignored_completion_cleanups_unlocked
+assert_eq "raw-NUL pending cleanup target preserves pending bytes" \
+  "${cleanup_pending_before}" "$(cksum <"${cleanup_pending}")"
+assert_eq "raw-NUL pending cleanup target preserves start bytes" \
+  "${cleanup_starts_before}" "$(cksum <"${cleanup_starts}")"
+assert_eq "raw-NUL pending cleanup target preserves outcome bytes" \
+  "${cleanup_outcomes_before}" "$(cksum <"${cleanup_outcomes}")"
+rm -f "${cleanup_pending}" "${cleanup_starts}" "${cleanup_outcomes}"
+
+schema_summary_digest="$(_omc_token_digest "summary")"
+schema_review_digest="$(_omc_token_digest "review summary")"
+jq -nc --arg digest "${schema_summary_digest}" '
+  {schema_version:1,created_at:1,
+   lifecycle_dispatch_id:"dispatch-schema-plan-1",
+   agent_type:"quality-planner",native_agent_id:"native-schema-plan",
+   completion_digest:$digest,message:"summary"}
+' >"${plan_waiters}"
+assert_exit "waiter without receipt is ordinary live rendezvous" 1 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+assert_exit "complete waiter schema protects its lifecycle" 0 \
+  omc_completion_receipt_protected_lifecycle_ids_unlocked
+
+jq 'del(.message)' "${plan_waiters}" >"${plan_waiters}.malformed"
+mv -f "${plan_waiters}.malformed" "${plan_waiters}"
+assert_exit "malformed waiter-only authority fences publication" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+assert_exit "malformed waiter cannot protect receipt history" 1 \
+  omc_completion_receipt_protected_lifecycle_ids_unlocked
+
+jq -nc --arg digest "${schema_summary_digest}" '
+  {schema_version:1,created_at:1,
+   lifecycle_dispatch_id:"dispatch-schema-plan-duplicate",
+   agent_type:"quality-planner",native_agent_id:"native-schema-plan",
+   completion_digest:$digest,message:"summary"}
+' >"${plan_waiters}"
+cat "${plan_waiters}" >>"${plan_waiters}.duplicate"
+cat "${plan_waiters}" >>"${plan_waiters}.duplicate"
+mv -f "${plan_waiters}.duplicate" "${plan_waiters}"
+assert_exit "duplicate waiter-only lifecycle fences publication" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+assert_exit "duplicate waiter cannot be deduped into protection" 1 \
+  omc_completion_receipt_protected_lifecycle_ids_unlocked
+rm -f "${plan_waiters}"
+
+# Receipt-only corruption must be validated too; it cannot hide behind the
+# absence of a waiter and later become mutable delivery authority.
+printf '%s\n' '{"schema_version":1}' >"${plan_receipts}"
+assert_exit "malformed receipt-only authority fences publication" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+rm -f "${plan_receipts}"
+
+jq -nc --arg digest "${schema_summary_digest}" '
+  {schema_version:1,created_at:1,
+   lifecycle_dispatch_id:"dispatch-schema-plan-1",
+   agent_type:"quality-planner",native_agent_id:"native-schema-plan",
+   completion_digest:$digest,message:"summary"}
+' >"${plan_waiters}"
+
+# A non-matching object is not a valid receipt. It must still fence mutation as
+# malformed paired authority; treating it as merely absent lets newer state
+# advance around a corrupt transaction ledger.
+printf '%s\n' '{"schema_version":1}' >"${plan_receipts}"
+assert_exit "malformed paired planner receipt fails closed" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+rm -f "${plan_waiters}" "${plan_receipts}"
+
+# Reviewer migration waiters/receipts legitimately have no native ID. The
+# stricter schema fence must preserve that rolling-upgrade compatibility, but
+# an exact pair with neither live pending authority nor a settled parent
+# outcome is protected correlation history rather than unrelated recovery
+# work (the reviewer transaction suite exercises that sibling-admission path).
+jq -nc --arg digest "${schema_review_digest}" '
+  {schema_version:1,created_at:1,
+   lifecycle_dispatch_id:"dispatch-schema-review-1",
+   agent_type:"quality-reviewer",native_agent_id:"",
+   completion_digest:$digest,message:"review summary"}
+' >"${reviewer_waiters}"
+jq -nc --arg digest "${schema_review_digest}" '
+  {schema_version:1,decided_at:1,
+   lifecycle_dispatch_id:"dispatch-schema-review-1",
+   agent_type:"quality-reviewer",reviewer_type:"standard",
+   native_agent_id:"",completion_digest:$digest,
+   status:"accepted",reason:"",verdict:"CLEAN",
+   start_review_revision:0,result_review_revision:0}
+' >"${reviewer_receipts}"
+assert_exit "pre-native reviewer receipt pair stays protected without fencing" 1 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+rm -f "${reviewer_waiters}" "${reviewer_receipts}"
+
+pending_agents="${publication_dir}/pending_agents.jsonl"
+_publication_stop_wait_oversized_check() {
+  OMC_PUBLICATION_STOP_WAIT_INTERNAL=1 \
+    omc_publication_recovery_needed "${SESSION_ID}"
+}
+_publication_oversized_owner_check() {
+  OMC_PUBLICATION_RECOVERY_CLAIM_ID=oversized-owner \
+    omc_publication_recovery_needed "${SESSION_ID}"
+}
+printf '%s\n' \
+  '{"agent_type":"general-purpose","completion_claim_id":"oversized-lease","completion_claim_ts":1000000000000000,"completion_claim_effects_complete":false}' \
+  >"${pending_agents}"
+assert_exit "oversized completion lease remains fenced for Stop WAIT" 0 \
+  _publication_stop_wait_oversized_check
+rm -f "${pending_agents}"
+
+publication_state_before="$(<"${publication_dir}/session_state.json")"
+jq --arg huge '1000000000000000000000000' \
+  '(.review_cycle_prompt_ts,.prompt_revision,.review_cycle_id) = $huge' \
+  "${publication_dir}/session_state.json" \
+  >"${publication_dir}/session_state.json.tmp"
+mv "${publication_dir}/session_state.json.tmp" \
+  "${publication_dir}/session_state.json"
+claim_now="$(date +%s)"
+jq -nc --argjson now "${claim_now}" '
+  {agent_type:"general-purpose",completion_claim_id:"oversized-owner",
+   completion_claim_ts:$now,completion_claim_effects_complete:false,
+   objective_prompt_ts:1000000000000000000000000,
+   objective_prompt_revision:1000000000000000000000000,
+   objective_cycle_id:1000000000000000000000000}
+' >"${pending_agents}"
+assert_exit "oversized objective coordinates cannot authorize claim owner" 0 \
+  _publication_oversized_owner_check
+printf '%s\n' "${publication_state_before}" \
+  >"${publication_dir}/session_state.json"
+rm -f "${pending_agents}"
+
+for malformed_claim_kind in nonstring empty missing-id missing-effects \
+    string-effects missing-digest nonstring-digest bad-digest missing-message \
+    nonstring-message empty-message oversized-message digest-mismatch; do
+  case "${malformed_claim_kind}" in
+    nonstring)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":123,"completion_claim_ts":1,"completion_claim_effects_complete":false}'
+      ;;
+    empty)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"","completion_claim_ts":1,"completion_claim_effects_complete":false}'
+      ;;
+    missing-id)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_ts":1,"completion_claim_effects_complete":false}'
+      ;;
+    missing-effects)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-missing-effects","completion_claim_ts":1}'
+      ;;
+    string-effects)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-string-effects","completion_claim_ts":1,"completion_claim_effects_complete":"false"}'
+      ;;
+    missing-digest)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-missing-digest","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_message":"message"}'
+      ;;
+    nonstring-digest)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-nonstring-digest","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":123,"completion_claim_message":"message"}'
+      ;;
+    bad-digest)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-bad-digest","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":"not-a-digest","completion_claim_message":"message"}'
+      ;;
+    missing-message)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-missing-message","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":"aaaaaaaaaaaaaaaa"}'
+      ;;
+    nonstring-message)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-nonstring-message","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":"aaaaaaaaaaaaaaaa","completion_claim_message":123}'
+      ;;
+    empty-message)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-empty-message","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":"aaaaaaaaaaaaaaaa","completion_claim_message":""}'
+      ;;
+    oversized-message)
+      malformed_claim_row="$(jq -nc --arg message "$(awk 'BEGIN {
+          for (i=0; i<131073; i++) printf "x"
+        }')" '
+        {agent_type:"general-purpose",
+         completion_claim_id:"claim-oversized-message",completion_claim_ts:1,
+         completion_claim_effects_complete:false,
+         completion_claim_digest:"aaaaaaaaaaaaaaaa",
+         completion_claim_message:$message}')"
+      ;;
+    digest-mismatch)
+      malformed_claim_row='{"agent_type":"general-purpose","completion_claim_id":"claim-digest-mismatch","completion_claim_ts":1,"completion_claim_effects_complete":false,"completion_claim_digest":"aaaaaaaaaaaaaaaa","completion_claim_message":"message"}'
+      ;;
+  esac
+  printf '%s\n' "${malformed_claim_row}" >"${pending_agents}"
+  assert_exit "${malformed_claim_kind} claim identity fences publication" 0 \
+    omc_publication_recovery_needed "${SESSION_ID}"
+  assert_exit "${malformed_claim_kind} claim fences Stop WAIT too" 0 \
+    _publication_stop_wait_oversized_check
+  assert_exit "${malformed_claim_kind} claim cannot enter mutating recovery" 1 \
+    _omc_publication_claim_timestamps_valid_unlocked "${pending_agents}"
+done
+rm -f "${pending_agents}"
+
+future_publication_claim="$(( $(date +%s) + 86400 ))"
+future_publication_message="future claim message"
+future_publication_digest="$(_omc_token_digest \
+  "${future_publication_message}")"
+jq -nc --argjson ts "${future_publication_claim}" \
+  --arg message "${future_publication_message}" \
+  --arg digest "${future_publication_digest}" '
+  {agent_type:"general-purpose",completion_claim_id:"claim-future-clock",
+   completion_claim_ts:$ts,completion_claim_effects_complete:false,
+   completion_claim_digest:$digest,completion_claim_message:$message}
+' >"${pending_agents}"
+assert_exit "future-dated claim fences publication after clock rollback" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+assert_exit "future-dated claim also fences Stop WAIT" 0 \
+  _publication_stop_wait_oversized_check
+rm -f "${pending_agents}"
+
+jq -nc --arg digest "${schema_summary_digest}" '
+  {schema_version:1,created_at:1000000000000000,
+   lifecycle_dispatch_id:"dispatch-schema-plan-oversized",
+   agent_type:"quality-planner",native_agent_id:"native-schema-plan",
+   completion_digest:$digest,message:"summary"}
+' >"${plan_waiters}"
+assert_exit "oversized waiter timestamp fences publication" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+rm -f "${plan_waiters}"
+
+jq -nc --arg digest "${schema_summary_digest}" '
+  {schema_version:1,decided_at:1000000000000000,
+   lifecycle_dispatch_id:"dispatch-schema-plan-oversized",
+   agent_type:"quality-planner",native_agent_id:"native-schema-plan",
+   completion_digest:$digest,status:"accepted",reason:"",
+   verdict:"PLAN_READY",start_plan_revision:0,result_plan_revision:0}
+' >"${plan_receipts}"
+assert_exit "oversized receipt timestamp fences publication" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+rm -f "${plan_receipts}"
+
+# Publication recovery is a mutating roll-forward path, so it applies a
+# stricter contract than the read-only recovery-needed predicate: every object
+# that asserts a live completion claim must carry a bounded integer timestamp
+# before the clock is read, a cutoff is calculated, or a row is extracted into
+# Bash arithmetic.
+_publication_recovery_clock_probe() {
+  local clock_marker="${1:-}"
+  (
+    # Indirectly consumed by the recovery function under test.
+    # shellcheck disable=SC2329
+    now_epoch() {
+      : >"${clock_marker}"
+      printf '1700000000'
+    }
+    omc_recover_active_publication_transactions "${SESSION_ID}"
+  )
+}
+while IFS='|' read -r claim_label claim_row; do
+  [[ -n "${claim_label}" ]] || continue
+  printf '%s\n' "${claim_row}" >"${pending_agents}"
+  claim_clock_marker="${publication_dir}/claim-clock-${claim_label}"
+  rm -f "${claim_clock_marker}"
+  assert_exit "${claim_label} claim timestamp fails recovery closed" 1 \
+    _publication_recovery_clock_probe "${claim_clock_marker}"
+  assert_eq "${claim_label} claim is rejected before clock arithmetic" \
+    "0" "$([[ -e "${claim_clock_marker}" ]] && printf 1 || printf 0)"
+done <<'MALFORMED_PUBLICATION_CLAIMS'
+string|{"agent_type":"general-purpose","completion_claim_id":"completion-bad-string","completion_claim_ts":"7*7","completion_claim_effects_complete":true}
+fractional|{"agent_type":"general-purpose","completion_claim_id":"completion-bad-fraction","completion_claim_ts":1.5,"completion_claim_effects_complete":false}
+negative|{"agent_type":"quality-planner","completion_claim_id":"completion-bad-negative","completion_claim_ts":-1,"completion_claim_effects_complete":true}
+oversized|{"agent_type":"quality-reviewer","completion_claim_id":"completion-bad-oversized","completion_claim_ts":1000000000000000,"completion_claim_effects_complete":true}
+MALFORMED_PUBLICATION_CLAIMS
+rm -f "${pending_agents}"
+
+# Literal NUL must be rejected while each publication artifact is still a raw
+# byte stream. jq accepts some NUL placements in numeric tokens as zero, so a
+# schema check after fromjson is not an authority boundary.
+raw_waiter_digest="$(_omc_token_digest "raw waiter")"
+printf '%s\0%s\n' \
+  '{"schema_version":1,"created_at":1' \
+  ',"lifecycle_dispatch_id":"dispatch-raw-waiter-1","agent_type":"quality-planner","native_agent_id":"native-raw-waiter","completion_digest":"'"${raw_waiter_digest}"'","message":"raw waiter"}' \
+  >"${plan_waiters}"
+assert_exit "raw-NUL waiter is not replay authority" 1 \
+  omc_summary_waiter_ledger_json_unlocked plan "${plan_waiters}"
+rm -f "${plan_waiters}"
+
+# A valid receipt without a waiter is inert history. The same logical row with
+# a raw NUL in its timestamp is malformed transaction authority and must fence.
+printf '%s\0%s\n' \
+  '{"schema_version":1,"decided_at":1' \
+  ',"lifecycle_dispatch_id":"dispatch-raw-receipt-1","agent_type":"quality-planner","native_agent_id":"native-raw-receipt","completion_digest":"'"${raw_waiter_digest}"'","status":"accepted","reason":"","verdict":"PLAN_READY","start_plan_revision":0,"result_plan_revision":0}' \
+  >"${plan_receipts}"
+assert_exit "raw-NUL receipt-only authority keeps recovery fence set" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+LC_ALL=C tr -d '\000' <"${plan_receipts}" >"${plan_receipts}.valid"
+publication_receipt_row="$(<"${plan_receipts}.valid")"
+printf '%s' "${publication_receipt_row}" >"${plan_receipts}"
+assert_exit "torn publication receipt keeps recovery fence set" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+rm -f "${plan_receipts}" "${plan_receipts}.valid"
+
+# Non-authority migration noise remains tolerated, but raw NUL anywhere in the
+# tolerant pending ledger is ambiguous because Bash/fromjson can erase it into
+# an authority-shaped row.
+printf '{"note":1\0}\n' >"${pending_agents}"
+assert_exit "raw-NUL pending ledger keeps recovery fence set" 0 \
+  omc_publication_recovery_needed "${SESSION_ID}"
+assert_exit "raw-NUL pending ledger cannot enter mutating recovery" 1 \
+  _omc_publication_claim_timestamps_valid_unlocked "${pending_agents}"
+rm -f "${pending_agents}"
+
+raw_outcomes="${publication_dir}/agent_completion_outcomes.jsonl"
+printf '%s\0%s\n' \
+  '{"ts":1' \
+  ',"agent_type":"quality-reviewer","status":"ignored","reason":"terminal-contract-retry-exhausted","verdict":"UNREPORTED","findings_count":0,"finding_ids":"none","objective_cycle_id":1,"objective_prompt_ts":1,"review_revision":1,"ulw_enforcement_generation":"1"}' \
+  >"${raw_outcomes}"
+assert_exit "raw-NUL causal outcome cannot mint notification authority" 1 \
+  omc_notification_receipt_claim_unlocked \
+    "${raw_outcomes}" missing-key agent-posttool quality-reviewer "" "" ""
+rm -f "${raw_outcomes}"
+
+# A public path can change type after an ordinary `-f` check. Interpose the
+# hard-link operation so the exact regular source inode is pinned first, then
+# replace the public name with a FIFO before either read descriptor opens. The
+# capture must reject promptly rather than blocking on the FIFO.
+snapshot_fifo_source="${publication_dir}/snapshot-fifo-source.jsonl"
+snapshot_fifo_copy="${publication_dir}/snapshot-fifo-copy.jsonl"
+printf '{}\n' >"${snapshot_fifo_source}"
+: >"${snapshot_fifo_copy}"
+ln() {
+  command ln "$@" || return 1
+  rm -f "${snapshot_fifo_source}"
+  mkfifo "${snapshot_fifo_source}"
+}
+snapshot_fifo_rc=0
+_omc_capture_regular_file_snapshot \
+  "${snapshot_fifo_source}" "${snapshot_fifo_copy}" 4096 \
+  >/dev/null 2>&1 &
+snapshot_fifo_pid=$!
+snapshot_fifo_finished=0
+for _snapshot_fifo_wait in $(seq 1 200); do
+  if ! kill -0 "${snapshot_fifo_pid}" 2>/dev/null; then
+    snapshot_fifo_finished=1
+    break
+  fi
+  sleep 0.01
+done
+if [[ "${snapshot_fifo_finished}" -eq 0 ]]; then
+  kill "${snapshot_fifo_pid}" 2>/dev/null || true
+  wait "${snapshot_fifo_pid}" 2>/dev/null || true
+  snapshot_fifo_rc=124
+else
+  wait "${snapshot_fifo_pid}" || snapshot_fifo_rc=$?
+fi
+unset -f ln
+if [[ "${snapshot_fifo_finished}" -eq 1 \
+    && "${snapshot_fifo_rc}" -ne 0 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: regular-to-FIFO snapshot race did not fail promptly (rc=%s)\n' \
+    "${snapshot_fifo_rc}" >&2
+  fail=$((fail + 1))
+fi
+rm -f "${snapshot_fifo_source}" "${snapshot_fifo_copy}"
+
+raw_frontier_history="${publication_dir}/quality_frontier_history.jsonl"
+printf '%s\0%s\n' \
+  '{"_v":1,"alternatives_searched":["Alternative one","Alternative two"],"contract_id":"qc-abcdefgh","contract_revision":1,"criterion_ids":[],"dominates_current":false,"edit_revision":0,"evidence":["vr-abcdefgh"],"evidence_ids":["qe-abc"],"experiment":"Run another experiment","lifecycle_dispatch_id":"dispatch-abcdefgh","limits":["Known limit"],"materiality":"none","native_agent_id":"native-1","plan_revision":1,"recommended_move":"Keep current implementation","review_cycle_id":1' \
+  ',"reviewed_at":1,"reviewer":"excellence-reviewer","status":"clear","title":"No material frontier","why":"Current work dominates alternatives"}' \
+  >"${raw_frontier_history}"
+raw_frontier_rc=0
+_quality_frontier_history_parse "${raw_frontier_history}" \
+  >/dev/null 2>&1 || raw_frontier_rc=$?
+if [[ "${raw_frontier_rc}" -ne 0 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: raw-NUL frontier history became review authority\n' >&2
+  fail=$((fail + 1))
+fi
+LC_ALL=C tr -d '\000' <"${raw_frontier_history}" \
+  >"${raw_frontier_history}.valid"
+frontier_valid_row="$(<"${raw_frontier_history}.valid")"
+printf '%s' "${frontier_valid_row}" >"${raw_frontier_history}"
+assert_exit "frontier history torn tail is rejected by direct parser" 1 \
+  _quality_frontier_history_parse "${raw_frontier_history}"
+: >"${raw_frontier_history}"
+for _frontier_row in $(seq 1 65); do
+  printf '%s\n' "${frontier_valid_row}" >>"${raw_frontier_history}"
+done
+assert_exit "frontier history direct parser owns the 64-row cap" 1 \
+  _quality_frontier_history_parse "${raw_frontier_history}"
+assert_contains "frontier history parser owns its byte and row envelope" \
+  '_omc_strict_jsonl_file_is_bounded "${snapshot}" 2097152 64' \
+  "$(declare -f _quality_frontier_history_parse)"
+assert_contains "frontier history parser reattests its public source" \
+  '_omc_regular_file_snapshot_is_current "${history_file}" "${snapshot}" 2097152' \
+  "$(declare -f _quality_frontier_history_parse)"
+rm -f "${raw_frontier_history}" "${raw_frontier_history}.valid"
+
+# Strict append authority must not depend on a caller having validated its
+# physical framing first. Exercise the two direct parser entrypoints with a
+# schema-valid but torn final row.
+printf '%s' \
+  '{"schema_version":1,"created_at":1,"lifecycle_dispatch_id":"dispatch-torn-waiter-1","agent_type":"quality-planner","native_agent_id":"native-torn-waiter","completion_digest":"'"${raw_waiter_digest}"'","message":"raw waiter"}' \
+  >"${plan_waiters}"
+assert_exit "summary waiter parser rejects a missing terminal newline" 1 \
+  omc_summary_waiter_ledger_json_unlocked plan "${plan_waiters}"
+printf '%s' \
+  '{"ts":1,"agent_type":"quality-reviewer","status":"ignored","reason":"terminal-contract-retry-exhausted","verdict":"UNREPORTED","findings_count":0,"finding_ids":"none","objective_cycle_id":1,"objective_prompt_ts":1,"review_revision":1,"ulw_enforcement_generation":"1"}' \
+  >"${raw_outcomes}"
+assert_exit "notification parser rejects a missing terminal newline" 1 \
+  omc_notification_receipt_claim_unlocked \
+    "${raw_outcomes}" missing-key agent-posttool quality-reviewer "" "" ""
+assert_contains "waiter parser owns its byte and row envelope" \
+  '"${snapshot}" 33554432 128' \
+  "$(declare -f omc_summary_waiter_ledger_json_unlocked)"
+assert_contains "notification parser owns its byte and row envelope" \
+  '"${snapshot}" 67108864 16384' \
+  "$(declare -f omc_notification_receipt_claim_unlocked)"
+assert_contains "publication recovery owns its receipt envelope" \
+  '"${receipts}" 4194304 128' \
+  "$(declare -f omc_publication_recovery_needed)"
+rm -f "${plan_waiters}" "${raw_outcomes}"
+
+# The recovery clock itself crosses both Bash arithmetic and jq --argjson.
+# Canonical upper-bound input remains accepted, while leading-zero, oversized,
+# and expression-shaped outputs fail without evaluating attacker text.
+printf '%s\n' '{}' >"${pending_agents}"
+_publication_recovery_with_clock() {
+  local injected_now="${1:-}"
+  (
+    # Indirectly consumed by the recovery function under test.
+    # shellcheck disable=SC2329
+    now_epoch() { printf '%s' "${injected_now}"; }
+    omc_recover_active_publication_transactions "${SESSION_ID}"
+  )
+}
+assert_exit "bounded recovery clock remains accepted" 0 \
+  _publication_recovery_with_clock 999999999999999
+assert_exit "leading-zero recovery clock fails closed" 1 \
+  _publication_recovery_with_clock 08
+assert_exit "oversized recovery clock fails closed" 1 \
+  _publication_recovery_with_clock 1000000000000000
+publication_clock_poison="${publication_dir}/publication-clock-poison"
+rm -f "${publication_clock_poison}"
+assert_exit "expression-shaped recovery clock fails closed" 1 \
+  _publication_recovery_with_clock \
+    "x[\$(touch ${publication_clock_poison})]"
+assert_eq "recovery clock poison is never evaluated" "0" \
+  "$([[ -e "${publication_clock_poison}" ]] && printf 1 || printf 0)"
+rm -f "${pending_agents}"
 
 # ===========================================================================
 # Summary

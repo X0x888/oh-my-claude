@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+_OMC_HOOK_CALLER_PATH="${PATH:-}"
 # Fast-path: skip if ULW was never activated in this environment
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
@@ -10,8 +11,14 @@ set -euo pipefail
 export OMC_LAZY_CLASSIFIER=1
 export OMC_LAZY_TIMING=1
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 RECORD_PENDING_MODE="${1:-dispatch}"
@@ -19,6 +26,100 @@ RECORD_PENDING_MODE="${1:-dispatch}"
 SESSION_ID="$(json_get '.session_id')"
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
+fi
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 1
+
+# pending_agents.jsonl deliberately tolerates unrelated non-JSON migration
+# noise, but any JSON object asserting dispatch/claim authority must be safe to
+# project into Bash. Validate raw and decoded NUL plus the consequence-bearing
+# field types while bytes are still inside jq; post-projection regexes cannot
+# distinguish `"1\u0000"` from `"1"` in a shell variable.
+_pending_authority_rows_shell_safe() {
+  omc_dispatch_authority_ledger_shell_safe "${1:-}"
+}
+
+_validate_dispatch_authority_ledgers_unlocked() {
+  local file
+  for file in \
+      "$(session_file "pending_agents.jsonl")" \
+      "$(session_file "agent_dispatch_starts.jsonl")" \
+      "$(session_file "native_agent_bindings.jsonl")"; do
+    omc_dispatch_authority_ledger_shell_safe "${file}" || return 1
+  done
+}
+
+if ! _validate_dispatch_authority_ledgers_unlocked; then
+  log_anomaly "record-pending-agent" \
+    "malformed dispatch authority ledger; ${RECORD_PENDING_MODE} refused" \
+    2>/dev/null || true
+  exit 1
+fi
+
+# Do not run publication recovery or session-state initialization around a
+# prior interrupted Agent admission. The universal sibling hook denies the
+# tool, while this owner-specific check prevents the parallel Agent recorder
+# (and a late SubagentStart for the possibly untracked call) from advancing
+# any causal ledger before the exact reset.
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  log_anomaly "record-pending-agent" \
+    "interrupted Agent admission journal; ${RECORD_PENDING_MODE} refused" \
+    2>/dev/null || true
+  if [[ "${RECORD_PENDING_MODE}" == "dispatch" ]]; then
+    jq -nc --arg reason \
+      "[Dispatch recovery] A prior Agent authorization was interrupted mid-transaction. This Agent launch was denied before publication recovery or causal-ledger mutation. Run the exact /ulw-off reset, reactivate /ulw, and dispatch only the still-required role with a fresh identity." '
+      {hookSpecificOutput:{hookEventName:"PreToolUse",
+        permissionDecision:"deny",permissionDecisionReason:$reason}}
+    '
+    exit 0
+  fi
+  exit 1
+fi
+
+# An expired pre-native completion has no platform agent ID with which the
+# universal recovery sweep could replay it safely.  Dispatch admission already
+# owns the compatibility protocol for that shape: an unbound retry is denied
+# with a fresh `[review-rebind:...]` token, and an explicitly bound retry
+# atomically tombstones the old row before publishing its replacement. Derive
+# one exact same-agent claim capability before the global publication barrier
+# so that narrow transaction can acquire the state lock. Ambiguous, native,
+# malformed, or cross-agent rows receive no capability and remain fenced.
+_publication_rebind_claim_id=""
+if [[ "${RECORD_PENDING_MODE}" == "dispatch" ]]; then
+  _publication_rebind_agent_type="$(json_get '.tool_input.subagent_type')"
+  _publication_rebind_pending="${STATE_ROOT}/${SESSION_ID}/pending_agents.jsonl"
+  if [[ "${_publication_rebind_agent_type}" \
+        =~ ^[A-Za-z0-9._:-]{1,128}$ \
+      && -f "${_publication_rebind_pending}" \
+      && ! -L "${_publication_rebind_pending}" ]]; then
+    _publication_rebind_claim_id="$(jq -Rsr \
+      --arg agent "${_publication_rebind_agent_type}" '
+        [split("\n")[] | select(length > 0)
+          | (try fromjson catch null) | select(type == "object")
+          | select((.agent_type // "") == $agent
+            and (.review_dispatch_abandoned // false) != true
+            and (.native_agent_id // "") == ""
+            and ((.completion_claim_id // "") | type) == "string"
+            and ((.completion_claim_id // "")
+              | test("^[A-Za-z0-9._:-]{1,160}$"))
+            and ((.completion_claim_ts // null) | type) == "number"
+            and (.completion_claim_ts | floor) == .completion_claim_ts)]
+        | if length == 1 then .[0].completion_claim_id else empty end
+      ' "${_publication_rebind_pending}" 2>/dev/null || true)"
+  fi
+  if [[ -n "${_publication_rebind_claim_id}" ]]; then
+    export OMC_PUBLICATION_REBIND_CLAIM_ID="${_publication_rebind_claim_id}"
+  fi
+fi
+
+# Agent dispatch/start mutates both planner/reviewer causal ledgers. Settle any
+# overlapping fixed publication WAL (and receipt-bound deferred summary) before
+# admitting another call, otherwise a delayed planner rollback can erase the new
+# pending/start row or a reviewer roll-forward can publish against mixed state.
+if ! omc_recover_active_publication_transactions "${SESSION_ID}"; then
+  log_anomaly "record-pending-agent" \
+    "publication recovery barrier failed; Agent admission refused" \
+    2>/dev/null || true
+  exit 1
 fi
 
 ensure_session_dir
@@ -48,21 +149,63 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
   fi
 
   _native_agent_start_is_stateful() {
-    case "${1##*:}" in
-      quality-reviewer|code-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer|quality-planner|prometheus)
-        return 0 ;;
-      *) return 1 ;;
-    esac
+    omc_dedicated_publication_kind "$1" >/dev/null 2>&1
+  }
+
+  _cleanup_native_bind_settled_unlocked() {
+    local dir node base valid
+    for dir in "$(session_file ".native-bind-settled.")"*; do
+      [[ -e "${dir}" || -L "${dir}" ]] || continue
+      [[ -d "${dir}" && ! -L "${dir}" ]] || continue
+      valid=1
+      for node in "${dir}"/*; do
+        [[ -e "${node}" || -L "${node}" ]] || continue
+        base="${node##*/}"
+        case "${base}" in
+          session_state.json.file|session_state.json.absent|\
+          pending_agents.jsonl.file|pending_agents.jsonl.absent|\
+          agent_dispatch_starts.jsonl.file|agent_dispatch_starts.jsonl.absent|\
+          native_agent_bindings.jsonl.file|native_agent_bindings.jsonl.absent)
+            [[ -f "${node}" && ! -L "${node}" ]] || valid=0
+            ;;
+          *) valid=0 ;;
+        esac
+      done
+      [[ "${valid}" -eq 1 ]] || continue
+      rm -f "${dir}"/* 2>/dev/null || continue
+      rmdir "${dir}" 2>/dev/null || true
+    done
+  }
+
+  _settle_native_bind_snapshot_unlocked() {
+    local dir="$1" base suffix settled
+    base="${dir##*/}"
+    [[ "${base}" =~ ^\.native-bind-txn\.([A-Za-z0-9]+)$ ]] || return 1
+    suffix="${BASH_REMATCH[1]}"
+    settled="$(session_file ".native-bind-settled.${suffix}")"
+    [[ ! -e "${settled}" && ! -L "${settled}" ]] || return 1
+    mv "${dir}" "${settled}" || return 1
+    printf '%s' "${settled}"
+  }
+
+  _native_bind_test_boundary() {
+    [[ "${OMC_TEST_NATIVE_BIND_KILL_AT:-}" == "$1" ]] || return 0
+    kill -9 "$$"
   }
 
   _bind_native_agent_start_unlocked() {
     local pending_file starts_file bindings_file snapshot_dir artifact path
     local line row_type row_native row_abandoned pending_count=0
-    local selected="" selected_id selected_ts selected_cycle
-    local starts_count=0 temp updated rc=0 restore_rc=0
+    local selected="" selected_id selected_ts selected_cycle selected_lifecycle
+    local pending_lifecycle_count=0 starts_lifecycle_count=0
+    local binding_lifecycle_count=0 starts_count=0
+    local temp updated rc=0 restore_rc=0 settled_dir=""
+    local snapshot_temp="" snapshot_cleanup_rc=0
+    _cleanup_native_bind_settled_unlocked || return 1
     pending_file="$(session_file "pending_agents.jsonl")"
     starts_file="$(session_file "agent_dispatch_starts.jsonl")"
     bindings_file="$(session_file "native_agent_bindings.jsonl")"
+    _validate_dispatch_authority_ledgers_unlocked || return 1
     for path in "${pending_file}" "${starts_file}" "${bindings_file}"; do
       [[ ! -L "${path}" ]] \
         && { [[ ! -e "${path}" ]] || [[ -f "${path}" ]]; } || return 1
@@ -113,17 +256,51 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
     selected_ts="$(jq -r '.ts // -1' <<<"${selected}" 2>/dev/null || true)"
     selected_cycle="$(jq -r '.objective_cycle_id // 0' \
       <<<"${selected}" 2>/dev/null || true)"
+    selected_lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+      <<<"${selected}" 2>/dev/null || true)"
+    [[ "${selected_lifecycle}" \
+        =~ ^dispatch-[A-Za-z0-9._:-]{8,120}$ ]] || return 1
+    pending_lifecycle_count="$(jq -Rsr \
+      --arg lifecycle "${selected_lifecycle}" '
+        [split("\n")[] | select(length > 0)
+          | (try fromjson catch {})
+          | select((.lifecycle_dispatch_id // "") == $lifecycle)]
+        | length
+      ' "${pending_file}" 2>/dev/null || true)"
+    [[ "${pending_lifecycle_count}" == "1" ]] || return 1
+    if [[ -s "${bindings_file}" ]]; then
+      binding_lifecycle_count="$(jq -Rsr \
+        --arg lifecycle "${selected_lifecycle}" '
+          [split("\n")[] | select(length > 0)
+            | (try fromjson catch {})
+            | select((.lifecycle_dispatch_id // "") == $lifecycle)]
+          | length
+        ' "${bindings_file}" 2>/dev/null || true)"
+      [[ "${binding_lifecycle_count}" == "0" ]] || return 1
+    fi
 
+    if [[ -s "${starts_file}" ]]; then
+      starts_lifecycle_count="$(jq -Rsr \
+        --arg lifecycle "${selected_lifecycle}" '
+          [split("\n")[] | select(length > 0)
+            | (try fromjson catch {})
+            | select((.lifecycle_dispatch_id // "") == $lifecycle)]
+          | length
+        ' "${starts_file}" 2>/dev/null || true)"
+    fi
     if _native_agent_start_is_stateful "${native_agent_type}"; then
       [[ -s "${starts_file}" ]] || return 1
+      [[ "${starts_lifecycle_count}" == "1" ]] || return 1
       while IFS= read -r line || [[ -n "${line}" ]]; do
         [[ -n "${line}" ]] || continue
         if jq -e --arg type "${native_agent_type}" \
             --arg id "${selected_id}" \
+            --arg lifecycle "${selected_lifecycle}" \
             --argjson ts "${selected_ts}" \
             --argjson cycle "${selected_cycle}" '
               (.agent_type // "") == $type
               and (.review_dispatch_id // "") == $id
+              and (.lifecycle_dispatch_id // "") == $lifecycle
               and (.ts // -1) == $ts
               and (.objective_cycle_id // 0) == $cycle
               and (.native_agent_id // "") == ""
@@ -133,6 +310,10 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
         fi
       done <"${starts_file}"
       [[ "${starts_count}" -eq 1 ]] || return 1
+    else
+      # Ordinary specialists have no dedicated start row. A matching lifecycle
+      # here is corrupt cross-role authority, not a compatibility binding.
+      [[ "${starts_lifecycle_count}" == "0" ]] || return 1
     fi
 
     snapshot_dir="$(mktemp -d "$(session_file ".native-bind-txn.XXXXXX")")" \
@@ -141,13 +322,31 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
         agent_dispatch_starts.jsonl native_agent_bindings.jsonl; do
       path="$(session_file "${artifact}")"
       if [[ -f "${path}" ]]; then
-        cp "${path}" "${snapshot_dir}/${artifact}.file" || rc=1
+        snapshot_temp="${snapshot_dir}/${artifact}.file.tmp"
+        if [[ "${OMC_TEST_NATIVE_BIND_SNAPSHOT_PARTIAL_FAULT:-}" \
+              == "${artifact}" ]]; then
+          printf '%s' 'partial-snapshot-fault' >"${snapshot_temp}" \
+            2>/dev/null || true
+          rc=1
+        elif ! cp "${path}" "${snapshot_temp}" \
+            || ! mv "${snapshot_temp}" \
+              "${snapshot_dir}/${artifact}.file"; then
+          rc=1
+        fi
+        if [[ -e "${snapshot_temp}" || -L "${snapshot_temp}" ]]; then
+          rm -f "${snapshot_temp}" 2>/dev/null || snapshot_cleanup_rc=1
+        fi
       elif [[ ! -e "${path}" && ! -L "${path}" ]]; then
         : >"${snapshot_dir}/${artifact}.absent" || rc=1
       else
         rc=1
       fi
     done
+    # A failed staging temp must never be renamed to the inert prefix: its
+    # presence means capture did not reach a rollback-safe snapshot shape.
+    # Retain the active bind journal so exact reset remains the only cleanup.
+    [[ "${snapshot_cleanup_rc}" -eq 0 ]] || return 1
+    _native_bind_test_boundary "after-snapshot"
 
     if [[ "${rc}" -eq 0 ]]; then
       temp="$(mktemp "${pending_file}.XXXXXX")" || rc=1
@@ -171,6 +370,8 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
       [[ "${replaced}" -eq 1 ]] || rc=1
       if [[ "${rc}" -eq 0 ]]; then
         mv -f "${temp}" "${pending_file}" || rc=1
+        [[ "${rc}" -ne 0 ]] \
+          || _native_bind_test_boundary "after-pending-publish"
       else
         rm -f "${temp}"
       fi
@@ -185,10 +386,13 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
           [[ -n "${line}" ]] || continue
           if [[ "${start_replaced}" -eq 0 ]] \
               && jq -e --arg type "${native_agent_type}" \
-                --arg id "${selected_id}" --argjson ts "${selected_ts}" \
+                --arg id "${selected_id}" \
+                --arg lifecycle "${selected_lifecycle}" \
+                --argjson ts "${selected_ts}" \
                 --argjson cycle "${selected_cycle}" '
                   (.agent_type // "") == $type
                   and (.review_dispatch_id // "") == $id
+                  and (.lifecycle_dispatch_id // "") == $lifecycle
                   and (.ts // -1) == $ts
                   and (.objective_cycle_id // 0) == $cycle
                   and (.native_agent_id // "") == ""
@@ -213,10 +417,12 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
         fi
       fi
     fi
+    [[ "${rc}" -ne 0 ]] || _native_bind_test_boundary "after-start-publish"
     if [[ "${rc}" -eq 0 ]]; then
       _write_state_batch_unlocked \
         "native_agent_id_tracking_version" "1" || rc=1
     fi
+    [[ "${rc}" -ne 0 ]] || _native_bind_test_boundary "after-state-publish"
 
     # The registry row is the durable commit marker. Consumers require it in
     # addition to the bound ledger row, so a SIGKILL between the pending/start
@@ -227,10 +433,12 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
       binding_entry="$(jq -nc --arg id "${native_agent_id}" \
         --arg type "${native_agent_type}" \
         --arg review_dispatch_id "${selected_id}" \
+        --arg lifecycle_dispatch_id "${selected_lifecycle}" \
         --argjson objective_cycle_id "${selected_cycle}" \
         --argjson ts "$(now_epoch)" '
           {native_agent_id:$id,agent_type:$type,
            review_dispatch_id:$review_dispatch_id,
+           lifecycle_dispatch_id:$lifecycle_dispatch_id,
            objective_cycle_id:$objective_cycle_id,ts:$ts}
         ')" || rc=1
       binding_source="${bindings_file}"
@@ -268,6 +476,7 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
         rm -f "${temp:-}"
       fi
     fi
+    [[ "${rc}" -ne 0 ]] || _native_bind_test_boundary "after-registry-commit"
 
     if [[ "${rc}" -ne 0 ]]; then
       for artifact in session_state.json pending_agents.jsonl \
@@ -282,9 +491,18 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
         fi
       done
     fi
-    rm -f "${snapshot_dir}"/* 2>/dev/null || true
-    rmdir "${snapshot_dir}" 2>/dev/null || true
     [[ "${restore_rc}" -eq 0 ]] || return 1
+    settled_dir="$(_settle_native_bind_snapshot_unlocked \
+      "${snapshot_dir}" 2>/dev/null || true)"
+    if [[ -z "${settled_dir}" ]]; then
+      # A committed bind or a fully compensated failure is no longer mutable,
+      # but retaining the active-prefix journal is the only safe signal when
+      # its atomic retirement failed. The universal fence then requires the
+      # exact lifecycle reset instead of guessing whether Claude launched.
+      return 1
+    fi
+    _native_bind_test_boundary "after-settled-rename"
+    _cleanup_native_bind_settled_unlocked || true
     return "${rc}"
   }
 
@@ -295,6 +513,7 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
     local pending_file bindings_file
     pending_file="$(session_file "pending_agents.jsonl")"
     bindings_file="$(session_file "native_agent_bindings.jsonl")"
+    _validate_dispatch_authority_ledgers_unlocked || return 1
     _native_start_candidate_count=0
     [[ ! -L "${pending_file}" ]] \
       && { [[ ! -e "${pending_file}" ]] || [[ -f "${pending_file}" ]]; } \
@@ -334,6 +553,7 @@ if [[ "${RECORD_PENDING_MODE}" == "start" ]]; then
   fi
 
   _arm_native_agent_tracking_unlocked() {
+    _validate_dispatch_authority_ledgers_unlocked || return 1
     _write_state_batch_unlocked "native_agent_id_tracking_version" "1"
   }
   if ! with_state_lock _arm_native_agent_tracking_unlocked; then
@@ -357,6 +577,14 @@ fi
 subagent_type="$(json_get '.tool_input.subagent_type')"
 if [[ -z "${subagent_type}" ]]; then
   subagent_type="general-purpose"
+fi
+if [[ ! "${subagent_type}" =~ ^[A-Za-z0-9_.:-]{1,128}$ ]]; then
+  jq -nc --arg reason \
+    "[Dispatch causality] The requested Agent type has an invalid identity shape and cannot be journaled safely. Use the exact registered subagent_type name." '{
+      hookSpecificOutput:{hookEventName:"PreToolUse",
+        permissionDecision:"deny",permissionDecisionReason:$reason}
+    }'
+  exit 0
 fi
 
 description="$(json_get '.tool_input.description')"
@@ -524,30 +752,35 @@ _is_advisory_specialist() {
 }
 
 _is_gate_reviewer() {
-  local _type="${1##*:}"
-  case "${_type}" in
-    quality-reviewer|code-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer) return 0 ;;
+  case "$1" in
+    quality-reviewer|superpowers:code-reviewer|feature-dev:code-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 _is_planner_role() {
-  case "${1##*:}" in
+  case "$1" in
     quality-planner|prometheus) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 _is_stateful_completion_role() {
-  _is_gate_reviewer "$1" || _is_planner_role "$1"
+  omc_dedicated_publication_kind "$1" >/dev/null 2>&1
 }
 
 # Both bundled planners publish the same current_plan.md and plan state. Treat
-# them as one causal slot; reviewer roles remain isolated by their short name.
+# them as one causal slot. The two configured third-party code reviewers share
+# the standard-review slot; every other configured reviewer keeps its exact
+# identity. Never collapse an arbitrary namespace suffix into one of these
+# stateful slots: a custom:quality-reviewer row has no dedicated publisher and
+# must not deny or taint the real quality-reviewer lifecycle.
 _stateful_identity_key() {
-  local _type="${1##*:}"
+  local _type="$1"
   case "${_type}" in
     quality-planner|prometheus) printf 'planner' ;;
+    superpowers:code-reviewer|feature-dev:code-reviewer) \
+      printf 'code-reviewer' ;;
     *) printf '%s' "${_type}" ;;
   esac
 }
@@ -630,6 +863,10 @@ _validate_dispatch_registry_artifacts_unlocked() {
     [[ ! -e "${file}" ]] && continue
     [[ -f "${file}" && -r "${file}" && ! -L "${file}" ]] || return 1
   done
+  # These three ledgers jointly own dispatch/rebind/native identity. Validate
+  # their complete raw bytes while the state lock is held, immediately before
+  # any Bash read loop can normalize NUL or any mutation can publish a row.
+  _validate_dispatch_authority_ledgers_unlocked
 }
 
 _backfill_abandoned_dispatch_taints_unlocked() {
@@ -740,6 +977,8 @@ _set_review_rebind_suggestion_unlocked() {
 _prepare_abandoned_identity_rebind_unlocked() {
   local pending_file line this_type now claim_id claim_ts claim_complete
   local has_abandoned=0 has_stale_claim=0 has_fresh_claim=0 temp updated
+  local stale_replaced=0 stale_lines_written=0
+  local stale_fault="${OMC_TEST_PENDING_STALE_REWRITE_FAULT:-}"
   local abandonment_reason
   pending_file="$(session_file "pending_agents.jsonl")"
   local _taint_lookup_rc=0
@@ -808,7 +1047,8 @@ _prepare_abandoned_identity_rebind_unlocked() {
   fi
 
   if [[ "${has_stale_claim}" -eq 1 ]]; then
-    temp="$(mktemp "${pending_file}.XXXXXX")"
+    [[ "${stale_fault}" != "mktemp" ]] || return 1
+    temp="$(mktemp "${pending_file}.XXXXXX")" || return 1
     while IFS= read -r line || [[ -n "${line}" ]]; do
       [[ -n "${line}" ]] || continue
       this_type="$(jq -r '.agent_type // empty' <<<"${line}" 2>/dev/null || true)"
@@ -825,19 +1065,37 @@ _prepare_abandoned_identity_rebind_unlocked() {
         abandonment_reason="expired-completion-claim"
         [[ "${claim_complete}" == "true" ]] \
           && abandonment_reason="expired-completion-effects-complete"
-        updated="$(jq -c --argjson now "${now}" \
-          --arg abandonment_reason "${abandonment_reason}" '
-          . + {
-            review_dispatch_abandoned:true,
-            review_dispatch_abandonment_reason:$abandonment_reason,
-            review_dispatch_abandoned_ts:$now
-          }
-        ' <<<"${line}" 2>/dev/null || true)"
-        [[ -n "${updated}" ]] && line="${updated}"
+        if [[ "${stale_fault}" == "jq" ]] \
+            || ! updated="$(jq -ce --argjson now "${now}" \
+              --arg abandonment_reason "${abandonment_reason}" '
+              . + {
+                review_dispatch_abandoned:true,
+                review_dispatch_abandonment_reason:$abandonment_reason,
+                review_dispatch_abandoned_ts:$now
+              }
+            ' <<<"${line}" 2>/dev/null)"; then
+          rm -f -- "${temp}"
+          return 1
+        fi
+        line="${updated}"
+        stale_replaced=$((stale_replaced + 1))
       fi
-      printf '%s\n' "${line}" >>"${temp}"
+      if ! printf '%s\n' "${line}" >>"${temp}"; then
+        rm -f -- "${temp}"
+        return 1
+      fi
+      stale_lines_written=$((stale_lines_written + 1))
+      if [[ "${stale_fault}" == "write" \
+          && "${stale_lines_written}" -eq 1 ]]; then
+        rm -f -- "${temp}"
+        return 1
+      fi
     done <"${pending_file}"
-    mv -f "${temp}" "${pending_file}"
+    if [[ "${stale_replaced}" -lt 1 || "${stale_fault}" == "publish" ]] \
+        || ! mv -f -- "${temp}" "${pending_file}"; then
+      rm -f -- "${temp}"
+      return 1
+    fi
   fi
 }
 
@@ -1685,10 +1943,6 @@ _append_pending() {
     return 0
   fi
   _validate_dispatch_registry_artifacts_unlocked || return 1
-  # Finish any cleanup transaction whose durable ignored outcome was committed
-  # before its producer died. Admission must see the converged ledgers, not
-  # deny a mandatory replacement on a row already retired in durable intent.
-  omc_reconcile_all_ignored_completion_cleanups_unlocked || return 1
   _backfill_abandoned_dispatch_taints_unlocked || return 1
   # Once an identity has ever been abandoned in this session, an arbitrarily
   # late no-ID result remains possible even after bounded tombstones rotate.
@@ -1718,20 +1972,20 @@ _append_pending() {
     # authorization mutates a legacy selection binding or spends a verifier
     # slot. A confirmed replacement supersedes the prior audit attempt, then
     # authorization evaluates only the one live logical dispatch.
-    _prepare_council_identity_rebind_unlocked
+    _prepare_council_identity_rebind_unlocked || return 1
     if [[ "${_dispatch_identity_denied}" -eq 1 ]]; then
       return 0
     fi
-    _authorize_council_dispatch_unlocked
+    _authorize_council_dispatch_unlocked || return 1
     if [[ "${_council_coverage_denied}" -eq 1 ]]; then
       return 0
     fi
-    _apply_council_identity_rebind_unlocked
+    _apply_council_identity_rebind_unlocked || return 1
   else
     # Council uses its own prepare -> authorize -> apply transaction below;
     # generic recovery must never mutate a Council row before wrong-phase or
     # unlisted authorization has had a chance to deny without side effects.
-    _prepare_abandoned_identity_rebind_unlocked
+    _prepare_abandoned_identity_rebind_unlocked || return 1
     if [[ "${_dispatch_identity_denied}" -eq 1 ]]; then
       return 0
     fi
@@ -1741,7 +1995,7 @@ _append_pending() {
   # review-batch work is never duplicated. Stale rows require explicit recovery;
   # the preparation helpers mark the old row abandoned before appending the
   # retry, all under this same session lock.
-  _prepare_frozen_batch_dispatch_unlocked
+  _prepare_frozen_batch_dispatch_unlocked || return 1
   if [[ "${_duplicate_frozen_batch_role}" -eq 1 ]]; then
     return 0
   fi
@@ -1756,7 +2010,7 @@ _append_pending() {
   # Excellence evidence is meaningful only for the exact Definition revision
   # it was asked to judge. Bind that revision at PreToolUse under the same lock
   # as the dispatch ledger, before paying for the reviewer call.
-  if [[ "${subagent_type##*:}" == "excellence-reviewer" \
+  if [[ "${subagent_type}" == "excellence-reviewer" \
       && "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]]; then
     if ! _omc_load_quality_contract 2>/dev/null \
         || ! _quality_contract_json="$(quality_contract_validate_current 2>/dev/null)"; then
@@ -1886,7 +2140,7 @@ _append_pending() {
          council_objective_prompt_ts:$council_objective_prompt_ts,
          council_objective_prompt_revision:$council_objective_prompt_revision,
          council_ledger_generation:$council_ledger_generation
-       } end')"
+       } end')" || return 1
   if [[ -n "${review_rebind_id}" ]]; then
     _taint_dispatch_identity_unlocked "${subagent_type}" || return 1
     _register_dispatch_rebind_id_unlocked \
@@ -1938,14 +2192,22 @@ _append_pending() {
   local _count
   _count="$(read_state "subagent_dispatch_count")"
   _count="${_count:-0}"
-  write_state "subagent_dispatch_count" "$((_count + 1))"
+  _omc_canonical_uint_in_range \
+    "${_count}" 0 999999999999999998 || return 1
+  write_state "subagent_dispatch_count" "$((_count + 1))" || return 1
 
   if _is_advisory_specialist "${subagent_type}"; then
     local _adv_count
     _adv_count="$(read_state "advisory_specialist_dispatch_count")"
     _adv_count="${_adv_count:-0}"
-    write_state "advisory_specialist_dispatch_count" "$((_adv_count + 1))"
+    _omc_canonical_uint_in_range \
+      "${_adv_count}" 0 999999999999999998 || return 1
+    write_state "advisory_specialist_dispatch_count" \
+      "$((_adv_count + 1))" || return 1
   fi
+  # Deterministic regression boundary: exercise whole-snapshot compensation
+  # only after every admission-owned artifact mutation has published.
+  [[ "${OMC_TEST_DISPATCH_BODY_FAULT:-}" != "after-publish" ]] || return 1
 }
 _duplicate_gate_reviewer=0
 _duplicate_frozen_batch_role=0
@@ -1965,6 +2227,7 @@ _council_current_attempt_rebind_ready=0
 _pending_live_cap_denied=0
 _quality_contract_dispatch_denied=0
 _dispatch_interrupted_journal=0
+_dispatch_denial_snapshot_dir=""
 council_selection_agent=""
 council_objective_ts=0
 council_prompt_revision=0
@@ -2040,48 +2303,104 @@ _restore_dispatch_artifacts_unlocked() {
 }
 
 _cleanup_dispatch_snapshot() {
-  local dir="$1"
-  rm -f "${dir}/.ready" 2>/dev/null || true
-  rm -f "${dir}"/* 2>/dev/null || true
-  rmdir "${dir}" 2>/dev/null || true
+  local dir="$1" node base
+  [[ -d "${dir}" && ! -L "${dir}" ]] || return 1
+  for node in "${dir}"/* "${dir}"/.[!.]* "${dir}"/..?*; do
+    [[ -e "${node}" || -L "${node}" ]] || continue
+    base="${node##*/}"
+    case "${base}" in
+      .ready|attempted-agent-type|attempted-agent-type.tmp|\
+      session_state.json.file|session_state.json.absent|session_state.json.other|\
+      pending_agents.jsonl.file|pending_agents.jsonl.absent|pending_agents.jsonl.other|\
+      agent_dispatch_starts.jsonl.file|agent_dispatch_starts.jsonl.absent|agent_dispatch_starts.jsonl.other|\
+      council_dispatches.jsonl.file|council_dispatches.jsonl.absent|council_dispatches.jsonl.other|\
+      council_coverage.json.file|council_coverage.json.absent|council_coverage.json.other|\
+      dispatch_tainted_identities.log.file|dispatch_tainted_identities.log.absent|dispatch_tainted_identities.log.other|\
+      dispatch_rebind_ids.log.file|dispatch_rebind_ids.log.absent|dispatch_rebind_ids.log.other)
+        [[ -f "${node}" && ! -L "${node}" ]] || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  rm -f "${dir}"/* "${dir}"/.[!.]* "${dir}"/..?* 2>/dev/null || return 1
+  rmdir "${dir}"
 }
 
-_disarm_dispatch_snapshot() {
-  rm -f "$1/.ready"
+_settle_dispatch_snapshot_unlocked() {
+  local dir="$1" base suffix settled
+  base="${dir##*/}"
+  [[ "${base}" =~ ^\.dispatch-txn\.([A-Za-z0-9]+)$ ]] || return 1
+  suffix="${BASH_REMATCH[1]}"
+  settled="$(session_file ".dispatch-settled.${suffix}")"
+  [[ ! -e "${settled}" && ! -L "${settled}" ]] || return 1
+  mv "${dir}" "${settled}" || return 1
+  printf '%s' "${settled}"
+}
+
+_cleanup_dispatch_settled_unlocked() {
+  local settled
+  for settled in "$(session_file ".dispatch-settled.")"*; do
+    [[ -e "${settled}" || -L "${settled}" ]] || continue
+    [[ -d "${settled}" && ! -L "${settled}" ]] || continue
+    _cleanup_dispatch_snapshot "${settled}" 2>/dev/null || true
+  done
 }
 
 _recover_dispatch_snapshots_unlocked() {
   local stale rc=0
+  _cleanup_dispatch_settled_unlocked || true
   for stale in "$(session_file ".dispatch-txn.")"*; do
-    [[ -d "${stale}" ]] || continue
-    if [[ -f "${stale}/.ready" ]]; then
-      # Never replay an old whole-file snapshot after another hook may have
-      # acquired the reclaimed lock; that would erase unrelated revisions.
-      # Fail closed until /ulw-off taints identities and clears the journal.
-      _dispatch_interrupted_journal=1
-      log_anomaly "record-pending-agent" \
-        "interrupted dispatch transaction ${stale##*/}; refusing unsafe rollback"
-      rc=1
-      continue
-    fi
-    _cleanup_dispatch_snapshot "${stale}"
+    [[ -e "${stale}" || -L "${stale}" ]] || continue
+    # Directory creation itself is durable admission intent. Claude Code may
+    # proceed after a killed/nonzero PreTool hook even when `.ready` was never
+    # reached, so no retained transaction node is safe to clean as "unarmed".
+    _dispatch_interrupted_journal=1
+    log_anomaly "record-pending-agent" \
+      "interrupted dispatch transaction ${stale##*/}; refusing unsafe rollback"
+    rc=1
   done
   return "${rc}"
 }
 
 _append_pending_transaction_unlocked() {
-  local snapshot_dir body_rc=0 denied=0 restore_rc=0
+  local snapshot_dir settled_dir="" body_rc=0 denied=0 restore_rc=0
   _recover_dispatch_snapshots_unlocked || return 1
+  _pending_authority_rows_shell_safe \
+    "$(session_file "pending_agents.jsonl")" || return 1
+  # Cleanup recovery is independently committed roll-forward work. Converge it
+  # before capturing the compensating dispatch snapshot, or a later admission
+  # denial would restore causal rows that the durable ignored outcome already
+  # retired.
+  _validate_dispatch_registry_artifacts_unlocked || return 1
+  omc_reconcile_all_ignored_completion_cleanups_unlocked || return 1
+  _pending_authority_rows_shell_safe \
+    "$(session_file "pending_agents.jsonl")" || return 1
   snapshot_dir="$(mktemp -d "$(session_file ".dispatch-txn.XXXXXX")")" \
     || return 1
-  if ! _snapshot_dispatch_artifacts_unlocked "${snapshot_dir}"; then
-    _cleanup_dispatch_snapshot "${snapshot_dir}" || true
+  if [[ "${OMC_TEST_DISPATCH_SETUP_FAULT:-}" == "intent-write" ]] \
+      || ! printf '%s\n' "${subagent_type}" \
+        >"${snapshot_dir}/attempted-agent-type.tmp" \
+      || ! mv "${snapshot_dir}/attempted-agent-type.tmp" \
+        "${snapshot_dir}/attempted-agent-type"; then
+    _dispatch_denial_snapshot_dir="${snapshot_dir}"
     return 1
   fi
-  : >"${snapshot_dir}/.ready" || {
-    _cleanup_dispatch_snapshot "${snapshot_dir}" || true
+  if [[ "${OMC_TEST_DISPATCH_KILL_AT:-}" == "after-intent" ]]; then
+    kill -9 "$$"
+  fi
+  if [[ "${OMC_TEST_DISPATCH_SETUP_FAULT:-}" == "snapshot-copy" ]] \
+      || ! _snapshot_dispatch_artifacts_unlocked "${snapshot_dir}"; then
+    _dispatch_denial_snapshot_dir="${snapshot_dir}"
     return 1
-  }
+  fi
+  if [[ "${OMC_TEST_DISPATCH_SETUP_FAULT:-}" == "ready-write" ]] \
+      || ! : >"${snapshot_dir}/.ready"; then
+    _dispatch_denial_snapshot_dir="${snapshot_dir}"
+    return 1
+  fi
+  if [[ "${OMC_TEST_DISPATCH_KILL_AT:-}" == "after-ready" ]]; then
+    kill -9 "$$"
+  fi
   _append_pending || body_rc=$?
   if [[ "${_duplicate_gate_reviewer}" -eq 1 \
       || "${_duplicate_frozen_batch_role}" -eq 1 \
@@ -2092,24 +2411,97 @@ _append_pending_transaction_unlocked() {
     denied=1
   fi
   if [[ "${body_rc}" -ne 0 || "${denied}" -eq 1 ]]; then
-    _restore_dispatch_artifacts_unlocked "${snapshot_dir}" || restore_rc=$?
-  fi
-  if ! _disarm_dispatch_snapshot "${snapshot_dir}"; then
-    # If a successful authorization cannot disarm its rollback journal, deny
-    # the tool and compensate while the same lock still excludes peers.
-    if [[ "${body_rc}" -eq 0 && "${denied}" -eq 0 ]]; then
+    if [[ "${OMC_TEST_DISPATCH_RESTORE_FAULT:-0}" == "1" ]]; then
+      restore_rc=1
+    else
       _restore_dispatch_artifacts_unlocked "${snapshot_dir}" || restore_rc=$?
-      body_rc=1
     fi
-    _cleanup_dispatch_snapshot "${snapshot_dir}"
+    if [[ "${restore_rc}" -ne 0 ]]; then
+      # The pre-dispatch snapshot is the only remaining evidence for a partial
+      # compensation. Never disarm/delete it after a restore failure: a later
+      # dispatch must fail closed until the managed /ulw-off reset taints live
+      # identities and removes the retained journal.
+      _dispatch_interrupted_journal=1
+      return "${restore_rc}"
+    fi
   fi
-  _cleanup_dispatch_snapshot "${snapshot_dir}"
   [[ "${restore_rc}" -eq 0 ]] || return "${restore_rc}"
+  if [[ "${denied}" -eq 1 || "${body_rc}" -ne 0 ]]; then
+    # A compensated attempt is not inert until the complete deny response has
+    # been written to stdout. Claude Code may proceed after a killed/nonzero
+    # PreTool hook; retiring here would let that untracked launch bind an older
+    # same-role pending row. The caller emits the deny bytes first, then
+    # atomically retires this exact snapshot under the session lock.
+    _dispatch_denial_snapshot_dir="${snapshot_dir}"
+    return "${body_rc}"
+  fi
+  settled_dir="$(_settle_dispatch_snapshot_unlocked \
+    "${snapshot_dir}" 2>/dev/null || true)"
+  if [[ -z "${settled_dir}" ]]; then
+    _dispatch_interrupted_journal=1
+    return 1
+  fi
+  if [[ "${OMC_TEST_DISPATCH_KILL_AT:-}" == "after-settled" ]]; then
+    kill -9 "$$"
+  fi
+  _cleanup_dispatch_snapshot "${settled_dir}" 2>/dev/null || true
   [[ "${body_rc}" -eq 0 ]] || return "${body_rc}"
   return 0
 }
 
 with_state_lock _append_pending_transaction_unlocked || _dispatch_state_rc=$?
+unset OMC_PUBLICATION_REBIND_CLAIM_ID
+
+_retire_emitted_dispatch_denial_unlocked() {
+  local snapshot_dir="${_dispatch_denial_snapshot_dir:-}"
+  local session_dir settled_dir=""
+  session_dir="${STATE_ROOT}/${SESSION_ID}"
+  [[ -n "${snapshot_dir}" \
+      && "${snapshot_dir%/*}" == "${session_dir}" \
+      && "${snapshot_dir##*/}" =~ ^\.dispatch-txn\.[A-Za-z0-9]+$ \
+      && -d "${snapshot_dir}" && ! -L "${snapshot_dir}" ]] || return 1
+  settled_dir="$(_settle_dispatch_snapshot_unlocked \
+    "${snapshot_dir}" 2>/dev/null || true)"
+  [[ -n "${settled_dir}" ]] || return 1
+  if [[ "${OMC_TEST_DISPATCH_KILL_AT:-}" == "after-settled" ]]; then
+    kill -9 "$$"
+  fi
+  _cleanup_dispatch_snapshot "${settled_dir}" 2>/dev/null || true
+  _dispatch_denial_snapshot_dir=""
+}
+
+_finish_dispatch_denial_output() {
+  if [[ -n "${_dispatch_denial_snapshot_dir:-}" ]]; then
+    # At this point the complete jq response has been written to the hook pipe.
+    # A death before retirement leaves an active fence; a death after the atomic
+    # rename still delivers the deny response and leaves only inert cleanup.
+    if [[ "${OMC_TEST_DISPATCH_KILL_AT:-}" == "after-deny-output" ]]; then
+      kill -9 "$$"
+    fi
+    with_state_lock_dispatch_denial_retire \
+      "${_dispatch_denial_snapshot_dir}" \
+      _retire_emitted_dispatch_denial_unlocked || return 1
+  fi
+  # Denial telemetry is not causal authority. Publish it only after the active
+  # rollback fence has retired; attempts made before this point are correctly
+  # rejected by the universal mutation barrier and silently lose the event.
+  if [[ -n "${_dispatch_denial_gate_event_name:-}" ]]; then
+    record_gate_event "${_dispatch_denial_gate_event_name}" \
+      "${_dispatch_denial_gate_event_status}" \
+      "${_dispatch_denial_gate_event_details[@]}" 2>/dev/null || true
+  fi
+}
+
+_queue_dispatch_denial_gate_event() {
+  _dispatch_denial_gate_event_name="$1"
+  _dispatch_denial_gate_event_status="$2"
+  shift 2
+  _dispatch_denial_gate_event_details=("$@")
+}
+
+_dispatch_denial_gate_event_name=""
+_dispatch_denial_gate_event_status=""
+_dispatch_denial_gate_event_details=()
 
 if [[ "${_dispatch_state_rc}" -ne 0 ]]; then
   if [[ "${_dispatch_interrupted_journal}" -eq 1 ]]; then
@@ -2123,9 +2515,9 @@ if [[ "${_dispatch_state_rc}" -ne 0 ]]; then
     exit 0
   fi
   if _is_gate_reviewer "${subagent_type}"; then
-    record_gate_event "reviewer-dispatch-causality" "block" \
+    _queue_dispatch_denial_gate_event "reviewer-dispatch-causality" "block" \
       "agent=${subagent_type}" "reason=start-snapshot-write-failed" \
-      "rc=${_dispatch_state_rc}" 2>/dev/null || true
+      "rc=${_dispatch_state_rc}"
     jq -nc --arg reason "[Reviewer causality gate] The start generation for ${subagent_type} could not be recorded safely. Do not launch an untracked review; retry this dispatch after the active state write finishes." '{
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
@@ -2134,9 +2526,9 @@ if [[ "${_dispatch_state_rc}" -ne 0 ]]; then
       }
     }'
   else
-    record_gate_event "subagent-dispatch-causality" "block" \
+    _queue_dispatch_denial_gate_event "subagent-dispatch-causality" "block" \
       "agent=${subagent_type}" "reason=pending-snapshot-write-failed" \
-      "rc=${_dispatch_state_rc}" 2>/dev/null || true
+      "rc=${_dispatch_state_rc}"
     jq -nc --arg reason "[Dispatch causality] The pending snapshot for ${subagent_type} could not be recorded safely. Do not launch an untracked agent; retry this dispatch after the active state write finishes." '{
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
@@ -2145,13 +2537,14 @@ if [[ "${_dispatch_state_rc}" -ne 0 ]]; then
       }
     }'
   fi
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 
 if [[ "${_pending_live_cap_denied}" -eq 1 ]]; then
-  record_gate_event "subagent-dispatch-causality" "block" \
+  _queue_dispatch_denial_gate_event "subagent-dispatch-causality" "block" \
     "agent=${subagent_type}" "reason=live-pending-cap-reached" \
-    "cap=${PENDING_AGENT_LIVE_CAP}" 2>/dev/null || true
+    "cap=${PENDING_AGENT_LIVE_CAP}"
   jq -nc --arg reason "[Dispatch capacity] ${PENDING_AGENT_LIVE_CAP} live specialist calls are already tracked for this session. Wait for at least one return before launching ${subagent_type}; abandoned suppression tombstones do not consume this live cap. This prevents a paid in-flight result from being evicted and discarded." '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -2159,12 +2552,14 @@ if [[ "${_pending_live_cap_denied}" -eq 1 ]]; then
       permissionDecisionReason: $reason
     }
   }'
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 
 if [[ "${_quality_contract_dispatch_denied}" -eq 1 ]]; then
-  record_gate_event "definition-of-excellent/reviewer-dispatch" "block" \
-    "agent=${subagent_type}" "reason=missing-or-stale-contract" 2>/dev/null || true
+  _queue_dispatch_denial_gate_event \
+    "definition-of-excellent/reviewer-dispatch" "block" \
+    "agent=${subagent_type}" "reason=missing-or-stale-contract"
   jq -nc --arg reason "[Definition of Excellent · reviewer dispatch] ${subagent_type} cannot be launched until a current frozen quality contract exists for this objective and plan revision. Dispatch quality-planner or prometheus first; after its PLAN_READY contract is recorded, retry this reviewer. This prevents a review launched against one bar from certifying another." '{
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
@@ -2172,11 +2567,12 @@ if [[ "${_quality_contract_dispatch_denied}" -eq 1 ]]; then
       permissionDecisionReason: $reason
     }
   }'
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 
 if [[ "${_council_coverage_denied}" -eq 1 ]]; then
-  record_gate_event "council-coverage" "block" \
+  _queue_dispatch_denial_gate_event "council-coverage" "block" \
     "agent=${subagent_type}" "phase=${council_phase}" "reason=${_council_coverage_reason}"
   jq -nc --arg reason "[Council coverage gate] ${subagent_type} is tagged ${council_phase}, but the current lifecycle does not authorize that exact dispatch (${_council_coverage_reason}). Primary agents require the current generation-1 selection; gap-fill agents require the reconciled gap selection; verification requires a current final-reconciled ledger, a unique verifier identity, and one of at most three verification slots." '{
     hookSpecificOutput: {
@@ -2185,6 +2581,7 @@ if [[ "${_council_coverage_denied}" -eq 1 ]]; then
       permissionDecisionReason: $reason
     }
   }'
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 
@@ -2216,10 +2613,10 @@ if [[ "${_dispatch_identity_denied}" -eq 1 ]]; then
     _dispatch_identity_message="[Council provenance gate] ${subagent_type} already has an active dispatch whose completion would be ambiguous with this Council identity. Wait for it to return before dispatching the same exact agent identity again; other specialists may remain parallel."
   fi
   if [[ "${_dispatch_active_exact_duplicate}" -eq 1 ]]; then
-    record_gate_event "subagent-dispatch-causality" "block" \
+    _queue_dispatch_denial_gate_event "subagent-dispatch-causality" "block" \
       "agent=${subagent_type}" "reason=${_dispatch_identity_reason}"
   else
-    record_gate_event "council-provenance" "block" \
+    _queue_dispatch_denial_gate_event "council-provenance" "block" \
       "agent=${subagent_type}" "reason=${_dispatch_identity_reason}"
   fi
   jq -nc --arg reason "${_dispatch_identity_message}" '{
@@ -2229,6 +2626,7 @@ if [[ "${_dispatch_identity_denied}" -eq 1 ]]; then
       permissionDecisionReason: $reason
     }
   }'
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 
@@ -2246,7 +2644,7 @@ if [[ "${_duplicate_frozen_batch_role}" -eq 1 ]]; then
     _batch_block_reason="duplicate-in-flight-role"
     _batch_reason="[Review batch causality] ${subagent_type} is already in this frozen review batch. Wait for that exact role to return; other marked batch roles may remain parallel. Only if you have confirmed that call was killed or interrupted, retry with the exact description token [review-rebind:${_review_rebind_suggested_id}] and tell the replacement to emit REVIEW_DISPATCH_ID: ${_review_rebind_suggested_id} immediately before its final VERDICT line. The binding safely rejects any late old return."
   fi
-  record_gate_event "review-batch-causality" "block" \
+  _queue_dispatch_denial_gate_event "review-batch-causality" "block" \
     "agent=${subagent_type}" "reason=${_batch_block_reason}"
   jq -nc --arg reason "${_batch_reason}" '{
     hookSpecificOutput: {
@@ -2255,6 +2653,7 @@ if [[ "${_duplicate_frozen_batch_role}" -eq 1 ]]; then
       permissionDecisionReason: $reason
     }
   }'
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 
@@ -2272,7 +2671,7 @@ if [[ "${_duplicate_gate_reviewer}" -eq 1 ]]; then
     _reviewer_block_reason="duplicate-in-flight-role"
     _reviewer_reason="[Reviewer causality gate] ${subagent_type} is already in flight. Wait for the active review to finish; different reviewer identities may still run in parallel. Only if you have confirmed this call was killed or interrupted, retry with [review-rebind:${_review_rebind_suggested_id}]. The platform agent_id binds the replacement and rejects a late old return; require the echoed REVIEW_DISPATCH_ID only for an older in-flight client."
   fi
-  record_gate_event "reviewer-dispatch-causality" "block" \
+  _queue_dispatch_denial_gate_event "reviewer-dispatch-causality" "block" \
     "agent=${subagent_type}" "reason=${_reviewer_block_reason}"
   jq -nc --arg reason "${_reviewer_reason}" '{
     hookSpecificOutput: {
@@ -2281,6 +2680,7 @@ if [[ "${_duplicate_gate_reviewer}" -eq 1 ]]; then
       permissionDecisionReason: $reason
     }
   }'
+  _finish_dispatch_denial_output || exit 1
   exit 0
 fi
 

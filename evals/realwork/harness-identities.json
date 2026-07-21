@@ -1,8 +1,57 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "campaign_id": "definition-of-excellent-v1",
   "repository": {
     "slug": "x0x888/oh-my-claude"
+  },
+  "judge": {
+    "binary_name": "claude",
+    "binary_sha256": "09ecba2ab2df9b6ee5b0695e26f65dea60fb3b6af3d3542ee09f466838d1e574",
+    "calibration_manifest_sha256": "e23994a88b549a2de3356a6b1babff2a9d0a7371cab772febd97d43c2403071d",
+    "install_location": "user-local-bin",
+    "cli_version": "2.1.212",
+    "model_id": "claude-opus-4-8"
+  },
+  "portfolio": {
+    "candidate_model_id": "claude-opus-4-8",
+    "runs": [
+      {"id":"quality-config-diagnostics-balanced-01","probe_id":"quality-config-diagnostics","model_tier":"balanced","run_index":1,"comparison_seed":"doe-qcd-balanced-01"},
+      {"id":"quality-config-diagnostics-balanced-02","probe_id":"quality-config-diagnostics","model_tier":"balanced","run_index":2,"comparison_seed":"doe-qcd-balanced-02"},
+      {"id":"quality-config-diagnostics-balanced-03","probe_id":"quality-config-diagnostics","model_tier":"balanced","run_index":3,"comparison_seed":"doe-qcd-balanced-03"},
+      {"id":"quality-config-diagnostics-economy-01","probe_id":"quality-config-diagnostics","model_tier":"economy","run_index":1,"comparison_seed":"doe-qcd-economy-01"},
+      {"id":"quality-config-diagnostics-economy-02","probe_id":"quality-config-diagnostics","model_tier":"economy","run_index":2,"comparison_seed":"doe-qcd-economy-02"},
+      {"id":"quality-config-diagnostics-economy-03","probe_id":"quality-config-diagnostics","model_tier":"economy","run_index":3,"comparison_seed":"doe-qcd-economy-03"},
+      {"id":"quality-evidence-brief-balanced-01","probe_id":"quality-evidence-brief","model_tier":"balanced","run_index":1,"comparison_seed":"doe-qeb-balanced-01"},
+      {"id":"quality-evidence-brief-balanced-02","probe_id":"quality-evidence-brief","model_tier":"balanced","run_index":2,"comparison_seed":"doe-qeb-balanced-02"},
+      {"id":"quality-evidence-brief-balanced-03","probe_id":"quality-evidence-brief","model_tier":"balanced","run_index":3,"comparison_seed":"doe-qeb-balanced-03"},
+      {"id":"quality-evidence-brief-economy-01","probe_id":"quality-evidence-brief","model_tier":"economy","run_index":1,"comparison_seed":"doe-qeb-economy-01"},
+      {"id":"quality-evidence-brief-economy-02","probe_id":"quality-evidence-brief","model_tier":"economy","run_index":2,"comparison_seed":"doe-qeb-economy-02"},
+      {"id":"quality-evidence-brief-economy-03","probe_id":"quality-evidence-brief","model_tier":"economy","run_index":3,"comparison_seed":"doe-qeb-economy-03"},
+      {"id":"quality-minimal-change-control-balanced-01","probe_id":"quality-minimal-change-control","model_tier":"balanced","run_index":1,"comparison_seed":"doe-qmc-balanced-01"},
+      {"id":"quality-minimal-change-control-balanced-02","probe_id":"quality-minimal-change-control","model_tier":"balanced","run_index":2,"comparison_seed":"doe-qmc-balanced-02"},
+      {"id":"quality-minimal-change-control-balanced-03","probe_id":"quality-minimal-change-control","model_tier":"balanced","run_index":3,"comparison_seed":"doe-qmc-balanced-03"},
+      {"id":"quality-minimal-change-control-economy-01","probe_id":"quality-minimal-change-control","model_tier":"economy","run_index":1,"comparison_seed":"doe-qmc-economy-01"},
+      {"id":"quality-minimal-change-control-economy-02","probe_id":"quality-minimal-change-control","model_tier":"economy","run_index":2,"comparison_seed":"doe-qmc-economy-02"},
+      {"id":"quality-minimal-change-control-economy-03","probe_id":"quality-minimal-change-control","model_tier":"economy","run_index":3,"comparison_seed":"doe-qmc-economy-03"},
+      {"id":"quality-operations-dashboard-balanced-01","probe_id":"quality-operations-dashboard","model_tier":"balanced","run_index":1,"comparison_seed":"doe-qod-balanced-01"},
+      {"id":"quality-operations-dashboard-balanced-02","probe_id":"quality-operations-dashboard","model_tier":"balanced","run_index":2,"comparison_seed":"doe-qod-balanced-02"},
+      {"id":"quality-operations-dashboard-balanced-03","probe_id":"quality-operations-dashboard","model_tier":"balanced","run_index":3,"comparison_seed":"doe-qod-balanced-03"},
+      {"id":"quality-operations-dashboard-economy-01","probe_id":"quality-operations-dashboard","model_tier":"economy","run_index":1,"comparison_seed":"doe-qod-economy-01"},
+      {"id":"quality-operations-dashboard-economy-02","probe_id":"quality-operations-dashboard","model_tier":"economy","run_index":2,"comparison_seed":"doe-qod-economy-02"},
+      {"id":"quality-operations-dashboard-economy-03","probe_id":"quality-operations-dashboard","model_tier":"economy","run_index":3,"comparison_seed":"doe-qod-economy-03"},
+      {"id":"quality-release-proposal-balanced-01","probe_id":"quality-release-proposal","model_tier":"balanced","run_index":1,"comparison_seed":"doe-qrp-balanced-01"},
+      {"id":"quality-release-proposal-balanced-02","probe_id":"quality-release-proposal","model_tier":"balanced","run_index":2,"comparison_seed":"doe-qrp-balanced-02"},
+      {"id":"quality-release-proposal-balanced-03","probe_id":"quality-release-proposal","model_tier":"balanced","run_index":3,"comparison_seed":"doe-qrp-balanced-03"},
+      {"id":"quality-release-proposal-economy-01","probe_id":"quality-release-proposal","model_tier":"economy","run_index":1,"comparison_seed":"doe-qrp-economy-01"},
+      {"id":"quality-release-proposal-economy-02","probe_id":"quality-release-proposal","model_tier":"economy","run_index":2,"comparison_seed":"doe-qrp-economy-02"},
+      {"id":"quality-release-proposal-economy-03","probe_id":"quality-release-proposal","model_tier":"economy","run_index":3,"comparison_seed":"doe-qrp-economy-03"},
+      {"id":"quality-scenario-model-balanced-01","probe_id":"quality-scenario-model","model_tier":"balanced","run_index":1,"comparison_seed":"doe-qsm-balanced-01"},
+      {"id":"quality-scenario-model-balanced-02","probe_id":"quality-scenario-model","model_tier":"balanced","run_index":2,"comparison_seed":"doe-qsm-balanced-02"},
+      {"id":"quality-scenario-model-balanced-03","probe_id":"quality-scenario-model","model_tier":"balanced","run_index":3,"comparison_seed":"doe-qsm-balanced-03"},
+      {"id":"quality-scenario-model-economy-01","probe_id":"quality-scenario-model","model_tier":"economy","run_index":1,"comparison_seed":"doe-qsm-economy-01"},
+      {"id":"quality-scenario-model-economy-02","probe_id":"quality-scenario-model","model_tier":"economy","run_index":2,"comparison_seed":"doe-qsm-economy-02"},
+      {"id":"quality-scenario-model-economy-03","probe_id":"quality-scenario-model","model_tier":"economy","run_index":3,"comparison_seed":"doe-qsm-economy-03"}
+    ]
   },
   "baseline": {
     "label": "pre-definition-of-excellent",

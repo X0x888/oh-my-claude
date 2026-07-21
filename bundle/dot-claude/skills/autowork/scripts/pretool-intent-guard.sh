@@ -21,6 +21,20 @@ unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 omc_arm_failopen_err_trap "pretool-intent-guard" "(destructive-command/hygiene gate did NOT evaluate this tool call — failed open)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
+# This hook grants one exact reset exception before publication recovery. Keep
+# the complete payload in JSON until it is proven free of decoded NUL bytes;
+# Bash variables would erase those bytes and could turn a near-match session,
+# tool, command, path, or connector action into different valid authority.
+if ! jq -e '
+    type == "object"
+    and all(.. | strings; index("\u0000") == null)
+  ' <<<"${HOOK_JSON}" >/dev/null 2>&1; then
+  jq -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",
+    permissionDecision:"deny",
+    permissionDecisionReason:"[Lifecycle input] The PreTool payload contains a decoded NUL or is not a JSON object, so no reset or mutation authority was trusted."}}'
+  exit 0
+fi
+
 SESSION_ID=""
 tool_name=""
 tool_use_id=""
@@ -51,6 +65,54 @@ done < <(jq -jr '
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
 fi
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+
+# The exact managed command emitted by the bundled /ulw-off skill is the sole
+# tool-level escape from a corrupt fixed publication WAL. It contains no shell
+# compound, redirect, alternate path, or free-form argument. Allow it before
+# recovery so the journal cannot make its own explicit reset unreachable.
+_pig_plan_wal="${STATE_ROOT}/${SESSION_ID}/.plan-txn.active"
+_pig_reviewer_wal="${STATE_ROOT}/${SESSION_ID}/.reviewer-transaction.wal"
+_pig_dispatch_recovery_needed=0
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  _pig_dispatch_recovery_needed=1
+fi
+if [[ "${tool_name}" == "Bash" \
+    && "${command_str}" == \
+      'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"' \
+    && ( -e "${_pig_plan_wal}" || -L "${_pig_plan_wal}" \
+      || -e "${_pig_reviewer_wal}" || -L "${_pig_reviewer_wal}" \
+      || "${_pig_dispatch_recovery_needed}" -eq 1 ) ]]; then
+  log_hook "pretool-intent-guard" \
+    "allowed exact managed /ulw-off command through publication recovery barrier"
+  exit 0
+fi
+
+if [[ "${_pig_dispatch_recovery_needed}" -eq 1 ]]; then
+  log_anomaly "pretool-intent-guard" \
+    "interrupted Agent admission journal; denied ${tool_name}" \
+    2>/dev/null || true
+  jq -nc --arg reason \
+    "[Dispatch recovery] A prior Agent authorization was interrupted mid-transaction, so this tool call was denied before partial pending/start/Council state could be used or advanced. Do not launch, integrate, or certify that specialist result. Invoke the exact bundled /ulw-off command as the explicit reset, then reactivate and dispatch only the role still required. Attempted tool: ${tool_name}." '
+    {hookSpecificOutput:{hookEventName:"PreToolUse",
+      permissionDecision:"deny",permissionDecisionReason:$reason}}
+  '
+  exit 0
+fi
+
+# Settle planner rollback first, then reviewer roll-forward, before this hook
+# writes baselines or permits a workspace mutation. Receipt-bound deferred
+# summaries are converged by the same barrier after their publisher WAL retires.
+if ! omc_recover_active_publication_transactions "${SESSION_ID}"; then
+  log_anomaly "pretool-intent-guard" \
+    "publication recovery failed; denied ${tool_name}" 2>/dev/null || true
+  jq -nc --arg reason \
+    "[Publication recovery] A prior planner/reviewer transaction is still active, invalid, or has an unreconciled receipt-bound summary, so this tool call was denied before newer state/workspace mutation could race it. Resume the exact retained completion to finish recovery; if the journal is corrupt, invoke the exact bundled /ulw-off command as the explicit reset. Attempted tool: ${tool_name}." '
+    {hookSpecificOutput:{hookEventName:"PreToolUse",
+      permissionDecision:"deny",permissionDecisionReason:$reason}}
+  '
+  exit 0
+fi
 
 ensure_session_dir
 
@@ -76,8 +138,6 @@ if [[ "${tool_name}" == "Bash" ]]; then
   record_bash_worktree_baseline \
     "${tool_use_id}" "${tool_cwd}" "${command_str}" "${run_in_background:-false}" || true
 fi
-unset _OMC_HOOK_CALLER_PATH
-
 # Honour the customization kill-switch for the legacy intent/hygiene gates.
 # The Definition-of-Excellent pre-mutation gate is a separate user-selected
 # quality contract and deliberately remains live; otherwise an unrelated
@@ -425,35 +485,434 @@ _definition_tool_attempts_mutation() {
   esac
 }
 
+_definition_lexical_path() {
+  local value="${1:-}" base="${2:-}" part="" result="" index=0
+  local -a parts=() stack=()
+  [[ -n "${value}" && "${value}" != *$'\n'* \
+      && "${value}" != *$'\r'* ]] || return 1
+  case "${value}" in
+    [~]) value="${HOME}" ;;
+    [~]/*) value="${HOME}/${value:2}" ;;
+    '$HOME') value="${HOME}" ;;
+    '$HOME/'*) value="${HOME}/${value#\$HOME/}" ;;
+    '${HOME}') value="${HOME}" ;;
+    '${HOME}/'*) value="${HOME}/${value#\$\{HOME\}/}" ;;
+  esac
+  if [[ "${value}" != /* ]]; then
+    [[ -n "${base}" && "${base}" == /* ]] || return 1
+    value="${base%/}/${value}"
+  fi
+  IFS='/' read -r -a parts <<<"${value}"
+  for part in "${parts[@]}"; do
+    case "${part}" in
+      ''|.) ;;
+      ..)
+        if (( ${#stack[@]} > 0 )); then
+          index=$((${#stack[@]} - 1))
+          unset 'stack[index]'
+        fi
+        ;;
+      *) stack[${#stack[@]}]="${part}" ;;
+    esac
+  done
+  if (( ${#stack[@]} == 0 )); then
+    printf '/'
+    return 0
+  fi
+  for part in "${stack[@]}"; do result="${result}/${part}"; done
+  printf '%s' "${result}"
+}
+
+# Resolve every existing prefix physically, then append the bounded missing
+# suffix lexically. This catches a pre-existing workspace symlink into the
+# session authority directory even when the final ledger file does not exist.
+_definition_physical_path() {
+  local value="${1:-}" base="${2:-}" depth="${3:-0}"
+  local normalized="" probe="" suffix="" parent="" leaf="" target="" physical=""
+  (( depth < 16 )) || return 1
+  normalized="$(_definition_lexical_path "${value}" "${base}")" || return 1
+  probe="${normalized}"
+  while [[ ! -e "${probe}" && ! -L "${probe}" ]]; do
+    [[ "${probe}" != "/" ]] || break
+    leaf="${probe##*/}"
+    suffix="/${leaf}${suffix}"
+    parent="${probe%/*}"
+    [[ -n "${parent}" ]] || parent="/"
+    [[ "${parent}" != "${probe}" ]] || return 1
+    probe="${parent}"
+  done
+  if [[ -L "${probe}" ]]; then
+    target="$(readlink "${probe}" 2>/dev/null)" || return 1
+    [[ "${target}" == /* ]] || target="${probe%/*}/${target}"
+    _definition_physical_path \
+      "${target}${suffix}" "/" "$((depth + 1))"
+    return
+  fi
+  if [[ -d "${probe}" ]]; then
+    physical="$(cd "${probe}" 2>/dev/null && pwd -P)" || return 1
+  elif [[ -e "${probe}" ]]; then
+    parent="${probe%/*}"
+    leaf="${probe##*/}"
+    [[ -n "${parent}" ]] || parent="/"
+    parent="$(cd "${parent}" 2>/dev/null && pwd -P)" || return 1
+    physical="${parent%/}/${leaf}"
+  else
+    physical="/"
+  fi
+  _definition_lexical_path "${physical}${suffix}" "/"
+}
+
+_definition_path_within() {
+  local candidate="${1:-}" root="${2:-}"
+  [[ -n "${candidate}" && -n "${root}" \
+      && ( "${candidate}" == "${root}" \
+        || "${candidate}" == "${root%/}/"* ) ]]
+}
+
+_definition_existing_file_aliases_session_root() {
+  local candidate="${1:-}" physical_root="${2:-}" authority="" count=0
+  [[ -f "${candidate}" && -d "${physical_root}" ]] || return 1
+  while IFS= read -r -d '' authority; do
+    count=$((count + 1))
+    # A malformed/hostile session directory must not turn an unbounded inode
+    # scan into a fail-open authority decision.
+    (( count <= 512 )) || return 0
+    [[ "${candidate}" -ef "${authority}" ]] && return 0
+  done < <(find -P "${physical_root}" -xdev -type f -print0 2>/dev/null)
+  return 1
+}
+
+_definition_path_targets_publisher() {
+  local value="${1:-}" normalized="" publisher=""
+  normalized="$(_definition_physical_path \
+    "${value}" "${tool_cwd}" 2>/dev/null || true)"
+  [[ -n "${normalized}" ]] || return 1
+  for publisher in \
+      "${SCRIPT_DIR}/record-verification.sh" \
+      "${SCRIPT_DIR}/record-reviewer.sh" \
+      "${SCRIPT_DIR}/record-plan.sh" \
+      "${SCRIPT_DIR}/record-tool-start-revision.sh" \
+      "${SCRIPT_DIR}/pretool-intent-guard.sh"; do
+    [[ -f "${publisher}" ]] || continue
+    if [[ "${normalized}" == "$(_definition_physical_path \
+        "${publisher}" "${tool_cwd}" 2>/dev/null || true)" ]] \
+        || { [[ -f "${normalized}" ]] \
+          && [[ "${normalized}" -ef "${publisher}" ]]; }; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+_definition_path_targets_session_root() {
+  local value="${1:-}" canonical_root="${2:-}" physical_root="${3:-}"
+  local normalized=""
+  normalized="$(_definition_physical_path \
+    "${value}" "${tool_cwd}" 2>/dev/null || true)"
+  _definition_path_within "${normalized}" "${canonical_root}" \
+    || _definition_path_within "${normalized}" "${physical_root}" \
+    || _definition_existing_file_aliases_session_root \
+      "${normalized}" "${physical_root}"
+}
+
+_definition_path_targets_authority() {
+  local value="${1:-}" canonical_root="${2:-}" physical_root="${3:-}"
+  _definition_path_targets_session_root \
+    "${value}" "${canonical_root}" "${physical_root}" \
+    || _definition_path_targets_publisher "${value}"
+}
+
+_definition_expansion_targets_authority() {
+  local value="${1:-}" canonical_root="${2:-}" physical_root="${3:-}"
+  local pattern="" match="" count=0
+  [[ "${value}" == *'*'* || "${value}" == *'?'* \
+      || "${value}" == *'['* || "${value}" == *'{'* ]] || return 1
+  pattern="${value}"
+  [[ "${pattern}" == /* ]] || pattern="${tool_cwd%/}/${pattern}"
+  while IFS= read -r match; do
+    [[ -n "${match}" ]] || continue
+    count=$((count + 1))
+    (( count <= 256 )) || return 0
+    _definition_path_targets_authority \
+      "${match}" "${canonical_root}" "${physical_root}" && return 0
+  done < <(compgen -G "${pattern}" 2>/dev/null || true)
+  # An unresolved expansion that explicitly names a harness-owned artifact or
+  # publisher is still ambiguous write authority and therefore fails closed.
+  case "${value}" in
+    *verification_receipts.jsonl*|*quality_contract.json*|*quality_contract_floor.json*|*quality_evidence.jsonl*|*quality_frontier.json*|*session_state.json*|*record-verification.sh*|*record-reviewer.sh*|*record-plan.sh*|*record-tool-start-revision.sh*|*pretool-intent-guard.sh*)
+      return 0 ;;
+  esac
+  return 1
+}
+
+# Mark unquoted shell redirection operators while preserving quoted operands.
+# Callers can then distinguish read operands from write destinations without
+# evaluating any shell grammar.
+_definition_shell_with_redirection_markers() {
+  local input="${1:-}" state="plain" output="" char="" next=""
+  local i=0 length="${#1}"
+  while (( i < length )); do
+    char="${input:i:1}"
+    next=""
+    (( i + 1 < length )) && next="${input:i+1:1}"
+    case "${state}" in
+      single)
+        output="${output}${char}"
+        [[ "${char}" == "'" ]] && state="plain"
+        ;;
+      double)
+        output="${output}${char}"
+        if [[ "${char}" == "\\" && -n "${next}" ]]; then
+          output="${output}${next}"
+          i=$((i + 1))
+        elif [[ "${char}" == '"' ]]; then
+          state="plain"
+        fi
+        ;;
+      plain)
+        if [[ "${char}" == "\\" && -n "${next}" ]]; then
+          output="${output}${char}${next}"
+          i=$((i + 1))
+        elif [[ "${char}" == "'" ]]; then
+          state="single"; output="${output}${char}"
+        elif [[ "${char}" == '"' ]]; then
+          state="double"; output="${output}${char}"
+        elif [[ "${char}" == '&' && "${next}" == '>' ]]; then
+          output="${output} __OMC_OUTPUT_REDIRECT__ "
+          i=$((i + 1))
+          if (( i + 1 < length )) && [[ "${input:i+1:1}" == '>' ]]; then
+            i=$((i + 1))
+          fi
+        elif [[ "${char}" == '>' ]]; then
+          output="${output} __OMC_OUTPUT_REDIRECT__ "
+          if [[ "${next}" == "${char}" || "${next}" == '|' ]]; then
+            i=$((i + 1))
+          elif [[ "${next}" == '&' ]]; then
+            i=$((i + 1))
+            while (( i + 1 < length )) \
+                && [[ "${input:i+1:1}" =~ [0-9-] ]]; do
+              i=$((i + 1))
+            done
+          fi
+        elif [[ "${char}" == '<' ]]; then
+          if [[ "${next}" == '>' ]]; then
+            output="${output} __OMC_OUTPUT_REDIRECT__ "
+            i=$((i + 1))
+          else
+            output="${output} __OMC_INPUT_REDIRECT__ "
+            while (( i + 1 < length )) \
+                && [[ "${input:i+1:1}" == '<' ]]; do
+              i=$((i + 1))
+            done
+          fi
+        else
+          output="${output}${char}"
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  [[ "${state}" == "plain" ]] || return 1
+  printf '%s' "${output}"
+}
+
+_definition_quoted_literal_candidates() {
+  local input="${1:-}" delimiter="" char="" next="" buffer=""
+  local i=0 length=${#1} inside=0
+  for delimiter in "'" '"'; do
+    inside=0
+    buffer=""
+    i=0
+    while (( i < length )); do
+      char="${input:i:1}"
+      next=""
+      (( i + 1 < length )) && next="${input:i+1:1}"
+      if [[ "${inside}" -eq 0 ]]; then
+        [[ "${char}" == "${delimiter}" ]] && inside=1
+      elif [[ "${char}" == "${delimiter}" ]]; then
+        if [[ "${buffer}" == */* || "${buffer}" == *=* ]]; then
+          printf '%s\n' "${buffer}"
+        fi
+        inside=0
+        buffer=""
+      elif [[ "${char}" == '\\' && "${delimiter}" == '"' \
+          && -n "${next}" ]]; then
+        buffer="${buffer}${next}"
+        i=$((i + 1))
+      else
+        buffer="${buffer}${char}"
+      fi
+      i=$((i + 1))
+    done
+  done
+}
+
+_definition_bash_literal_path_candidates() {
+  # Over-approximate path-shaped literals inside inline interpreter code and
+  # assignments without evaluating either. Quoted paths with spaces are
+  # retained by the argv pass; this pass catches punctuation-wrapped literals
+  # such as `open(".state-link/ledger", "w")`.
+  _definition_quoted_literal_candidates "${1:-}"
+  printf '%s' "${1:-}" | sed -E \
+    's/[^A-Za-z0-9_@%+.,:~\/=\\-]+/\
+/g' \
+    | sed -E '/[\/=]/!d'
+}
+
+_definition_bash_targets_session_root() {
+  local canonical_root="${1:-}" physical_root="${2:-}"
+  local segment="" token="" value="" physical_cwd="" marked=""
+  local redirection_mode="" base_command="" quoted="" base_read_only=0
+  local structured_parsed=0
+  local -a ordinary=() outputs=() base_tokens=() candidates=()
+  physical_cwd="$(_definition_physical_path \
+    "${tool_cwd}" "$(pwd -P)" 2>/dev/null || true)"
+  if _definition_path_within "${physical_cwd}" "${canonical_root}" \
+      || _definition_path_within "${physical_cwd}" "${physical_root}"; then
+    return 0
+  fi
+  while IFS= read -r -d '' segment; do
+    marked="$(_definition_shell_with_redirection_markers \
+      "${segment}" 2>/dev/null || true)"
+    ordinary=()
+    outputs=()
+    base_tokens=()
+    redirection_mode=""
+    base_read_only=0
+    structured_parsed=0
+    if [[ -n "${marked}" ]] \
+        && _verification_tokenize_argv "${marked}" 2>/dev/null; then
+      structured_parsed=1
+      for token in "${_VERIFICATION_ARGV[@]}"; do
+        case "${token}" in
+          __OMC_OUTPUT_REDIRECT__) redirection_mode="output"; continue ;;
+          __OMC_INPUT_REDIRECT__) redirection_mode="input"; continue ;;
+        esac
+        case "${redirection_mode}" in
+          output) outputs+=("${token}"); redirection_mode="" ;;
+          input) redirection_mode="" ;;
+          *) ordinary+=("${token}"); base_tokens+=("${token}") ;;
+        esac
+      done
+      # A dangling marker is malformed shell for our purposes and remains
+      # conservatively mutation-capable.
+      [[ -z "${redirection_mode}" ]] || ordinary+=("${segment}")
+
+      base_command=""
+      if (( ${#base_tokens[@]} > 0 )); then
+        for token in "${base_tokens[@]}"; do
+          printf -v quoted '%q' "${token}"
+          base_command="${base_command}${base_command:+ }${quoted}"
+        done
+      fi
+      base_read_only=0
+      if [[ -n "${base_command}" ]] \
+          && _omc_bash_command_is_proven_read_only \
+            "${base_command}" "${tool_cwd}"; then
+        base_read_only=1
+      fi
+      candidates=()
+      if (( ${#outputs[@]} > 0 )); then
+        candidates+=("${outputs[@]}")
+      fi
+      if [[ "${base_read_only}" -ne 1 ]] \
+          && (( ${#ordinary[@]} > 0 )); then
+        candidates+=("${ordinary[@]}")
+      fi
+      if (( ${#candidates[@]} > 0 )); then
+        for value in "${candidates[@]}"; do
+          # Always test the whole token first: `state=alias/file` can be a real
+          # symlink path, not an assignment. Only then inspect a syntactically
+          # valid assignment RHS as a second candidate.
+          _definition_path_targets_authority \
+            "${value}" "${canonical_root}" "${physical_root}" && return 0
+          _definition_expansion_targets_authority \
+            "${value}" "${canonical_root}" "${physical_root}" && return 0
+          if [[ "${value}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+            _definition_path_targets_authority \
+              "${value#*=}" "${canonical_root}" "${physical_root}" && return 0
+            _definition_expansion_targets_authority \
+              "${value#*=}" "${canonical_root}" "${physical_root}" && return 0
+          fi
+        done
+      fi
+    fi
+    if [[ "${structured_parsed}" -ne 1 || "${base_read_only}" -ne 1 ]]; then
+      while IFS= read -r value; do
+        [[ -n "${value}" ]] || continue
+        _definition_path_targets_authority \
+          "${value}" "${canonical_root}" "${physical_root}" && return 0
+        _definition_expansion_targets_authority \
+          "${value}" "${canonical_root}" "${physical_root}" && return 0
+        if [[ "${value}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+          _definition_path_targets_authority \
+            "${value#*=}" "${canonical_root}" "${physical_root}" && return 0
+          _definition_expansion_targets_authority \
+            "${value#*=}" "${canonical_root}" "${physical_root}" && return 0
+        fi
+      done < <(_definition_bash_literal_path_candidates "${segment}")
+    fi
+  done < <(omc_shell_compound_segments "${command_str}")
+  return 1
+}
+
 _definition_targets_session_authority() {
-  local protected_root target raw_targets=""
-  protected_root="$(session_file "")"
+  local protected_root physical_root target raw_targets=""
+  protected_root="$(_definition_lexical_path \
+    "$(session_file "")" "${tool_cwd}" 2>/dev/null || true)"
+  physical_root="$(_definition_physical_path \
+    "${protected_root}" "${tool_cwd}" 2>/dev/null || true)"
+  [[ -n "${protected_root}" ]] || return 0
+  [[ -n "${physical_root}" ]] || physical_root="${protected_root}"
   case "${tool_name}" in
     Bash)
       # Model tools may read the causal ledgers, but may not invoke their hook
       # publishers or write the session authority directory directly. The
       # command has already been classified mutation-capable by the caller.
-      if grep -Eiq '(quality-pack/state|\.verification-starts|autowork/scripts/(record-(verification|reviewer|plan|tool-start-revision)|pretool-intent-guard)\.sh)' \
+      if grep -Eiq 'autowork/scripts/(record-(verification|reviewer|plan|tool-start-revision)|pretool-intent-guard)\.sh' \
           <<<"${command_str}"; then
         return 0
       fi
+      _definition_bash_targets_session_root \
+        "${protected_root}" "${physical_root}" && return 0
       ;;
     Edit|Write|MultiEdit|NotebookEdit|mcp__*)
       raw_targets="$(jq -r '
-        [paths(scalars) as $p
-          | select(($p[-1] | tostring | ascii_downcase)
-              | test("(^|_)(path|file|file_path|notebook_path|target|destination|dest)$"))
-          | (getpath($p) | tostring)] | .[]
+        .. | objects | to_entries[]
+        | select(.key | ascii_downcase
+            | test("(path|paths|file|files|directory|directories|dir|dirs|root|roots|target|targets|destination|destinations|dest|dests|source|sources|src|from|to|location|locations)$"))
+        | .value
+        | if type == "string" then .
+          elif type == "array" or type == "object" then .. | strings
+          else empty end
       ' <<<"${tool_input_json}" 2>/dev/null || true)"
       while IFS= read -r target; do
         [[ -n "${target}" ]] || continue
-        if [[ "${target}" != /* ]]; then
-          target="${tool_cwd%/}/${target}"
-        fi
-        case "${target}" in
-          "${protected_root}"*|*"/.claude/quality-pack/state/"*) return 0 ;;
-        esac
+        _definition_path_targets_authority \
+          "${target}" "${protected_root}" "${physical_root}" && return 0
+        case "${target}" in *"/.claude/quality-pack/state/"*) return 0 ;; esac
       done <<<"${raw_targets}"
+      if [[ "${tool_name}" == mcp__* ]]; then
+        # Generic execute/call/query wrappers often bury filesystem operations
+        # in command/code/script scalar values instead of a path-named field.
+        # This branch is reached only for mutation-classified MCP calls, so an
+        # authority alias in any scalar is a write-risk and fails closed.
+        while IFS= read -r target; do
+          [[ -n "${target}" ]] || continue
+          case "${target}" in
+            *"${protected_root}"*|*"${physical_root}"*|*"quality-pack/state/${SESSION_ID}"*)
+              return 0 ;;
+          esac
+          _definition_path_targets_authority \
+            "${target}" "${protected_root}" "${physical_root}" && return 0
+          while IFS= read -r value; do
+            [[ -n "${value}" ]] || continue
+            _definition_path_targets_authority \
+              "${value}" "${protected_root}" "${physical_root}" && return 0
+          done < <(_definition_bash_literal_path_candidates "${target}")
+        done < <(jq -r '.. | strings' \
+          <<<"${tool_input_json}" 2>/dev/null || true)
+      fi
       ;;
   esac
   return 1
@@ -498,6 +957,11 @@ if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]] 
   # shellcheck disable=SC2329  # invoked indirectly via with_state_lock
   _definition_authorize_mutation_unlocked() {
     local contract first_ts floor_file floor temp blocks
+    if [[ -n "$(read_state \
+        "quality_contract_scope_overflow" 2>/dev/null || true)" ]]; then
+      _definition_contract_failure="scope-overflow"
+      return 1
+    fi
     contract="$(quality_contract_validate_current 2>/dev/null)" || {
       _definition_contract_failure="missing-or-stale"
       return 1
@@ -599,12 +1063,16 @@ if [[ "$(read_state "quality_contract_required" 2>/dev/null || true)" == "1" ]] 
     if [[ "${tool_name}" == "Bash" ]]; then
       _quality_attempted_mutation="Bash: $(truncate_chars 160 "${command_str}")"
     fi
+    _quality_contract_recovery_instruction="Dispatch quality-planner or prometheus now with the Definition-of-Excellent directive, wait for PLAN_READY plus one structural QUALITY_CONTRACT_JSON line covering deliberate, distinctive, coherent, visionary, and complete, then retry the mutation."
+    if [[ "${_definition_contract_failure:-}" == "scope-overflow" ]]; then
+      _quality_contract_recovery_instruction="The aggregate exact-scope ceiling was exceeded and the attempted addition was not admitted. Do not dispatch another planner against truncated scope. Ask the user for one fresh condensed objective that replaces the accumulated objective, or use the explicit /ulw-off reset."
+    fi
     record_gate_event "definition-of-excellent/pre-mutation" "block" \
       "block_count=${_definition_contract_block_count}" \
       "reason=${_definition_contract_failure:-missing-or-stale}" \
       "tool=${tool_name}" \
       "attempted=$(truncate_chars 180 "${_quality_attempted_mutation}")"
-    jq -nc --arg reason "[Definition of Excellent · pre-mutation block ${_definition_contract_block_count}] This objective requires a frozen five-axis quality contract before implementation. The current contract/floor is unavailable or invalid (${_definition_contract_failure:-missing-or-stale}). Dispatch quality-planner or prometheus now with the Definition-of-Excellent directive, wait for PLAN_READY plus one structural QUALITY_CONTRACT_JSON line covering deliberate, distinctive, coherent, visionary, and complete, then retry the mutation. A late first contract cannot certify work already begun; restart or explicitly /ulw-skip that objective instead. Do not draft the contract in the main thread and do not weaken a criterion to make the gate pass. Read-only inspection and planner dispatch remain allowed. Attempted mutation: ${_quality_attempted_mutation}" '{
+    jq -nc --arg reason "[Definition of Excellent · pre-mutation block ${_definition_contract_block_count}] This objective requires a frozen five-axis quality contract before implementation. The current contract/floor is unavailable or invalid (${_definition_contract_failure:-missing-or-stale}). ${_quality_contract_recovery_instruction} A late first contract cannot certify work already begun; restart or explicitly /ulw-skip that objective instead. Do not draft the contract in the main thread and do not weaken a criterion to make the gate pass. Read-only inspection and planner dispatch remain allowed. Attempted mutation: ${_quality_attempted_mutation}" '{
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",

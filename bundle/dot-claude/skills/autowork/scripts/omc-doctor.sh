@@ -47,8 +47,20 @@ fi
 
 conf="${CLAUDE_HOME}/oh-my-claude.conf"
 if [[ -f "${conf}" ]]; then
-  iv="$(grep -E '^installed_version=' "${conf}" 2>/dev/null | head -1 | cut -d= -f2 || true)"
-  [[ -n "${iv}" ]] && ok "installed version: ${iv}" || warn "oh-my-claude.conf has no installed_version line"
+  iv=""
+  while IFS= read -r conf_line || [[ -n "${conf_line}" ]]; do
+    [[ "${conf_line}" == installed_version=* ]] || continue
+    conf_value="${conf_line#installed_version=}"
+    conf_value="${conf_value#"${conf_value%%[![:space:]]*}"}"
+    conf_value="${conf_value%"${conf_value##*[![:space:]]}"}"
+    iv="${conf_value}"
+  done < "${conf}"
+  if [[ -n "${iv}" ]]; then
+    printf -v iv_display '%q' "${iv}"
+    ok "installed version: ${iv_display}"
+  else
+    warn "oh-my-claude.conf has no installed_version line"
+  fi
 else
   bad "oh-my-claude.conf missing — install has never completed"
 fi

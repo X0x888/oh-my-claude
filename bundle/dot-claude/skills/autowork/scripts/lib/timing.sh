@@ -2,12 +2,10 @@
 # timing.sh — Per-tool / per-subagent timing capture and aggregation.
 #
 # Sourced by common.sh AFTER lib/state-io.sh (needs session_file). Provides
-# append-only capture (start + end rows) and a read-time aggregator. The
-# hot path (PreToolUse / PostToolUse / UserPromptSubmit) is lock-free:
-# each hook appends one sub-PIPE_BUF JSONL row via O_APPEND, which is
-# kernel-serialized on POSIX. Read-modify-write happens only at the
-# aggregation surface (Stop hook, /ulw-time, status, report), where the
-# cost of jq parsing is amortized over an entire session.
+# append-only capture (start + end rows) and a read-time aggregator. Every
+# writer uses the timing-log mutex. This lets the cold prompt-end cap replace
+# the file atomically without dropping a hot-path append that arrived between
+# its tail snapshot and rename.
 #
 # Capture model:
 #   timing.jsonl rows
@@ -66,7 +64,7 @@ timing_display_width() {
   # plain digits). Falls back to byte count on any wc failure (exotic
   # systems missing wc -m support).
   n="${n//[[:space:]]/}"
-  [[ "${n}" =~ ^[0-9]+$ ]] || n="${#s}"
+  _timing_uint_is_valid "${n}" || n="${#s}"
   printf '%s' "${n}"
 }
 
@@ -104,6 +102,126 @@ _timing_json_escape() {
   printf -v "$2" '%s' "${_s}"
 }
 
+_timing_append_row_locked() {
+  local target="$1" row="$2"
+  [[ ! -L "${target}" ]] \
+    && { [[ ! -e "${target}" ]] || [[ -f "${target}" ]]; } || return 1
+  printf '%s\n' "${row}" >>"${target}" 2>/dev/null
+}
+
+_timing_append_row() {
+  local row="$1" target
+  target="$(timing_log_path)"
+  with_cross_session_log_lock "${target}" \
+    _timing_append_row_locked "${target}" "${row}"
+}
+
+# Timing values ultimately enter Bash arithmetic even when their first hop is
+# only a JSON row. Keep state/cursor values within jq's exact-integer range and
+# well below signed-shell overflow. This deliberately rejects leading zeroes:
+# `08` is data to jq but invalid octal syntax to Bash 3.2 arithmetic.
+_TIMING_UINT_MAX=999999999999999
+_TIMING_UINT_INCREMENT_MAX=999999999999998
+# Eight independently bounded token components can legitimately be present in
+# one rendered total. Keep their exact sum below signed 64-bit arithmetic while
+# avoiding the per-field clamp that used to under-report multi-component rows.
+_TIMING_TOKEN_SUM_MAX=7999999999999992
+
+_timing_uint_is_valid() {
+  _omc_canonical_uint_in_range "${1:-}" 0 "${2:-${_TIMING_UINT_MAX}}"
+}
+
+_timing_epoch_is_valid() {
+  _omc_canonical_uint_in_range "${1:-}" 1 "${_TIMING_UINT_MAX}"
+}
+
+# State I/O stores scalar values as outer JSON strings. `read_state` is the
+# right general-purpose compatibility API, but raw jq output can contain NUL;
+# Bash command substitution silently removes that byte before a shell-side
+# validator sees it. Timing values feed arithmetic, cursor authority, and
+# resume ownership, so validate their JSON type/grammar before raw output.
+# These keys have always lived in session_state.json; failing closed when the
+# canonical state file/key is absent avoids reintroducing the same ambiguity
+# through an untyped legacy sidecar.
+_timing_read_state_text_no_nul() {
+  local key="${1:-}" state_file=""
+  [[ -n "${key}" ]] || return 1
+  state_file="$(session_file "${STATE_JSON}")"
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  jq -er --arg k "${key}" '
+    select(type == "object" and has($k))
+    | .[$k]
+    | select(type == "string" and (contains("\u0000") | not))
+  ' "${state_file}" 2>/dev/null
+}
+
+_timing_read_state_json_object() {
+  local key="${1:-}" raw=""
+  raw="$(_timing_read_state_text_no_nul "${key}" 2>/dev/null)" || return 1
+  jq -nec --arg raw "${raw}" '
+    $raw | fromjson? | select(type == "object")
+  ' 2>/dev/null
+}
+
+_timing_read_state_uint() {
+  local key="${1:-}" max="${2:-${_TIMING_UINT_MAX}}" state_file=""
+  [[ -n "${key}" ]] || return 1
+  _timing_uint_is_valid "${max}" || return 1
+  state_file="$(session_file "${STATE_JSON}")"
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  jq -er --arg k "${key}" --argjson max "${max}" '
+    select(type == "object" and has($k))
+    | .[$k] as $value
+    | select(($value | type) == "string"
+        and ($value | test("^(0|[1-9][0-9]{0,14})$"))
+        and (($value | tonumber) <= $max))
+    | $value
+  ' "${state_file}" 2>/dev/null
+}
+
+_timing_read_state_uint_or_zero_when_absent() {
+  local key="${1:-}" max="${2:-${_TIMING_UINT_MAX}}" state_file=""
+  [[ -n "${key}" ]] || return 1
+  _timing_uint_is_valid "${max}" || return 1
+  state_file="$(session_file "${STATE_JSON}")"
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || {
+    printf '0'
+    return 0
+  }
+  jq -er --arg k "${key}" --argjson max "${max}" '
+    if type != "object" then empty
+    elif has($k) then
+      .[$k] as $value
+      | select(($value | type) == "string"
+          and ($value | test("^(0|[1-9][0-9]{0,14})$"))
+          and (($value | tonumber) <= $max))
+      | $value
+    else "0"
+    end
+  ' "${state_file}" 2>/dev/null
+}
+
+_timing_read_sid_from_state_file() {
+  local state_file="${1:-}" key="${2:-}"
+  [[ -n "${state_file}" && -n "${key}"
+      && -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  jq -er --arg k "${key}" '
+    select(type == "object" and has($k))
+    | .[$k]
+    | select(type == "string"
+        and length >= 1 and length <= 128
+        and test("^[a-zA-Z0-9_.-]+$")
+        and (contains("..") | not)
+        and (test("^\\.+$") | not))
+  ' "${state_file}" 2>/dev/null
+}
+
+_timing_read_state_sid() {
+  local state_file=""
+  state_file="$(session_file "${STATE_JSON}")"
+  _timing_read_sid_from_state_file "${state_file}" "${1:-}"
+}
+
 # timing_append_start <tool> [tool_use_id] [subagent] [prompt_seq]
 timing_append_start() {
   is_time_tracking_enabled || return 0
@@ -114,7 +232,7 @@ timing_append_start() {
   local tool_use_id="${2:-}"
   local subagent="${3:-}"
   local prompt_seq="${4:-0}"
-  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
 
   # v1.29.0 perf: pure-bash JSON emission (was: `jq -nc` fork per call).
   # Timing append fires on every PreToolUse + PostToolUse — at ~50 calls
@@ -127,7 +245,8 @@ timing_append_start() {
   # is real wallclock, not just fork-count.
   local tool_esc tu_esc sa_esc ts
   _timing_json_escape "${tool}" tool_esc
-  ts="$(now_epoch)"
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
   local row='{"kind":"start","ts":'"${ts}"',"tool":"'"${tool_esc}"'","prompt_seq":'"${prompt_seq}"
   if [[ -n "${tool_use_id}" ]]; then
     _timing_json_escape "${tool_use_id}" tu_esc
@@ -140,7 +259,7 @@ timing_append_start() {
   row+='}'
 
   ensure_session_dir 2>/dev/null || return 0
-  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+  _timing_append_row "${row}" 2>/dev/null || true
 }
 
 # timing_append_end <tool> [tool_use_id] [prompt_seq]
@@ -152,11 +271,12 @@ timing_append_end() {
   [[ -z "${tool}" ]] && return 0
   local tool_use_id="${2:-}"
   local prompt_seq="${3:-0}"
-  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
 
   local tool_esc tu_esc ts
   _timing_json_escape "${tool}" tool_esc
-  ts="$(now_epoch)"
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
   local row='{"kind":"end","ts":'"${ts}"',"tool":"'"${tool_esc}"'","prompt_seq":'"${prompt_seq}"
   if [[ -n "${tool_use_id}" ]]; then
     _timing_json_escape "${tool_use_id}" tu_esc
@@ -165,7 +285,7 @@ timing_append_end() {
   row+='}'
 
   ensure_session_dir 2>/dev/null || return 0
-  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+  _timing_append_row "${row}" 2>/dev/null || true
 }
 
 # timing_append_prompt_start <prompt_seq>
@@ -174,14 +294,15 @@ timing_append_prompt_start() {
   [[ -z "${SESSION_ID:-}" ]] && return 0
 
   local prompt_seq="${1:-0}"
-  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
 
   local ts
-  ts="$(now_epoch)"
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
   local row='{"kind":"prompt_start","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"'}'
 
   ensure_session_dir 2>/dev/null || return 0
-  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+  _timing_append_row "${row}" 2>/dev/null || true
 }
 
 # timing_append_directive <name> <chars> [prompt_seq]
@@ -211,19 +332,72 @@ timing_append_directive() {
   local chars="${2:-0}"
   local prompt_seq="${3:-0}"
   [[ -z "${name}" ]] && return 0
-  [[ "${chars}" =~ ^[0-9]+$ ]] || return 0
-  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+  _timing_uint_is_valid "${chars}" || return 0
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
 
   local name_esc ts
   _timing_json_escape "${name}" name_esc
-  ts="$(now_epoch)"
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
   local row='{"kind":"directive_emitted","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"',"name":"'"${name_esc}"'","chars":'"${chars}"'}'
 
   ensure_session_dir 2>/dev/null || return 0
-  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
+  _timing_append_row "${row}" 2>/dev/null || true
 }
 
 # timing_append_prompt_end <prompt_seq> <duration_s>
+_timing_append_prompt_end_log_locked() {
+  local target="$1" prompt_seq="$2" row="$3" existing=0
+  [[ ! -L "${target}" ]] \
+    && { [[ ! -e "${target}" ]] || [[ -f "${target}" ]]; } || return 1
+  if [[ -s "${target}" ]]; then
+    existing="$(jq -Rsr --argjson seq "${prompt_seq}" '
+      def canonical_uint:
+        type == "number" and floor == . and . >= 0
+        and . <= 999999999999999;
+      reduce (split("\n")[] | select(length > 0)
+          | (try fromjson catch {}) | select(type == "object")) as $row
+        ({started:false, ended:false};
+          if ($row.kind == "prompt_start"
+              and ($row.ts | canonical_uint) and $row.ts > 0
+              and ($row.prompt_seq | canonical_uint)
+              and $row.prompt_seq == $seq) then
+            .started = true
+          elif ($row.kind == "prompt_end"
+              and ($row.ts | canonical_uint) and $row.ts > 0
+              and ($row.prompt_seq | canonical_uint)
+              and $row.prompt_seq == $seq
+              and ($row.duration_s | canonical_uint)
+              and .started) then
+            .ended = true
+          else . end)
+      # 0 means one ordered end is still admissible. A log with no valid
+      # start is not an unfinished prompt and must not accumulate orphan ends
+      # on repeated callbacks after rotation or corruption.
+      | if .ended then 1 elif .started then 0 else 2 end
+    ' "${target}" 2>/dev/null)" || return 1
+  fi
+  _timing_uint_is_valid "${existing}" || return 1
+  (( existing == 0 )) || return 0
+  printf '%s\n' "${row}" >>"${target}" 2>/dev/null || return 1
+  _cap_per_session_jsonl "${target}" \
+    "${OMC_TIMING_PER_SESSION_CAP:-5000}" \
+    "${OMC_TIMING_PER_SESSION_RETAIN:-4000}"
+}
+
+_timing_append_prompt_end_locked() {
+  local prompt_seq="$1" row="$2" target
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 1
+  fi
+  target="$(timing_log_path)"
+  with_cross_session_log_lock "${target}" \
+    _timing_append_prompt_end_log_locked \
+      "${target}" "${prompt_seq}" "${row}"
+}
+
 timing_append_prompt_end() {
   if declare -F omc_enforcement_generation_matches_capture \
       >/dev/null 2>&1 \
@@ -235,50 +409,47 @@ timing_append_prompt_end() {
 
   local prompt_seq="${1:-0}"
   local duration_s="${2:-0}"
-  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
-  [[ "${duration_s}" =~ ^[0-9]+$ ]] || duration_s=0
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
+  _timing_uint_is_valid "${duration_s}" || duration_s=0
 
   local ts
-  ts="$(now_epoch)"
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
   local row='{"kind":"prompt_end","ts":'"${ts}"',"prompt_seq":'"${prompt_seq}"',"duration_s":'"${duration_s}"'}'
 
   ensure_session_dir 2>/dev/null || return 0
-  printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
-
-  # v1.43 data-lens F-003: per-session timing.jsonl was uncapped (only
-  # the cross-session aggregate at ${HOME}/.claude/quality-pack/timing.jsonl
-  # was capped at 10000 rows). Long ULW sessions with heavy parallel
-  # subagent dispatch can exceed 5000 rows, at which point /ulw-report's
-  # `timing_aggregate` jq pass slows materially. Cap runs here in the
-  # cold path (once per prompt) rather than the hot path (start/end
-  # fires ~50×/turn) so no fork tax lands on tool-call boundaries.
-  _cap_per_session_jsonl "$(timing_log_path)" "${OMC_TIMING_PER_SESSION_CAP:-5000}" "${OMC_TIMING_PER_SESSION_RETAIN:-4000}" 2>/dev/null || true
+  # The row is staged above. Recheck the captured enforcement generation as
+  # the first operation under the session mutex so a delayed G1 Stop cannot
+  # append/cap G2's timing ledger after release -> reactivation.
+  with_state_lock _timing_append_prompt_end_locked \
+    "${prompt_seq}" "${row}" \
+    2>/dev/null || true
 }
 
 # _cap_per_session_jsonl <file> <cap> <retain>
 #   Cap a per-session JSONL at <cap> rows, retaining the last <retain>
-#   on overflow. Single-writer per session (no cross-session lock needed
-#   — unlike _cap_cross_session_jsonl). Fast-path early-return when
-#   already at/below cap. Bash 3.2 safe.
-#
-#   Caller invariant: COLD-PATH ONLY. The single-writer assumption
-#   holds only if every caller fires at most once per Stop turn from the
-#   Stop hook (currently: timing_append_prompt_end via stop-time-summary).
-#   Do NOT call from hot-path hooks (PreToolUse/PostToolUse) or from
-#   SubagentStop — those CAN fire concurrently and a peer cap mid-trim
-#   would race the tail+mv. If a hot-path cap is ever needed, route
-#   through with_cross_session_log_lock or shard the per-session file.
+#   on overflow. The caller must hold this exact file's
+#   with_cross_session_log_lock mutex; all timing writers use the same mutex.
+#   Bash 3.2 safe.
 _cap_per_session_jsonl() {
   local file="$1" cap="${2:-5000}" retain="${3:-4000}"
   [[ -f "${file}" ]] || return 0
-  [[ "${cap}" =~ ^[0-9]+$ ]] || return 0
-  [[ "${retain}" =~ ^[0-9]+$ ]] || return 0
+  _omc_canonical_uint_in_range "${cap}" 1 2147483647 || return 0
+  _omc_canonical_uint_in_range "${retain}" 1 2147483647 || return 0
   local lines temp
   lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
-  lines="${lines##* }"
+  lines="${lines//[[:space:]]/}"
+  _timing_uint_is_valid "${lines}" || return 0
   [[ "${lines}" -le "${cap}" ]] && return 0
   temp="$(mktemp "${file}.XXXXXX" 2>/dev/null)" || return 0
   if tail -n "${retain}" "${file}" > "${temp}" 2>/dev/null; then
+    if [[ -n "${OMC_TEST_TIMING_CAP_READY_FILE:-}" ]]; then
+      : >"${OMC_TEST_TIMING_CAP_READY_FILE}"
+      while [[ -n "${OMC_TEST_TIMING_CAP_RELEASE_FILE:-}" \
+          && ! -e "${OMC_TEST_TIMING_CAP_RELEASE_FILE}" ]]; do
+        sleep 0.01
+      done
+    fi
     mv "${temp}" "${file}" 2>/dev/null || rm -f "${temp}"
   else
     rm -f "${temp}"
@@ -320,6 +491,14 @@ _cap_per_session_jsonl() {
 #
 #   Fail-open: any missing dependency (jq, transcript, SESSION_ID) or parse
 #   error returns cleanly without writing — token capture never blocks Stop.
+_timing_append_token_rows_locked() {
+  local target="$1" delta_row="$2" checkpoint_row="$3"
+  [[ -z "${delta_row}" ]] \
+    || _timing_append_row_locked "${target}" "${delta_row}" || return 1
+  [[ -z "${checkpoint_row}" ]] \
+    || _timing_append_row_locked "${target}" "${checkpoint_row}" || return 1
+}
+
 _timing_file_identity() {
   local file="${1:-}" ident=""
   [[ -f "${file}" ]] || return 1
@@ -345,7 +524,7 @@ _timing_file_size() {
   if [[ ! "${size}" =~ ^[0-9]+$ ]]; then
     size="$(stat -f '%z' "${file}" 2>/dev/null)" || size=""
   fi
-  [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+  _timing_uint_is_valid "${size}" || return 1
   printf '%s' "${size}"
 }
 
@@ -355,7 +534,7 @@ _timing_file_size() {
 # earlier size snapshot meaningless.
 _timing_snapshot_ends_line() {
   local file="${1:-}" size="${2:-}" newline_count=""
-  [[ -f "${file}" && "${size}" =~ ^[0-9]+$ ]] || return 1
+  [[ -f "${file}" ]] && _timing_uint_is_valid "${size}" || return 1
   (( size == 0 )) && return 0
   # POSIX dd seeks over regular-file input for skipped blocks. Reading the
   # stat'ed final byte avoids a live-EOF race and needs only one-byte output.
@@ -370,9 +549,9 @@ _timing_snapshot_ends_line() {
 # old transcript history.
 _timing_snapshot_line_count() {
   local file="${1:-}" size="${2:-}" lines=""
-  [[ -f "${file}" && "${size}" =~ ^[0-9]+$ ]] || return 1
+  [[ -f "${file}" ]] && _timing_uint_is_valid "${size}" || return 1
   lines="$(head -c "${size}" "${file}" 2>/dev/null | wc -l | tr -d ' ')"
-  [[ "${lines}" =~ ^[0-9]+$ ]] || return 1
+  _timing_uint_is_valid "${lines}" || return 1
   printf '%s' "${lines}"
 }
 
@@ -517,9 +696,19 @@ _timing_sum_token_slice() {
     agent_id_hint="${agent_id_hint#agent-}"
   fi
   jq -e 'type == "object" or . == null' <<<"${prior}" >/dev/null 2>&1 || prior='null'
-  [[ "${last_row}" =~ ^[0-9]+$ ]] || last_row=0
+  _omc_canonical_uint_in_range "${first_row}" 1 "${_TIMING_UINT_MAX}" \
+    || first_row=1
+  _timing_uint_is_valid "${last_row}" || last_row=0
+  if [[ -n "${first_byte}" ]] \
+      && ! _timing_uint_is_valid "${first_byte}"; then
+    first_byte=""
+  fi
+  if [[ -n "${last_byte}" ]] \
+      && ! _timing_uint_is_valid "${last_byte}"; then
+    last_byte=""
+  fi
   {
-    if [[ "${first_byte}" =~ ^[0-9]+$ && "${last_byte}" =~ ^[0-9]+$ ]] \
+    if [[ -n "${first_byte}" && -n "${last_byte}" ]] \
         && (( last_byte >= first_byte )); then
       # Byte cursors make steady-state parent capture proportional to appended
       # JSONL bytes. BSD tail can seek regular files for `-c +N`; unlike
@@ -540,7 +729,14 @@ _timing_sum_token_slice() {
       tail -n "+${first_row}" "${file}" 2>/dev/null
     fi
   } | jq -sc --arg source "${source}" --arg agent_id_hint "${agent_id_hint}" --argjson prior "${prior}" '
-    def n($v): ($v | tonumber? // 0);
+    def n($v):
+      if (($v | type) == "number"
+          and $v >= 0 and $v <= 999999999999999
+          and $v == ($v | floor))
+      then $v else 0 end;
+    def add_n($left; $right):
+      (n($left) + n($right)) as $sum
+      | if $sum > 999999999999999 then 999999999999999 else $sum end;
     def usage($u): {
       input: n($u.input_tokens),
       output: n($u.output_tokens),
@@ -585,27 +781,27 @@ _timing_sum_token_slice() {
        usage_rows:0,agent_by_role:{},agent_by_model:{},agent_by_id:{}};
     def add_bucket($obj; $key; $u):
       $obj + {($key): (($obj[$key] // zero_bucket) |
-        .input          += n($u.input) |
-        .output         += n($u.output) |
-        .cache_read     += n($u.cache_read) |
-        .cache_creation += n($u.cache_creation))};
+        .input          = add_n(.input;          $u.input) |
+        .output         = add_n(.output;         $u.output) |
+        .cache_read     = add_n(.cache_read;     $u.cache_read) |
+        .cache_creation = add_n(.cache_creation; $u.cache_creation))};
     def add_record($state; $r; $u; $request_inc):
-      $state | .usage_rows += $request_inc |
+      $state | .usage_rows = add_n(.usage_rows; $request_inc) |
       if $r.agent then
-        .agent_in             += n($u.input) |
-        .agent_out            += n($u.output) |
-        .agent_cache_read     += n($u.cache_read) |
-        .agent_cache_creation += n($u.cache_creation) |
+        .agent_in             = add_n(.agent_in;             $u.input) |
+        .agent_out            = add_n(.agent_out;            $u.output) |
+        .agent_cache_read     = add_n(.agent_cache_read;     $u.cache_read) |
+        .agent_cache_creation = add_n(.agent_cache_creation; $u.cache_creation) |
         .agent_by_role  = add_bucket(.agent_by_role;  $r.role;  $u) |
         .agent_by_model = add_bucket(.agent_by_model; $r.model; $u) |
         if $r.agent_id_known then
           .agent_by_id = add_bucket(.agent_by_id; $r.agent_id; $u)
         else . end
       else
-        .main_in             += n($u.input) |
-        .main_out            += n($u.output) |
-        .main_cache_read     += n($u.cache_read) |
-        .main_cache_creation += n($u.cache_creation)
+        .main_in             = add_n(.main_in;             $u.input) |
+        .main_out            = add_n(.main_out;            $u.output) |
+        .main_cache_read     = add_n(.main_cache_read;     $u.cache_read) |
+        .main_cache_creation = add_n(.main_cache_creation; $u.cache_creation)
       end;
     def record($m; $id):
       first_nonempty([$m.attributionAgent, $m.agentType]) as $role |
@@ -720,7 +916,8 @@ _timing_sum_new_agent_files() {
     identity="${rest%%$'\t'*}"
     rest="${rest#*$'\t'}"
     size="${rest%%$'\t'*}"
-    if [[ -z "${file}" || -z "${identity}" || ! "${size}" =~ ^[0-9]+$ ]] \
+    if [[ -z "${file}" || -z "${identity}" ]] \
+        || ! _timing_uint_is_valid "${size}" \
         || ! _timing_snapshot_ends_line "${file}" "${size}"; then
       rm -rf "${snapshot_dir}"
       return 1
@@ -782,7 +979,14 @@ _timing_sum_new_agent_files() {
   fi
 
   if result="$(jq -n --argjson snapshots "${snapshot_meta}" '
-    def n($v): ($v | tonumber? // 0);
+    def n($v):
+      if (($v | type) == "number"
+          and $v >= 0 and $v <= 999999999999999
+          and $v == ($v | floor))
+      then $v else 0 end;
+    def add_n($left; $right):
+      (n($left) + n($right)) as $sum
+      | if $sum > 999999999999999 then 999999999999999 else $sum end;
     def usage($u): {
       input: n($u.input_tokens),
       output: n($u.output_tokens),
@@ -821,17 +1025,17 @@ _timing_sum_new_agent_files() {
        usage_rows:0,agent_by_role:{},agent_by_model:{},agent_by_id:{}};
     def add_bucket($obj; $key; $u):
       $obj + {($key): (($obj[$key] // zero_bucket) |
-        .input          += n($u.input) |
-        .output         += n($u.output) |
-        .cache_read     += n($u.cache_read) |
-        .cache_creation += n($u.cache_creation))};
+        .input          = add_n(.input;          $u.input) |
+        .output         = add_n(.output;         $u.output) |
+        .cache_read     = add_n(.cache_read;     $u.cache_read) |
+        .cache_creation = add_n(.cache_creation; $u.cache_creation))};
     def add_record($state; $r):
       $state |
-      .usage_rows += 1 |
-      .agent_in             += n($r.usage.input) |
-      .agent_out            += n($r.usage.output) |
-      .agent_cache_read     += n($r.usage.cache_read) |
-      .agent_cache_creation += n($r.usage.cache_creation) |
+      .usage_rows = add_n(.usage_rows; 1) |
+      .agent_in             = add_n(.agent_in;             $r.usage.input) |
+      .agent_out            = add_n(.agent_out;            $r.usage.output) |
+      .agent_cache_read     = add_n(.agent_cache_read;     $r.usage.cache_read) |
+      .agent_cache_creation = add_n(.agent_cache_creation; $r.usage.cache_creation) |
       .agent_by_role  = add_bucket(.agent_by_role;  $r.role;  $r.usage) |
       .agent_by_model = add_bucket(.agent_by_model; $r.model; $r.usage) |
       if $r.agent_id_known then
@@ -840,21 +1044,21 @@ _timing_sum_new_agent_files() {
     def merge_buckets($x; $y):
       reduce (($y // {}) | to_entries[]) as $e (($x // {});
         .[$e.key] = {
-          input:          (n(.[$e.key].input)          + n($e.value.input)),
-          output:         (n(.[$e.key].output)         + n($e.value.output)),
-          cache_read:     (n(.[$e.key].cache_read)     + n($e.value.cache_read)),
-          cache_creation: (n(.[$e.key].cache_creation) + n($e.value.cache_creation))
+          input:          add_n(.[$e.key].input;          $e.value.input),
+          output:         add_n(.[$e.key].output;         $e.value.output),
+          cache_read:     add_n(.[$e.key].cache_read;     $e.value.cache_read),
+          cache_creation: add_n(.[$e.key].cache_creation; $e.value.cache_creation)
         });
     def add_totals($a; $b): {
-      main_in:             (n($a.main_in)             + n($b.main_in)),
-      main_out:            (n($a.main_out)            + n($b.main_out)),
-      main_cache_read:     (n($a.main_cache_read)     + n($b.main_cache_read)),
-      main_cache_creation: (n($a.main_cache_creation) + n($b.main_cache_creation)),
-      agent_in:             (n($a.agent_in)             + n($b.agent_in)),
-      agent_out:            (n($a.agent_out)            + n($b.agent_out)),
-      agent_cache_read:     (n($a.agent_cache_read)     + n($b.agent_cache_read)),
-      agent_cache_creation: (n($a.agent_cache_creation) + n($b.agent_cache_creation)),
-      usage_rows:           (n($a.usage_rows)           + n($b.usage_rows)),
+      main_in:             add_n($a.main_in;             $b.main_in),
+      main_out:            add_n($a.main_out;            $b.main_out),
+      main_cache_read:     add_n($a.main_cache_read;     $b.main_cache_read),
+      main_cache_creation: add_n($a.main_cache_creation; $b.main_cache_creation),
+      agent_in:             add_n($a.agent_in;             $b.agent_in),
+      agent_out:            add_n($a.agent_out;            $b.agent_out),
+      agent_cache_read:     add_n($a.agent_cache_read;     $b.agent_cache_read),
+      agent_cache_creation: add_n($a.agent_cache_creation; $b.agent_cache_creation),
+      usage_rows:           add_n($a.usage_rows;           $b.usage_rows),
       agent_by_role:  merge_buckets($a.agent_by_role;  $b.agent_by_role),
       agent_by_model: merge_buckets($a.agent_by_model; $b.agent_by_model),
       agent_by_id:    merge_buckets($a.agent_by_id;    $b.agent_by_id)
@@ -877,7 +1081,7 @@ _timing_sum_new_agent_files() {
         identity:($filemeta.identity // ("path:" + $f)),
         bytes:($filemeta.bytes // 0)
       }) |
-      .files[$f].rows += 1 |
+      .files[$f].rows = add_n(.files[$f].rows; 1) |
       if (($m.message.usage // null) == null) then . else
         request_key($m) as $id |
         first_nonempty([$m.attributionAgent, $m.agentType]) as $role |
@@ -930,6 +1134,7 @@ _timing_sum_new_agent_files() {
 
 _timing_capture_session_tokens_locked() {
   local transcript="$1" prompt_seq="$2"
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
   if declare -F omc_enforcement_generation_matches_capture \
       >/dev/null 2>&1 \
       && ! omc_enforcement_generation_matches_capture; then
@@ -939,22 +1144,26 @@ _timing_capture_session_tokens_locked() {
   agent_dir="${transcript%.jsonl}/subagents"
 
   local cursors totals initialized legacy_cursor
-  cursors="$(read_state "token_transcript_cursors" 2>/dev/null || true)"
-  jq -e 'type == "object"' <<<"${cursors:-null}" >/dev/null 2>&1 || cursors='{}'
-  totals="$(read_state "token_totals" 2>/dev/null || true)"
-  jq -e 'type == "object"' <<<"${totals:-null}" >/dev/null 2>&1 || totals='{}'
-  initialized="$(read_state "token_tracking_initialized" 2>/dev/null || true)"
-  legacy_cursor="$(read_state "token_transcript_rows" 2>/dev/null || true)"
-  [[ "${legacy_cursor}" =~ ^[0-9]+$ ]] || legacy_cursor=""
+  cursors="$(_timing_read_state_json_object \
+    "token_transcript_cursors" 2>/dev/null || printf '{}')"
+  totals="$(_timing_read_state_json_object \
+    "token_totals" 2>/dev/null || printf '{}')"
+  initialized="$(_timing_read_state_uint \
+    "token_tracking_initialized" 1 2>/dev/null || true)"
+  legacy_cursor="$(_timing_read_state_uint \
+    "token_transcript_rows" 2>/dev/null || true)"
 
   local agent_manifest previous_agent_manifest agent_manifest_to_store
   local cursor_keys_wrapped previous_manifest_wrapped manifest_line manifest_file
   local new_agent_files=() new_agent_specs=()
   agent_manifest="$(_timing_agent_transcript_manifest "${agent_dir}" 2>/dev/null || true)"
-  previous_agent_manifest="$(read_state "token_agent_transcript_manifest" 2>/dev/null || true)"
+  previous_agent_manifest="$(_timing_read_state_text_no_nul \
+    "token_agent_transcript_manifest" 2>/dev/null || true)"
   agent_manifest_to_store="${agent_manifest}"
   if [[ "${agent_manifest}" != "${previous_agent_manifest}" && -d "${agent_dir}" ]]; then
-    cursor_keys_wrapped=$'\n'"$(jq -r 'keys[]' <<<"${cursors}" 2>/dev/null || true)"$'\n'
+    cursor_keys_wrapped=$'\n'"$(jq -r '
+      keys[] | select(length <= 4096 and (contains("\u0000") | not))
+    ' <<<"${cursors}" 2>/dev/null || true)"$'\n'
     previous_manifest_wrapped=$'\n'"${previous_agent_manifest}"$'\n'
     while IFS= read -r manifest_line; do
       [[ -n "${manifest_line}" ]] || continue
@@ -1035,15 +1244,25 @@ _timing_capture_session_tokens_locked() {
     identity="$(_timing_file_identity "${file}" 2>/dev/null || true)"
     [[ -n "${identity}" ]] || continue
     total_bytes="$(_timing_file_size "${file}" 2>/dev/null || true)"
-    [[ "${total_bytes}" =~ ^[0-9]+$ ]] || continue
+    _timing_uint_is_valid "${total_bytes}" || continue
     snapshot_complete=0
     _timing_snapshot_ends_line "${file}" "${total_bytes}" && snapshot_complete=1
     entry="$(jq -c --arg f "${file}" '.[$f] // {}' <<<"${cursors}" 2>/dev/null || printf '{}')"
-    prior_identity="$(jq -r '.identity // ""' <<<"${entry}" 2>/dev/null || true)"
-    cursor="$(jq -r '.rows // 0' <<<"${entry}" 2>/dev/null || printf '0')"
-    [[ "${cursor}" =~ ^[0-9]+$ ]] || cursor=0
-    byte_cursor="$(jq -r '.bytes // empty' <<<"${entry}" 2>/dev/null || true)"
-    [[ "${byte_cursor}" =~ ^[0-9]+$ ]] || byte_cursor=""
+    prior_identity="$(jq -er '
+      .identity
+      | select(type == "string" and length <= 8192
+          and (contains("\u0000") | not))
+    ' <<<"${entry}" 2>/dev/null || true)"
+    cursor="$(jq -er '
+      .rows
+      | select(type == "number" and floor == . and . >= 0
+          and . <= 999999999999999)
+    ' <<<"${entry}" 2>/dev/null || printf '0')"
+    byte_cursor="$(jq -er '
+      .bytes
+      | select(type == "number" and floor == . and . >= 0
+          and . <= 999999999999999)
+    ' <<<"${entry}" 2>/dev/null || true)"
     prior_request="$(jq -c '.last_request // null' <<<"${entry}" 2>/dev/null || printf 'null')"
     jq -e 'type == "object" or . == null' <<<"${prior_request}" >/dev/null 2>&1 || prior_request='null'
 
@@ -1059,7 +1278,7 @@ _timing_capture_session_tokens_locked() {
         # the entire transcript looking for an open-ended line boundary.
         row_scan_mode=1
         total_rows="$(_timing_snapshot_line_count "${file}" "${total_bytes}" 2>/dev/null || echo 0)"
-        [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+        _timing_uint_is_valid "${total_rows}" || total_rows=0
         cursor="${legacy_cursor}"
       elif (( first_initialization == 1 && prompt_seq > 1 )); then
         # Tracking enabled/upgraded mid-session: seed all files that already
@@ -1070,7 +1289,7 @@ _timing_capture_session_tokens_locked() {
             "${total_bytes}" 2>/dev/null || true)"
         fi
         rows_scanned="$(jq -r '.rows_scanned // empty' <<<"${seed_result:-null}" 2>/dev/null || true)"
-        if [[ "${rows_scanned}" =~ ^[0-9]+$ ]]; then
+        if _timing_uint_is_valid "${rows_scanned}"; then
           cursor="${rows_scanned}"
           total_rows="${rows_scanned}"
           byte_cursor="${total_bytes}"
@@ -1080,7 +1299,7 @@ _timing_capture_session_tokens_locked() {
           # on the next Stop. Seed only complete rows and leave the byte cursor
           # absent; the migration path retries the completed line later.
           total_rows="$(_timing_snapshot_line_count "${file}" "${total_bytes}" 2>/dev/null || echo 0)"
-          [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+          _timing_uint_is_valid "${total_rows}" || total_rows=0
           cursor="${total_rows}"
           byte_cursor=""
         fi
@@ -1117,7 +1336,7 @@ _timing_capture_session_tokens_locked() {
       # the only steady-state branch that pays for wc/sed over old history.
       row_scan_mode=1
       total_rows="$(_timing_snapshot_line_count "${file}" "${total_bytes}" 2>/dev/null || echo 0)"
-      [[ "${total_rows}" =~ ^[0-9]+$ ]] || total_rows=0
+      _timing_uint_is_valid "${total_rows}" || total_rows=0
       if (( total_rows < cursor )); then
         cursor=0
         total_rows=0
@@ -1134,7 +1353,7 @@ _timing_capture_session_tokens_locked() {
       slice_result="$(_timing_sum_token_slice "${file}" "$((cursor + 1))" \
         "${source}" "${prior_request}" "${total_rows}" 2>/dev/null || true)"
     elif (( row_scan_mode == 0 )) \
-        && [[ "${byte_cursor}" =~ ^[0-9]+$ ]] \
+        && [[ -n "${byte_cursor}" ]] \
         && (( total_bytes > byte_cursor && snapshot_complete == 1 )); then
       parse_needed=1
       slice_result="$(_timing_sum_token_slice "${file}" 1 \
@@ -1150,8 +1369,12 @@ _timing_capture_session_tokens_locked() {
       fi
       slice="$(jq -c '.totals' <<<"${slice_result}" 2>/dev/null || true)"
       rows_scanned="$(jq -r '.rows_scanned' <<<"${slice_result}" 2>/dev/null || printf '0')"
-      [[ "${rows_scanned}" =~ ^[0-9]+$ ]] || rows_scanned=0
+      _timing_uint_is_valid "${rows_scanned}" || rows_scanned=0
       if (( row_scan_mode == 0 )); then
+        if (( rows_scanned > _TIMING_UINT_MAX - cursor )); then
+          [[ "${source}" == "agent" ]] && agent_manifest_complete=0
+          continue
+        fi
         total_rows=$((cursor + rows_scanned))
       fi
       last_request="$(jq -c '.last_request // null' <<<"${slice_result}" 2>/dev/null || printf 'null')"
@@ -1162,7 +1385,8 @@ _timing_capture_session_tokens_locked() {
     if (( parse_needed == 1 )); then
       current_size="$(_timing_file_size "${file}" 2>/dev/null || true)"
       current_identity="$(_timing_file_identity "${file}" 2>/dev/null || true)"
-      if [[ ! "${current_size}" =~ ^[0-9]+$ ]] || (( current_size < total_bytes )) \
+      if ! _timing_uint_is_valid "${current_size}" \
+          || (( current_size < total_bytes )) \
           || [[ "${current_identity}" != "${identity}" ]]; then
         [[ "${source}" == "agent" ]] && agent_manifest_complete=0
         continue
@@ -1210,13 +1434,22 @@ _timing_capture_session_tokens_locked() {
   fi
   totals="${merged_token_totals}"
   local main_rows=0
-  main_rows="$(jq -r --arg f "${transcript}" '.[$f].rows // 0' <<<"${cursors}" 2>/dev/null || printf '0')"
-  [[ "${main_rows}" =~ ^[0-9]+$ ]] || main_rows=0
+  main_rows="$(jq -er --arg f "${transcript}" '
+    .[$f].rows
+    | select(type == "number" and floor == . and . >= 0
+        and . <= 999999999999999)
+  ' <<<"${cursors}" 2>/dev/null || printf '0')"
+  _timing_uint_is_valid "${main_rows}" || main_rows=0
   # State is the durable side of the transaction. Never append a delta after
   # a failed cursor/totals commit: the next Stop would retry the same slice and
   # double-count prompt detail. Conversely, if a later JSONL append fails, the
   # committed totals are safe and the next Stop re-emits a self-healing
   # checkpoint even with no new transcript rows.
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 0
+  fi
   if ! write_state_batch \
       "token_transcript_cursors" "${cursors}" \
       "token_agent_transcript_manifest" "${agent_manifest_to_store}" \
@@ -1226,25 +1459,44 @@ _timing_capture_session_tokens_locked() {
     return 1
   fi
 
-  local ts delta_sum row checkpoint
-  ts="$(now_epoch)"; [[ "${ts}" =~ ^[0-9]+$ ]] || ts=0
-  delta_sum="$(jq -r '[.main_in,.main_out,.main_cache_read,.main_cache_creation,.agent_in,.agent_out,.agent_cache_read,.agent_cache_creation] | map(. // 0) | add // 0' <<<"${delta}" 2>/dev/null || printf '0')"
-  [[ "${delta_sum}" =~ ^[0-9]+$ ]] || delta_sum=0
+  local ts delta_has_tokens row="" checkpoint=""
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
+  delta_has_tokens="$(jq -r '
+    [.main_in,.main_out,.main_cache_read,.main_cache_creation,
+     .agent_in,.agent_out,.agent_cache_read,.agent_cache_creation]
+    | if any(.[]; type == "number" and floor == .
+                  and . > 0 and . <= 999999999999999)
+      then 1 else 0 end
+  ' <<<"${delta}" 2>/dev/null || printf '0')"
+  _timing_uint_is_valid "${delta_has_tokens}" || delta_has_tokens=0
   ensure_session_dir 2>/dev/null || return 0
-  if (( delta_sum > 0 )); then
+  if (( delta_has_tokens > 0 )); then
     row="$(jq -nc --argjson ts "${ts}" --argjson ps "${prompt_seq}" --argjson d "${delta}" \
       '{kind:"token_delta",ts:$ts,prompt_seq:$ps} + $d' 2>/dev/null || true)"
-    [[ -n "${row}" ]] && printf '%s\n' "${row}" >> "$(timing_log_path)" 2>/dev/null || true
   fi
   # Always refresh a non-zero checkpoint, even when no file had new rows.
   # This makes a state-write/log-append interruption self-healing.
-  local total_sum
-  total_sum="$(jq -r '[.main_in,.main_out,.main_cache_read,.main_cache_creation,.agent_in,.agent_out,.agent_cache_read,.agent_cache_creation] | map(. // 0) | add // 0' <<<"${totals}" 2>/dev/null || printf '0')"
-  [[ "${total_sum}" =~ ^[0-9]+$ ]] || total_sum=0
-  if (( total_sum > 0 )); then
+  local total_has_tokens
+  total_has_tokens="$(jq -r '
+    [.main_in,.main_out,.main_cache_read,.main_cache_creation,
+     .agent_in,.agent_out,.agent_cache_read,.agent_cache_creation]
+    | if any(.[]; type == "number" and floor == .
+                  and . > 0 and . <= 999999999999999)
+      then 1 else 0 end
+  ' <<<"${totals}" 2>/dev/null || printf '0')"
+  _timing_uint_is_valid "${total_has_tokens}" || total_has_tokens=0
+  if (( total_has_tokens > 0 )); then
     checkpoint="$(jq -nc --argjson ts "${ts}" --argjson ps "${prompt_seq}" --argjson t "${totals}" \
       '{kind:"token_checkpoint",ts:$ts,prompt_seq:$ps} + $t' 2>/dev/null || true)"
-    [[ -n "${checkpoint}" ]] && printf '%s\n' "${checkpoint}" >> "$(timing_log_path)" 2>/dev/null || true
+  fi
+  local timing_target
+  timing_target="$(timing_log_path)"
+  if [[ -n "${row}" || -n "${checkpoint}" ]]; then
+    with_cross_session_log_lock "${timing_target}" \
+      _timing_append_token_rows_locked \
+        "${timing_target}" "${row}" "${checkpoint}" \
+      2>/dev/null || true
   fi
 }
 
@@ -1259,7 +1511,7 @@ timing_capture_session_tokens() {
   [[ -z "${SESSION_ID:-}" ]] && return 0
 
   local transcript="${1:-}" prompt_seq="${2:-0}"
-  [[ "${prompt_seq}" =~ ^[0-9]+$ ]] || prompt_seq=0
+  _timing_uint_is_valid "${prompt_seq}" || prompt_seq=0
   [[ -n "${transcript}" && -f "${transcript}" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
 
@@ -1301,7 +1553,7 @@ timing_aggregate() {
     log="$(timing_log_path)"
   fi
   local prompt_filter="${2:-0}"
-  [[ "${prompt_filter}" =~ ^[0-9]+$ ]] || prompt_filter=0
+  _timing_uint_is_valid "${prompt_filter}" || prompt_filter=0
 
   if [[ ! -f "${log}" ]] || [[ ! -s "${log}" ]]; then
     printf '%s\n' '{}'
@@ -1312,10 +1564,21 @@ timing_aggregate() {
   # truncated JSON value in the middle/tail; valid later checkpoints must still
   # self-heal the aggregate instead of the whole session collapsing to `{}`.
   jq -Rsc --argjson pfilter "${prompt_filter}" '
+    def canonical_uint:
+      type == "number" and floor == . and . >= 0 and . <= 999999999999999;
     def uint:
-      if type == "number" and . >= 0 then
-        (floor | if . > 999999999999999 then 999999999999999 else . end)
+      if canonical_uint then
+        (if . > 999999999999999 then 999999999999999 else . end)
       else 0 end;
+    def clamp_uint:
+      if type == "number" and floor == . and . >= 0 then
+        (if . > 999999999999999 then 999999999999999 else . end)
+      else 0 end;
+    def add_uint($left; $right):
+      (($left | uint) + ($right | uint))
+      | if . > 999999999999999 then 999999999999999 else . end;
+    def sum_uint:
+      reduce .[] as $value (0; add_uint(.; $value));
     def safe_bucket_map:
       if type != "object" then {}
       else with_entries(
@@ -1327,17 +1590,55 @@ timing_aggregate() {
             cache_creation: ((.cache_creation // 0) | uint)
           } else {input:0,output:0,cache_read:0,cache_creation:0} end)
       ) end;
+    def bucket_map_numeric_fields_valid:
+      . as $map
+      | type == "object"
+        and all(($map | to_entries[]); .value as $bucket
+          | ($bucket | type) == "object"
+            and all(["input","output","cache_read","cache_creation"][];
+              . as $key
+              | (($bucket | has($key) | not)
+                  or ($bucket[$key] | canonical_uint))));
     def numeric_fields_valid:
       . as $o
-      | all([
+      | (all([
           "ts","prompt_seq","duration_s","chars",
           "main_in","main_out","main_cache_read","main_cache_creation",
           "agent_in","agent_out","agent_cache_read","agent_cache_creation",
           "usage_rows"
-        ][]; . as $k
+          ][]; . as $k
           | (($o | has($k) | not)
              or (($o[$k] | type) == "number"
-                 and $o[$k] >= 0 and $o[$k] <= 999999999999999)));
+                 and ($o[$k] | floor) == $o[$k]
+                 and $o[$k] >= 0 and $o[$k] <= 999999999999999)))
+        and all(["agent_by_role","agent_by_model","agent_by_id"][];
+          . as $key
+          | (($o | has($key) | not)
+              or ($o[$key] | bucket_map_numeric_fields_valid))));
+    def kind_fields_valid:
+      . as $o
+      | (($o.kind | type) == "string")
+        and ($o.kind == "prompt_start" or $o.kind == "prompt_end"
+          or $o.kind == "directive_emitted" or $o.kind == "token_delta"
+          or $o.kind == "token_checkpoint" or $o.kind == "start"
+          or $o.kind == "end")
+        and ($o | has("ts")) and ($o.ts | canonical_uint) and ($o.ts > 0)
+        and ($o | has("prompt_seq")) and ($o.prompt_seq | canonical_uint)
+        and (if $o.kind == "prompt_end" then
+               ($o | has("duration_s")) and ($o.duration_s | canonical_uint)
+             elif $o.kind == "directive_emitted" then
+               ($o | has("chars")) and ($o.chars | canonical_uint)
+               and (($o.name | type) == "string")
+               and ($o.name | length) > 0 and ($o.name | length) <= 160
+             elif $o.kind == "token_delta" or $o.kind == "token_checkpoint" then
+               any(["main_in","main_out","main_cache_read",
+                 "main_cache_creation","agent_in","agent_out",
+                 "agent_cache_read","agent_cache_creation"][];
+                 . as $key | $o | has($key))
+             elif $o.kind == "start" or $o.kind == "end" then
+               (($o.tool | type) == "string")
+               and ($o.tool | length) > 0 and ($o.tool | length) <= 160
+             else true end);
     def normalize_row:
       . as $raw
       | reduce [
@@ -1354,7 +1655,8 @@ timing_aggregate() {
       | .agent_by_role = ((.agent_by_role // {}) | safe_bucket_map)
       | .agent_by_model = ((.agent_by_model // {}) | safe_bucket_map)
       | .agent_by_id = ((.agent_by_id // {}) | safe_bucket_map)
-      | ._timing_numeric_valid = ($raw | numeric_fields_valid);
+      | ._timing_numeric_valid = ($raw
+          | (numeric_fields_valid and kind_fields_valid));
 
     def find_match($pending; $r):
       [$pending | to_entries[] | select(
@@ -1373,24 +1675,32 @@ timing_aggregate() {
     def merge_token_buckets($x; $y):
       reduce (($y | safe_bucket_map) | to_entries[]) as $e (($x | safe_bucket_map);
         .[$e.key] = {
-          input:          ((.[$e.key].input // 0)          + ($e.value.input // 0)),
-          output:         ((.[$e.key].output // 0)         + ($e.value.output // 0)),
-          cache_read:     ((.[$e.key].cache_read // 0)     + ($e.value.cache_read // 0)),
-          cache_creation: ((.[$e.key].cache_creation // 0) + ($e.value.cache_creation // 0))
+          input: add_uint((.[$e.key].input // 0); ($e.value.input // 0)),
+          output: add_uint((.[$e.key].output // 0); ($e.value.output // 0)),
+          cache_read: add_uint((.[$e.key].cache_read // 0); ($e.value.cache_read // 0)),
+          cache_creation: add_uint((.[$e.key].cache_creation // 0); ($e.value.cache_creation // 0))
         }
       );
+    def checkpoint_token_total($x):
+      # Eight canonical components total at most 7,999,999,999,999,992,
+      # still below the jq/IEEE-754 exact-integer ceiling. Do not route this
+      # comparison-only sum through the one-field saturating helper: two
+      # same-second cumulative checkpoints above that smaller ceiling would
+      # otherwise tie and leave the older checkpoint authoritative.
+      reduce [($x.main_in // 0), ($x.main_out // 0),
+              ($x.main_cache_read // 0), ($x.main_cache_creation // 0),
+              ($x.agent_in // 0), ($x.agent_out // 0),
+              ($x.agent_cache_read // 0), ($x.agent_cache_creation // 0)][]
+        as $value (0; . + ($value | uint));
     def checkpoint_key($x):
-      [($x.prompt_seq // 0), ($x.ts // 0),
-       ([($x.main_in // 0), ($x.main_out // 0),
-         ($x.main_cache_read // 0), ($x.main_cache_creation // 0),
-         ($x.agent_in // 0), ($x.agent_out // 0),
-         ($x.agent_cache_read // 0), ($x.agent_cache_creation // 0)] | add // 0)];
+      [($x.prompt_seq // 0), ($x.ts // 0), checkpoint_token_total($x)];
 
     [split("\n")[]
       | select(length > 0)
       | (try fromjson catch empty)
       | select(type == "object")
       | normalize_row
+      | select(._timing_numeric_valid == true)
     ] as $parsed |
 
     # Optional prompt_seq slice: only retain rows tagged with the requested
@@ -1409,7 +1719,8 @@ timing_aggregate() {
       elif $r.kind == "prompt_end" then
         .prompts |= map(
           if .ps == ($r.prompt_seq // 0) and .end == null then
-            . + { end: $r.ts, dur: ($r.duration_s // ($r.ts - .start)) }
+            . + { end: $r.ts,
+                  dur: (($r.duration_s // ($r.ts - .start)) | uint) }
           else . end
         )
       elif $r.kind == "directive_emitted" then
@@ -1418,15 +1729,19 @@ timing_aggregate() {
         if $name == "" or $chars <= 0 then
           .
         else
-          .dir_chars[$name] = ((.dir_chars[$name] // 0) + $chars) |
-          .dir_n[$name] = ((.dir_n[$name] // 0) + 1)
+          .dir_chars[$name] = add_uint((.dir_chars[$name] // 0); $chars) |
+          .dir_n[$name] = add_uint((.dir_n[$name] // 0); 1)
         end
       elif $r.kind == "token_delta" then
-        .tk_min += ($r.main_in // 0) | .tk_mout += ($r.main_out // 0) |
-        .tk_mcr += ($r.main_cache_read // 0) | .tk_mcw += ($r.main_cache_creation // 0) |
-        .tk_ain += ($r.agent_in // 0) | .tk_aout += ($r.agent_out // 0) |
-        .tk_acr += ($r.agent_cache_read // 0) | .tk_acw += ($r.agent_cache_creation // 0) |
-        .tk_usage_rows += ($r.usage_rows // 0) |
+        .tk_min = add_uint(.tk_min; ($r.main_in // 0)) |
+        .tk_mout = add_uint(.tk_mout; ($r.main_out // 0)) |
+        .tk_mcr = add_uint(.tk_mcr; ($r.main_cache_read // 0)) |
+        .tk_mcw = add_uint(.tk_mcw; ($r.main_cache_creation // 0)) |
+        .tk_ain = add_uint(.tk_ain; ($r.agent_in // 0)) |
+        .tk_aout = add_uint(.tk_aout; ($r.agent_out // 0)) |
+        .tk_acr = add_uint(.tk_acr; ($r.agent_cache_read // 0)) |
+        .tk_acw = add_uint(.tk_acw; ($r.agent_cache_creation // 0)) |
+        .tk_usage_rows = add_uint(.tk_usage_rows; ($r.usage_rows // 0)) |
         .tk_roles = merge_token_buckets(.tk_roles; $r.agent_by_role) |
         .tk_models = merge_token_buckets(.tk_models; $r.agent_by_model) |
         .tk_ids = merge_token_buckets(.tk_ids; $r.agent_by_id)
@@ -1444,18 +1759,17 @@ timing_aggregate() {
       elif $r.kind == "end" then
         find_match(.pending; $r) as $m |
         if $m == null then
-          .orphan_end += 1
+          .orphan_end = add_uint(.orphan_end; 1)
         else
-          ($r.ts - $m.value.ts) as $dur |
-          (if $dur < 0 then 0 else $dur end) as $dur |
+          (($r.ts - $m.value.ts) | uint) as $dur |
           (.pending |= (.[:$m.key] + .[$m.key+1:])) |
           if $r.tool == "Agent" then
             (($m.value.subagent // "general-purpose")) as $sub |
-            .agent[$sub] = ((.agent[$sub] // 0) + $dur) |
-            .agent_n[$sub] = ((.agent_n[$sub] // 0) + 1)
+            .agent[$sub] = add_uint((.agent[$sub] // 0); $dur) |
+            .agent_n[$sub] = add_uint((.agent_n[$sub] // 0); 1)
           else
-            .tool[$r.tool] = ((.tool[$r.tool] // 0) + $dur) |
-            .tool_n[$r.tool] = ((.tool_n[$r.tool] // 0) + 1)
+            .tool[$r.tool] = add_uint((.tool[$r.tool] // 0); $dur) |
+            .tool_n[$r.tool] = add_uint((.tool_n[$r.tool] // 0); 1)
           end
         end
       else .
@@ -1471,36 +1785,36 @@ timing_aggregate() {
       agent_by_id:$st.tk_ids
     } end) as $tk |
     {
-      walltime_s:       ([$st.prompts[] | select(.end != null) | .dur] | add // 0),
-      agent_total_s:    ([$st.agent[]] | add // 0),
+      walltime_s:       ([$st.prompts[] | select(.end != null) | .dur] | sum_uint),
+      agent_total_s:    ([$st.agent[]] | sum_uint),
       agent_breakdown:  $st.agent,
       agent_calls:      $st.agent_n,
-      tool_total_s:     ([$st.tool[]] | add // 0),
+      tool_total_s:     ([$st.tool[]] | sum_uint),
       tool_breakdown:   $st.tool,
       tool_calls:       $st.tool_n,
-      directive_total_chars: ([$st.dir_chars[]] | add // 0),
+      directive_total_chars: ([$st.dir_chars[]] | sum_uint),
       directive_breakdown: $st.dir_chars,
       directive_counts: $st.dir_n,
-      directive_count: ([$st.dir_n[]] | add // 0),
-      prompt_count:     ([$st.prompts[] | select(.end != null)] | length),
+      directive_count: ([$st.dir_n[]] | sum_uint),
+      prompt_count:     (([$st.prompts[] | select(.end != null)] | length) | uint),
       prompts_seq:      [$st.prompts[] | select(.end != null) | {ps:.ps, dur:.dur}],
-      active_pending:   ($st.pending | length),
-      orphan_end_count: $st.orphan_end,
-      tokens_main_in:             ($tk.main_in // 0),
-      tokens_main_out:            ($tk.main_out // 0),
-      tokens_main_cache_read:     ($tk.main_cache_read // 0),
-      tokens_main_cache_creation: ($tk.main_cache_creation // 0),
-      tokens_agent_in:             ($tk.agent_in // 0),
-      tokens_agent_out:            ($tk.agent_out // 0),
-      tokens_agent_cache_read:     ($tk.agent_cache_read // 0),
-      tokens_agent_cache_creation: ($tk.agent_cache_creation // 0),
-      token_usage_rows:             ($tk.usage_rows // 0),
+      active_pending:   (($st.pending | length) | uint),
+      orphan_end_count: ($st.orphan_end | uint),
+      tokens_main_in:             (($tk.main_in // 0) | uint),
+      tokens_main_out:            (($tk.main_out // 0) | uint),
+      tokens_main_cache_read:     (($tk.main_cache_read // 0) | uint),
+      tokens_main_cache_creation: (($tk.main_cache_creation // 0) | uint),
+      tokens_agent_in:             (($tk.agent_in // 0) | uint),
+      tokens_agent_out:            (($tk.agent_out // 0) | uint),
+      tokens_agent_cache_read:     (($tk.agent_cache_read // 0) | uint),
+      tokens_agent_cache_creation: (($tk.agent_cache_creation // 0) | uint),
+      token_usage_rows:             (($tk.usage_rows // 0) | uint),
       agent_tokens_by_role:         (($tk.agent_by_role // {}) | safe_bucket_map),
       agent_tokens_by_model:        (($tk.agent_by_model // {}) | safe_bucket_map),
       agent_tokens_by_id:           (($tk.agent_by_id // {}) | safe_bucket_map)
     }
     | . + {
-        idle_model_s: ((.walltime_s - .agent_total_s - .tool_total_s) | if . < 0 then 0 else . end),
+        idle_model_s: ((.walltime_s - .agent_total_s - .tool_total_s) | uint),
         # v1.34.1+ (data-lens D-002 / design-lens X-002):
         # When parallel agents/tools complete in less wall-time than their
         # serial work-time would suggest (i.e., agent + tool > walltime),
@@ -1510,7 +1824,7 @@ timing_aggregate() {
         # divide work-time by walltime — exposing this field lets the
         # renderers either disclose the overlap explicitly OR re-normalize.
         # Always non-negative; 0 when work fits inside walltime.
-        concurrent_overhead_s: ((.agent_total_s + .tool_total_s - .walltime_s) | if . < 0 then 0 else . end)
+        concurrent_overhead_s: ((.agent_total_s + .tool_total_s - .walltime_s) | clamp_uint)
       }
   ' < "${log}" 2>/dev/null || printf '%s\n' '{}'
 }
@@ -1529,6 +1843,18 @@ timing_normalize_uint() {
   [[ -n "${n}" ]] || n=0
   if (( ${#n} > 15 )); then
     n=999999999999999
+  fi
+  printf '%s' "${n}"
+}
+
+timing_normalize_token_sum_uint() {
+  local n="${1:-0}" max="${_TIMING_TOKEN_SUM_MAX}" LC_ALL=C
+  [[ "${n}" =~ ^[0-9]+$ ]] || { printf '0'; return 0; }
+  n="${n#"${n%%[!0]*}"}"
+  [[ -n "${n}" ]] || n=0
+  if (( ${#n} > ${#max} )) \
+      || { (( ${#n} == ${#max} )) && (( 10#${n} > max )); }; then
+    n="${max}"
   fi
   printf '%s' "${n}"
 }
@@ -1553,7 +1879,7 @@ timing_fmt_secs() {
 # and /ulw-report.
 timing_fmt_tokens() {
   local n
-  n="$(timing_normalize_uint "${1:-0}")"
+  n="$(timing_normalize_token_sum_uint "${1:-0}")"
   if (( n >= 1000000 )); then
     printf '%d.%dM' $(( n / 1000000 )) $(( (n % 1000000) / 100000 ))
   elif (( n >= 1000 )); then
@@ -1617,8 +1943,7 @@ timing_format_oneline() {
 
   local walltime
   walltime="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
-  walltime="${walltime:-0}"
-  [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
+  walltime="$(timing_normalize_uint "${walltime:-0}")"
 
   if (( walltime < 5 )); then
     return 0
@@ -1630,13 +1955,11 @@ timing_format_oneline() {
   idle_model="$(jq -r '.idle_model_s // 0' <<<"${agg}" 2>/dev/null)"
   directive_total_chars="$(jq -r '.directive_total_chars // 0' <<<"${agg}" 2>/dev/null)"
   directive_count="$(jq -r '.directive_count // 0' <<<"${agg}" 2>/dev/null)"
-  agent_total="${agent_total:-0}"
-  tool_total="${tool_total:-0}"
-  idle_model="${idle_model:-0}"
-  directive_total_chars="${directive_total_chars:-0}"
-  directive_count="${directive_count:-0}"
-  [[ "${directive_total_chars}" =~ ^[0-9]+$ ]] || directive_total_chars=0
-  [[ "${directive_count}" =~ ^[0-9]+$ ]] || directive_count=0
+  agent_total="$(timing_normalize_uint "${agent_total:-0}")"
+  tool_total="$(timing_normalize_uint "${tool_total:-0}")"
+  idle_model="$(timing_normalize_uint "${idle_model:-0}")"
+  directive_total_chars="$(timing_normalize_uint "${directive_total_chars:-0}")"
+  directive_count="$(timing_normalize_uint "${directive_count:-0}")"
 
   local out
   out="Time: $(timing_fmt_secs "${walltime}")"
@@ -1761,21 +2084,13 @@ timing_generate_insight() {
   active_pending="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
   overhead="$(jq -r '.concurrent_overhead_s // 0' <<<"${agg}" 2>/dev/null)"
 
-  walltime="${walltime:-0}"
-  agent_total="${agent_total:-0}"
-  tool_total="${tool_total:-0}"
-  idle_model="${idle_model:-0}"
-  orphan="${orphan:-0}"
-  active_pending="${active_pending:-0}"
-  overhead="${overhead:-0}"
-
-  [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
-  [[ "${agent_total}" =~ ^[0-9]+$ ]] || agent_total=0
-  [[ "${tool_total}" =~ ^[0-9]+$ ]] || tool_total=0
-  [[ "${idle_model}" =~ ^[0-9]+$ ]] || idle_model=0
-  [[ "${orphan}" =~ ^[0-9]+$ ]] || orphan=0
-  [[ "${active_pending}" =~ ^[0-9]+$ ]] || active_pending=0
-  [[ "${overhead}" =~ ^[0-9]+$ ]] || overhead=0
+  walltime="$(timing_normalize_uint "${walltime:-0}")"
+  agent_total="$(timing_normalize_uint "${agent_total:-0}")"
+  tool_total="$(timing_normalize_uint "${tool_total:-0}")"
+  idle_model="$(timing_normalize_uint "${idle_model:-0}")"
+  orphan="$(timing_normalize_uint "${orphan:-0}")"
+  active_pending="$(timing_normalize_uint "${active_pending:-0}")"
+  overhead="$(timing_normalize_uint "${overhead:-0}")"
 
   (( walltime < 1 )) && return 0
 
@@ -1835,7 +2150,7 @@ timing_generate_insight() {
     ' <<<"${agg}" 2>/dev/null)"
     local secs="" name=""
     IFS=$'\t' read -r secs name <<<"${row}"
-    [[ "${secs}" =~ ^[0-9]+$ ]] || secs=0
+    secs="$(timing_normalize_uint "${secs:-0}")"
     if (( secs > 0 )); then
       local pct=$(( secs * 100 / insight_denom ))
       if (( pct >= 60 )); then
@@ -1860,7 +2175,7 @@ timing_generate_insight() {
     ' <<<"${agg}" 2>/dev/null)"
     local tsecs="" tname=""
     IFS=$'\t' read -r tsecs tname <<<"${trow}"
-    [[ "${tsecs}" =~ ^[0-9]+$ ]] || tsecs=0
+    tsecs="$(timing_normalize_uint "${tsecs:-0}")"
     if (( tsecs > 0 )); then
       local tpct=$(( tsecs * 100 / insight_denom ))
       if (( tpct >= 60 )); then
@@ -1887,7 +2202,7 @@ timing_generate_insight() {
   local total_tool_calls
   total_tool_calls="$(jq -r '(.tool_calls // {}) | [.[]] | add // 0' <<<"${agg}" 2>/dev/null)"
   total_tool_calls="${total_tool_calls:-0}"
-  [[ "${total_tool_calls}" =~ ^[0-9]+$ ]] || total_tool_calls=0
+  total_tool_calls="$(timing_normalize_uint "${total_tool_calls:-0}")"
   if (( total_tool_calls >= 30 )); then
     printf 'Heavy tool %s — %d total calls. Batching reads/greps in parallel can shave wallclock next time.' \
       "${span_word}" "${total_tool_calls}"
@@ -1899,7 +2214,7 @@ timing_generate_insight() {
   local distinct_agents
   distinct_agents="$(jq -r '(.agent_breakdown // {}) | length' <<<"${agg}" 2>/dev/null)"
   distinct_agents="${distinct_agents:-0}"
-  [[ "${distinct_agents}" =~ ^[0-9]+$ ]] || distinct_agents=0
+  distinct_agents="$(timing_normalize_uint "${distinct_agents:-0}")"
   if (( distinct_agents >= 4 )); then
     printf 'Diverse %s — %d distinct subagents engaged.' "${span_word}" "${distinct_agents}"
     return 0
@@ -1936,8 +2251,7 @@ timing_format_full() {
 
   local walltime
   walltime="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
-  walltime="${walltime:-0}"
-  [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
+  walltime="$(timing_normalize_uint "${walltime:-0}")"
   if (( walltime == 0 )); then
     # Orphan-only fall-through: surface the anomaly so a session killed
     # before any prompt finalized still produces output on manual
@@ -1946,8 +2260,8 @@ timing_format_full() {
     local _orphan _active _tok0
     _orphan="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
     _active="$(jq -r '.active_pending // 0' <<<"${agg}" 2>/dev/null)"
-    _orphan="${_orphan:-0}"; [[ "${_orphan}" =~ ^[0-9]+$ ]] || _orphan=0
-    _active="${_active:-0}"; [[ "${_active}" =~ ^[0-9]+$ ]] || _active=0
+    _orphan="$(timing_normalize_uint "${_orphan:-0}")"
+    _active="$(timing_normalize_uint "${_active:-0}")"
     # Token line still renders here: a session may have captured token
     # usage before any prompt finalized (manual /ulw-time mid-turn), so
     # "no finalized prompts" should not hide the tokens already spent.
@@ -1975,14 +2289,13 @@ timing_format_full() {
   orphan_end="$(jq -r '.orphan_end_count // 0' <<<"${agg}" 2>/dev/null)"
   overhead="$(jq -r '.concurrent_overhead_s // 0' <<<"${agg}" 2>/dev/null)"
 
-  agent_total="${agent_total:-0}"
-  tool_total="${tool_total:-0}"
-  idle_model="${idle_model:-0}"
-  prompt_count="${prompt_count:-0}"
-  active_pending="${active_pending:-0}"
-  orphan_end="${orphan_end:-0}"
-  overhead="${overhead:-0}"
-  [[ "${overhead}" =~ ^[0-9]+$ ]] || overhead=0
+  agent_total="$(timing_normalize_uint "${agent_total:-0}")"
+  tool_total="$(timing_normalize_uint "${tool_total:-0}")"
+  idle_model="$(timing_normalize_uint "${idle_model:-0}")"
+  prompt_count="$(timing_normalize_uint "${prompt_count:-0}")"
+  active_pending="$(timing_normalize_uint "${active_pending:-0}")"
+  orphan_end="$(timing_normalize_uint "${orphan_end:-0}")"
+  overhead="$(timing_normalize_uint "${overhead:-0}")"
 
   # Header — boxed-rule title puts the epilogue visually distinct from
   # surrounding text. The leading "─── " is intentional; gives the eye
@@ -2089,7 +2402,8 @@ timing_format_full() {
 # useful signal even when the time bar collapses.
 _timing_render_bucket() {
   local label="$1" total="$2" walltime="$3" subkey="$4" agg="$5" countkey="${6:-}"
-  [[ "${total}" =~ ^[0-9]+$ ]] || return 0
+  total="$(timing_normalize_uint "${total:-0}")"
+  walltime="$(timing_normalize_uint "${walltime:-0}")"
 
   # Honor the docstring contract: render the row when total==0 if and
   # only if the bucket has non-zero call counts. Sub-second tools
@@ -2103,8 +2417,7 @@ _timing_render_bucket() {
     local total_calls
     total_calls="$(jq -r --arg ck "${countkey}" \
       '(.[$ck] // {}) | [.[]] | add // 0' <<<"${agg}" 2>/dev/null)"
-    total_calls="${total_calls:-0}"
-    [[ "${total_calls}" =~ ^[0-9]+$ ]] || total_calls=0
+    total_calls="$(timing_normalize_uint "${total_calls:-0}")"
     (( total_calls == 0 )) && return 0
   fi
 
@@ -2129,7 +2442,7 @@ _timing_render_bucket() {
 
     while IFS=$'\t' read -r secs calls name; do
       [[ -z "${name}" ]] && continue
-      [[ "${secs}" =~ ^[0-9]+$ ]] || continue
+      secs="$(timing_normalize_uint "${secs:-0}")"
       if (( secs == 0 )) && [[ -z "${calls}" || "${calls}" == "0" ]]; then
         continue
       fi
@@ -2140,7 +2453,8 @@ _timing_render_bucket() {
       local sub_bars
       sub_bars="$(_timing_bar "${sub_pct}" 14)"
       local count_suffix=""
-      if [[ -n "${calls}" ]] && [[ "${calls}" =~ ^[0-9]+$ ]] && (( calls > 0 )); then
+      calls="$(timing_normalize_uint "${calls:-0}")"
+      if (( calls > 0 )); then
         count_suffix=" (${calls})"
       fi
       # Names over 22 chars push the bar/secs/count columns rightward and
@@ -2175,10 +2489,10 @@ _timing_render_bucket() {
 # segment when rounding overshoots width; pads remainder with spaces.
 _timing_stacked_bar() {
   local pct_a="${1:-0}" pct_b="${2:-0}" pct_c="${3:-0}" width="${4:-30}"
-  [[ "${pct_a}" =~ ^[0-9]+$ ]] || pct_a=0
-  [[ "${pct_b}" =~ ^[0-9]+$ ]] || pct_b=0
-  [[ "${pct_c}" =~ ^[0-9]+$ ]] || pct_c=0
-  [[ "${width}" =~ ^[0-9]+$ ]] || width=30
+  _omc_canonical_uint_in_range "${pct_a}" 0 100 || pct_a=0
+  _omc_canonical_uint_in_range "${pct_b}" 0 100 || pct_b=0
+  _omc_canonical_uint_in_range "${pct_c}" 0 100 || pct_c=0
+  _omc_canonical_uint_in_range "${width}" 1 1000 || width=30
 
   local n_a=$(( pct_a * width / 100 ))
   local n_b=$(( pct_b * width / 100 ))
@@ -2259,8 +2573,8 @@ _timing_sparkline() {
   esac
   local out=""
   while IFS=$'\t' read -r dur mx; do
-    [[ "${dur}" =~ ^[0-9]+$ ]] || continue
-    [[ "${mx}" =~ ^[0-9]+$ ]] || continue
+    _timing_uint_is_valid "${dur}" || continue
+    _timing_uint_is_valid "${mx}" || continue
     (( mx == 0 )) && continue
     local idx
     if (( dur == 0 )); then
@@ -2280,9 +2594,8 @@ _timing_sparkline() {
 # Render an ASCII bar of given percentage and width. Uses block U+2588.
 _timing_bar() {
   local pct="${1:-0}" width="${2:-20}"
-  [[ "${pct}" =~ ^[0-9]+$ ]] || pct=0
-  [[ "${width}" =~ ^[0-9]+$ ]] || width=20
-  (( pct > 100 )) && pct=100
+  _omc_canonical_uint_in_range "${pct}" 0 100 || pct=0
+  _omc_canonical_uint_in_range "${width}" 1 1000 || width=20
   local n=$(( pct * width / 100 ))
   (( pct > 0 && n == 0 )) && n=1
   local out=""
@@ -2311,8 +2624,7 @@ timing_record_session_summary() {
 
   local walltime token_total stale_reviewer_count
   walltime="$(jq -r '.walltime_s // 0' <<<"${agg}" 2>/dev/null)"
-  walltime="${walltime:-0}"
-  [[ "${walltime}" =~ ^[0-9]+$ ]] || walltime=0
+  walltime="$(timing_normalize_uint "${walltime:-0}")"
   # Do not throw away short, token-bearing turns. The 5-second threshold is
   # a presentation noise floor, not an economics-data threshold.
   token_total="$(jq -r '[
@@ -2321,43 +2633,84 @@ timing_record_session_summary() {
       (.tokens_agent_in // 0), (.tokens_agent_out // 0),
       (.tokens_agent_cache_read // 0), (.tokens_agent_cache_creation // 0)
     ] | add // 0' <<<"${agg}" 2>/dev/null || printf '0')"
-  [[ "${token_total}" =~ ^[0-9]+$ ]] || token_total=0
+  token_total="$(timing_normalize_token_sum_uint "${token_total:-0}")"
   stale_reviewer_count="$(jq -r '.stale_reviewer_count // 0' <<<"${agg}" 2>/dev/null || printf '0')"
-  [[ "${stale_reviewer_count}" =~ ^[0-9]+$ ]] || stale_reviewer_count=0
+  stale_reviewer_count="$(timing_normalize_uint "${stale_reviewer_count:-0}")"
   # Stale-review causality rejections are an economics signal even when token
   # tracking is disabled or the transcript did not expose usage rows.
   (( walltime < 5 && token_total == 0 && stale_reviewer_count == 0 )) && return 0
 
   local sid="${SESSION_ID:-}"
   [[ -z "${sid}" ]] && return 0
+  local row ts
+  # v1.31.0 Wave 4 (data-lens F-3 + F-5): rename `session` field to
+  # `session_id` for cross-ledger join consistency (gate_events,
+  # session_summary, serendipity, classifier_misfires all use
+  # `session_id`). Add `_v:1` schema_version for future migrations.
+  # Pre-Wave-4 rows (with `session` field) coexist via the
+  # backwards-compat dedup filter below — see the `(.session // "")`
+  # / `(.session_id // "")` reads.
+  ts="$(now_epoch 2>/dev/null || true)"
+  _timing_epoch_is_valid "${ts}" || return 0
+  row="$(jq -nc \
+    --argjson ts "${ts}" \
+    --arg session_id "${sid}" \
+    --arg project_key "$(_omc_project_key 2>/dev/null || _omc_project_id)" \
+    --argjson agg "${agg}" \
+    '$agg + {_v:1,ts:$ts,session_id:$session_id,project_key:$project_key}' 2>/dev/null)"
+  [[ -z "${row}" ]] && return 0
+
+  local target
+  target="$(timing_xs_log_path)"
+
+  # Dedup-on-write: every Stop hook fires this with a fresh whole-session
+  # aggregate. A multi-prompt session would otherwise accrue N monotonically
+  # growing rows whose walltime_s sums incorrectly in timing_xs_aggregate.
+  # Keep only the latest aggregate per session_id by rewriting the file
+  # without rows whose .session matches us, then appending. Cost is O(file
+  # size) per Stop, but the file is capped at 10000 rows and shrinks to
+  # one-row-per-session under this rule, so steady-state is small.
+  # The complete read-filter-append-rotate transaction is locked. Previously
+  # only the cap helper locked, so two Stop hooks could both rewrite from the
+  # same snapshot and silently lose one session summary.
+  # Lock ordering is deliberately session -> cross-session. Re-check the
+  # captured enforcement generation only after the session lock is held, then
+  # retain that lock for the complete shared-ledger rewrite. This prevents a
+  # Stop from publishing a G1 summary after it waited behind a G2 transition,
+  # without introducing the inverse cross-session -> session order anywhere.
+  with_state_lock _timing_record_session_summary_generation_locked \
+    "${target}" "${sid}" "${row}" 2>/dev/null || true
+}
+
+_timing_record_session_summary_generation_locked() {
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 1
+  fi
+  local target="$1" sid="$2" row="$3"
+  local transferred_session_owner="" current_resume_state=""
+  local resume_ancestor_sids='[]' resume_walk_seen_sids='[]'
+  local resume_child_sid="${sid}" resume_candidate_sid=""
+  local resume_candidate_owner="" resume_next_sid="" resume_chain_steps=0
+
   # Dormant resume sources carry an ownership fence and must never publish a
-  # cross-session checkpoint: the named target owns their cumulative state,
-  # and writing here would reintroduce a second copy after live/TTL scans
-  # correctly suppressed the source directory.  A concurrency-losing target
-  # is instead stripped and reset fresh, so any later unique work remains
-  # reportable under its own session ID.
-  local transferred_session_owner=""
-  transferred_session_owner="$(read_state "resume_transferred_to" 2>/dev/null || true)"
+  # cross-session checkpoint. Re-read this after acquiring the session lock:
+  # a same-generation handoff can commit while Stop is building its aggregate.
+  transferred_session_owner="$(_timing_read_state_sid \
+    "resume_transferred_to" 2>/dev/null || true)"
   if [[ -n "${transferred_session_owner}" ]] \
       && [[ "${transferred_session_owner}" != "${sid}" ]] \
       && validate_session_id "${transferred_session_owner}" 2>/dev/null; then
-    return 0
+    return 1
   fi
-  # Walk the validated transfer chain, not just its immediate predecessor.
-  # A can have a global summary, A→B can die before B writes one, and B→C can
-  # then finish with a cumulative checkpoint.  Removing only B would leave A
-  # beside C and double-count the inherited tokens.  Every traversed edge
-  # must be proven by source.resume_transferred_to == child; corrupt/manual
-  # provenance stops the walk without deleting anything beyond the last
-  # validated edge.  The watchdog's production chain cap is 3; 16 is a
-  # defensive bound for legacy/manual state.
-  local current_resume_state
+
+  # Derive the exact ancestry used by the shared-ledger rewrite while this
+  # session remains locked. A can have a global summary, A→B can die before B
+  # writes one, and B→C can then finish with a cumulative checkpoint. Every
+  # traversed edge must be proven by source.resume_transferred_to == child;
+  # corrupt/manual provenance stops the walk at the last validated edge.
   current_resume_state="$(session_file "${STATE_JSON}")"
-  local resume_ancestor_sids='[]' resume_walk_seen_sids='[]'
-  # Versioned ancestry is written only by the transactional resume handoff.
-  # Sanitize again at the accounting boundary and cap it defensively. Unlike
-  # the live edge walk below, this evidence deliberately survives deletion of
-  # dormant source directories by the state TTL.
   if [[ -f "${current_resume_state}" ]]; then
     resume_ancestor_sids="$(jq -c '
       def valid_sid:
@@ -2376,68 +2729,36 @@ timing_record_session_summary() {
   fi
   jq -e 'type == "array"' <<<"${resume_ancestor_sids}" >/dev/null 2>&1 \
     || resume_ancestor_sids='[]'
-  local resume_child_sid="${sid}"
-  local resume_candidate_sid="" resume_candidate_owner="" resume_next_sid=""
-  resume_candidate_sid="$(read_state "resume_source_session_id" 2>/dev/null || true)"
-  local resume_chain_steps=0
+  resume_candidate_sid="$(_timing_read_state_sid \
+    "resume_source_session_id" 2>/dev/null || true)"
   while (( resume_chain_steps < 16 )); do
     [[ -n "${resume_candidate_sid}" ]] || break
     validate_session_id "${resume_candidate_sid}" 2>/dev/null || break
     [[ "${resume_candidate_sid}" != "${resume_child_sid}" ]] || break
     jq -e --arg sid "${resume_candidate_sid}" 'index($sid) == null' \
       <<<"${resume_walk_seen_sids}" >/dev/null 2>&1 || break
-    resume_candidate_owner="$(jq -r '
-      (.resume_transferred_to // "")
-      | if type == "string" then . else "" end
-    ' "${STATE_ROOT}/${resume_candidate_sid}/${STATE_JSON}" 2>/dev/null || true)"
+    resume_candidate_owner="$(_timing_read_sid_from_state_file \
+      "${STATE_ROOT}/${resume_candidate_sid}/${STATE_JSON}" \
+      "resume_transferred_to" 2>/dev/null || true)"
     [[ "${resume_candidate_owner}" == "${resume_child_sid}" ]] || break
-    resume_walk_seen_sids="$(jq -c --arg sid "${resume_candidate_sid}" '. + [$sid]' \
-      <<<"${resume_walk_seen_sids}" 2>/dev/null || printf '[]')"
+    resume_walk_seen_sids="$(jq -c --arg sid "${resume_candidate_sid}" \
+      '. + [$sid]' <<<"${resume_walk_seen_sids}" \
+      2>/dev/null || printf '[]')"
     resume_ancestor_sids="$(jq -c --arg sid "${resume_candidate_sid}" \
       'if index($sid) == null then . + [$sid] else . end | .[-16:]' \
       <<<"${resume_ancestor_sids}" 2>/dev/null || printf '[]')"
-    resume_next_sid="$(jq -r '
-      (.resume_source_session_id // "")
-      | if type == "string" then . else "" end
-    ' "${STATE_ROOT}/${resume_candidate_sid}/${STATE_JSON}" 2>/dev/null || true)"
+    resume_next_sid="$(_timing_read_sid_from_state_file \
+      "${STATE_ROOT}/${resume_candidate_sid}/${STATE_JSON}" \
+      "resume_source_session_id" 2>/dev/null || true)"
     resume_child_sid="${resume_candidate_sid}"
     resume_candidate_sid="${resume_next_sid}"
     resume_chain_steps=$((resume_chain_steps + 1))
   done
 
-  local row
-  # v1.31.0 Wave 4 (data-lens F-3 + F-5): rename `session` field to
-  # `session_id` for cross-ledger join consistency (gate_events,
-  # session_summary, serendipity, classifier_misfires all use
-  # `session_id`). Add `_v:1` schema_version for future migrations.
-  # Pre-Wave-4 rows (with `session` field) coexist via the
-  # backwards-compat dedup filter below — see the `(.session // "")`
-  # / `(.session_id // "")` reads.
-  row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
-    --arg session_id "${sid}" \
-    --arg project_key "$(_omc_project_key 2>/dev/null || _omc_project_id)" \
-    --argjson agg "${agg}" \
-    '{_v:1,ts:$ts,session_id:$session_id,project_key:$project_key} + $agg' 2>/dev/null)"
-  [[ -z "${row}" ]] && return 0
-
-  local target
-  target="$(timing_xs_log_path)"
-  mkdir -p "$(dirname "${target}")" 2>/dev/null || true
-
-  # Dedup-on-write: every Stop hook fires this with a fresh whole-session
-  # aggregate. A multi-prompt session would otherwise accrue N monotonically
-  # growing rows whose walltime_s sums incorrectly in timing_xs_aggregate.
-  # Keep only the latest aggregate per session_id by rewriting the file
-  # without rows whose .session matches us, then appending. Cost is O(file
-  # size) per Stop, but the file is capped at 10000 rows and shrinks to
-  # one-row-per-session under this rule, so steady-state is small.
-  # The complete read-filter-append-rotate transaction is locked. Previously
-  # only the cap helper locked, so two Stop hooks could both rewrite from the
-  # same snapshot and silently lose one session summary.
+  mkdir -p "$(dirname "${target}")" 2>/dev/null || return 1
   with_cross_session_log_lock "${target}" \
     _timing_record_session_summary_locked \
-      "${target}" "${sid}" "${resume_ancestor_sids}" "${row}" 2>/dev/null || true
+      "${target}" "${sid}" "${resume_ancestor_sids}" "${row}"
 }
 
 _timing_record_session_summary_locked() {
@@ -2459,8 +2780,9 @@ _timing_record_session_summary_locked() {
     : > "${tmp}"
   fi
   printf '%s\n' "${row}" >> "${tmp}" || { rm -f "${tmp}"; return 1; }
-  lines="$(wc -l < "${tmp}" 2>/dev/null || echo 0)"; lines="${lines##* }"
-  if [[ "${lines}" =~ ^[0-9]+$ ]] && (( lines > 10000 )); then
+  lines="$(wc -l < "${tmp}" 2>/dev/null || echo 0)"
+  lines="${lines//[[:space:]]/}"
+  if _timing_uint_is_valid "${lines}" && (( lines > 10000 )); then
     trim="$(mktemp "${target}.trim.XXXXXX" 2>/dev/null)" || { rm -f "${tmp}"; return 1; }
     if tail -n 8000 "${tmp}" > "${trim}" 2>/dev/null; then
       rm -f "${tmp}"
@@ -2486,7 +2808,7 @@ _timing_record_session_summary_locked() {
 timing_xs_aggregate() {
   local cutoff="${1:-0}"
   local log="${2:-}" session_filter="${3:-}" dispatch_keys_json="${4:-null}"
-  [[ "${cutoff}" =~ ^[0-9]+$ ]] || cutoff=0
+  cutoff="$(timing_normalize_uint "${cutoff:-0}")"
   jq -e '(type == "array" and all(.[]; type == "string")) or . == null' \
     <<<"${dispatch_keys_json}" >/dev/null 2>&1 \
     || dispatch_keys_json='null'
@@ -2509,13 +2831,28 @@ timing_xs_aggregate() {
     filtered_log="$(mktemp "${TMPDIR:-/tmp}/omc-timing-rollup.XXXXXX" 2>/dev/null || true)"
     if [[ -n "${filtered_log}" ]] && jq -Rc \
         --argjson dispatch_keys "${dispatch_keys_json}" '
+      def canonical_uint:
+        type == "number" and floor == . and . >= 0 and . <= 999999999999999;
+      def bucket_map_numeric_fields_valid:
+        . as $map
+        | type == "object"
+          and all(($map | to_entries[]); .value as $bucket
+            | ($bucket | type) == "object"
+              and all(["input","output","cache_read","cache_creation"][];
+                . as $key
+                | (($bucket | has($key) | not)
+                    or ($bucket[$key] | canonical_uint))));
       fromjson?
       | select(type == "object")
+      | . as $raw
+      | select(
+          (($raw | has("agent_tokens_by_id")) | not)
+          or ($raw.agent_tokens_by_id | bucket_map_numeric_fields_valid)
+        )
       | (((.session_id // .session) // "unknown")
           | if type == "string" then .[0:128] else "unknown" end
           | . + "::") as $prefix
-      | ((.agent_tokens_by_id // {})
-          | if type == "object" then . else {} end) as $ids
+      | ($raw.agent_tokens_by_id // {}) as $ids
       | .agent_tokens_by_id = (
           reduce $dispatch_keys[] as $key ({};
             if ($key | startswith($prefix)) then
@@ -2532,11 +2869,54 @@ timing_xs_aggregate() {
 
   aggregate_result="$(jq -Rsc --argjson cutoff "${aggregate_cutoff}" --arg session "${aggregate_session}" \
     --argjson dispatch_keys "${dispatch_keys_json}" '
+    def canonical_uint:
+      type == "number" and floor == . and . >= 0 and . <= 999999999999999;
     def uint:
-      if type == "number" and . >= 0 then
-        (floor | if . > 999999999999999 then 999999999999999 else . end)
+      if canonical_uint then .
       else 0 end;
-    def sum_uint: (add // 0) | uint;
+    def add_uint($left; $right):
+      (($left | uint) + ($right | uint))
+      | if . > 999999999999999 then 999999999999999 else . end;
+    def sum_uint:
+      reduce .[] as $value (0; add_uint(.; $value));
+    def num_map_numeric_fields_valid:
+      type == "object" and all(to_entries[]; .value | canonical_uint);
+    def bucket_map_numeric_fields_valid:
+      . as $map
+      | type == "object"
+        and all(($map | to_entries[]); .value as $bucket
+          | ($bucket | type) == "object"
+            and all(["input","output","cache_read","cache_creation"][];
+              . as $key
+              | (($bucket | has($key) | not)
+                  or ($bucket[$key] | canonical_uint))));
+    def xs_numeric_fields_valid:
+      . as $row
+      | (($row | has("ts")) and ($row.ts | canonical_uint) and ($row.ts > 0)
+        and (((($row.session_id // $row.session) | type) == "string")
+          and (($row.session_id // $row.session) | length) > 0
+          and (($row.session_id // $row.session) | length) <= 128)
+        and all([
+          "ts","walltime_s","agent_total_s","tool_total_s","idle_model_s",
+          "concurrent_overhead_s","directive_total_chars","directive_count",
+          "tokens_main_in","tokens_main_out","tokens_main_cache_read",
+          "tokens_main_cache_creation","tokens_agent_in","tokens_agent_out",
+          "tokens_agent_cache_read","tokens_agent_cache_creation",
+          "token_usage_rows","stale_reviewer_count","prompt_count"
+        ][]; . as $key
+          | (($row | has($key) | not)
+              or ($row[$key] | canonical_uint)))
+        and all([
+          "agent_breakdown","tool_breakdown","directive_breakdown",
+          "directive_counts"
+        ][]; . as $key
+          | (($row | has($key) | not)
+              or ($row[$key] | num_map_numeric_fields_valid)))
+        and all([
+          "agent_tokens_by_role","agent_tokens_by_model","agent_tokens_by_id"
+        ][]; . as $key
+          | (($row | has($key) | not)
+              or ($row[$key] | bucket_map_numeric_fields_valid))));
     def safe_num_map:
       if type != "object" then {}
       else to_entries | .[-512:] | map(.value |= uint) | from_entries end;
@@ -2552,7 +2932,8 @@ timing_xs_aggregate() {
           } else {input:0,output:0,cache_read:0,cache_creation:0} end)
       ) | from_entries end;
     def normalize_xs_row:
-      reduce ([
+      . as $raw
+      | reduce ([
         "ts","walltime_s","agent_total_s","tool_total_s","idle_model_s",
         "concurrent_overhead_s","directive_total_chars","directive_count",
         "tokens_main_in","tokens_main_out","tokens_main_cache_read",
@@ -2569,18 +2950,20 @@ timing_xs_aggregate() {
       | .directive_counts = ((.directive_counts // {}) | safe_num_map)
       | .agent_tokens_by_role = ((.agent_tokens_by_role // {}) | safe_bucket_map)
       | .agent_tokens_by_model = ((.agent_tokens_by_model // {}) | safe_bucket_map)
-      | .agent_tokens_by_id = ((.agent_tokens_by_id // {}) | safe_bucket_map);
+      | .agent_tokens_by_id = ((.agent_tokens_by_id // {}) | safe_bucket_map)
+      | ._timing_numeric_valid = ($raw | xs_numeric_fields_valid);
 
     [split("\n")[]
       | select(length > 0)
       | (try fromjson catch empty)
       | select(type == "object")
       | normalize_xs_row
+      | select(._timing_numeric_valid == true)
       | select(.ts >= $cutoff)
       | select($session == "" or .session_id == $session)
     ] as $rows |
     {
-      sessions:        ($rows | length),
+      sessions:        (($rows | length) | uint),
       walltime_s:      ([$rows[] | .walltime_s] | sum_uint),
       agent_total_s:   ([$rows[] | .agent_total_s] | sum_uint),
       tool_total_s:    ([$rows[] | .tool_total_s] | sum_uint),
@@ -2682,20 +3065,27 @@ timing_xs_aggregate() {
 }
 
 # timing_next_prompt_seq
-#   Atomic-ish increment of the per-session prompt counter. Stored in
+#   Atomic increment of the per-session prompt counter. Stored in
 #   session_state.json under key 'prompt_seq'. Called once per
 #   UserPromptSubmit. Returns the new value.
+_timing_next_prompt_seq_unlocked() {
+  local current next
+  current="$(_timing_read_state_uint_or_zero_when_absent \
+    "prompt_seq" "${_TIMING_UINT_INCREMENT_MAX}" 2>/dev/null)" || return 1
+  next=$((current + 1))
+  _write_state_unlocked "prompt_seq" "${next}" 2>/dev/null || return 1
+  printf '%s' "${next}"
+}
+
 timing_next_prompt_seq() {
   is_time_tracking_enabled || { printf '0'; return 0; }
   [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return 0; }
 
-  local current
-  current="$(read_state "prompt_seq" 2>/dev/null || true)"
-  current="${current:-0}"
-  [[ "${current}" =~ ^[0-9]+$ ]] || current=0
-  local next=$(( current + 1 ))
-
-  with_state_lock write_state "prompt_seq" "${next}" 2>/dev/null || true
+  local next=""
+  if ! next="$(with_state_lock _timing_next_prompt_seq_unlocked 2>/dev/null)"; then
+    printf '0'
+    return 0
+  fi
   printf '%s' "${next}"
 }
 
@@ -2705,9 +3095,7 @@ timing_next_prompt_seq() {
 timing_current_prompt_seq() {
   [[ -z "${SESSION_ID:-}" ]] && { printf '0'; return 0; }
   local current
-  current="$(read_state "prompt_seq" 2>/dev/null || true)"
-  current="${current:-0}"
-  [[ "${current}" =~ ^[0-9]+$ ]] || current=0
+  current="$(_timing_read_state_uint "prompt_seq" 2>/dev/null || printf '0')"
   printf '%s' "${current}"
 }
 
@@ -2724,11 +3112,27 @@ timing_latest_finalized_prompt_seq() {
   fi
 
   local seq
-  seq="$(jq -sr '
-    [.[] | select(.kind == "prompt_end") | (.prompt_seq // 0)]
-    | if length == 0 then 0 else max end
+  seq="$(jq -Rsr '
+    def canonical_uint:
+      type == "number" and floor == . and . >= 0
+      and . <= 999999999999999;
+    [split("\n")[] | select(length > 0) | fromjson?
+      | select(type == "object")] as $rows
+    | reduce $rows[] as $row ({started:{}, latest:0};
+        if ($row.kind == "prompt_start"
+            and ($row.ts | canonical_uint) and $row.ts > 0
+            and ($row.prompt_seq | canonical_uint)) then
+          .started[($row.prompt_seq | tostring)] = true
+        elif ($row.kind == "prompt_end"
+            and ($row.ts | canonical_uint) and $row.ts > 0
+            and ($row.prompt_seq | canonical_uint)
+            and ($row.duration_s | canonical_uint)
+            and (.started[($row.prompt_seq | tostring)] == true)) then
+          .latest = ([.latest, $row.prompt_seq] | max)
+        else . end)
+    | .latest
   ' < "${log}" 2>/dev/null || printf '0')"
   seq="${seq:-0}"
-  [[ "${seq}" =~ ^[0-9]+$ ]] || seq=0
+  _timing_uint_is_valid "${seq}" || seq=0
   printf '%s' "${seq}"
 }

@@ -91,27 +91,69 @@ set_conf_value() {
   mv "${tmp}" "${conf_path}"
 }
 
+watchdog_fixture_xml_escape() {
+  local value="${1:-}" index=0 character=""
+  while [[ "${index}" -lt "${#value}" ]]; do
+    character="${value:index:1}"
+    case "${character}" in
+      '&') printf '&amp;' ;;
+      '<') printf '&lt;' ;;
+      '>') printf '&gt;' ;;
+      '"') printf '&quot;' ;;
+      "'") printf '&apos;' ;;
+      *) printf '%s' "${character}" ;;
+    esac
+    index=$((index + 1))
+  done
+}
+
+watchdog_fixture_systemd_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//%/%%}"
+  printf '%s' "${value}"
+}
+
 render_watchdog_template_fixture() {
-  local source_path="$1"
-  local dest_path="$2"
-  local path_value="$3"
+  local source_path="$1" dest_path="$2" path_value="$3"
   local claude_home="${TEST_HOME}/.claude"
   local log_dir="${claude_home}/quality-pack/state/.watchdog-logs"
-  local path_esc="${path_value//&/\\&}"
-  path_esc="${path_esc//|/\\|}"
+  local home_value="" claude_value="" log_value="" rendered_path=""
+  local line=""
+  path_value="${path_value//$'\n'/}"
+  path_value="${path_value//$'\r'/}"
+  case "${source_path}" in
+    *.plist)
+      home_value="$(watchdog_fixture_xml_escape "${TEST_HOME}")"
+      claude_value="$(watchdog_fixture_xml_escape "${claude_home}")"
+      log_value="$(watchdog_fixture_xml_escape "${log_dir}")"
+      rendered_path="$(watchdog_fixture_xml_escape "${path_value}")"
+      ;;
+    *.service|*.timer)
+      home_value="$(watchdog_fixture_systemd_escape "${TEST_HOME}")"
+      claude_value="$(watchdog_fixture_systemd_escape "${claude_home}")"
+      log_value="$(watchdog_fixture_systemd_escape "${log_dir}")"
+      rendered_path="$(watchdog_fixture_systemd_escape "${path_value}")"
+      ;;
+    *) return 1 ;;
+  esac
   mkdir -p "$(dirname "${dest_path}")"
-  sed \
-    -e "s|__OMC_HOME__|${claude_home}|g" \
-    -e "s|__OMC_USER_HOME__|${TEST_HOME}|g" \
-    -e "s|__OMC_LOG_DIR__|${log_dir}|g" \
-    -e "s|__OMC_PATH__|${path_esc}|g" \
-    "${source_path}" > "${dest_path}"
+  : > "${dest_path}"
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line//__OMC_HOME__/${claude_value}}"
+    line="${line//__OMC_USER_HOME__/${home_value}}"
+    line="${line//__OMC_LOG_DIR__/${log_value}}"
+    line="${line//__OMC_PATH__/${rendered_path}}"
+    printf '%s\n' "${line}" >> "${dest_path}"
+  done < "${source_path}"
 }
 
 render_watchdog_cron_fixture() {
   local dest_path="$1"
   local quoted_script=""
   printf -v quoted_script '%q' "${TEST_HOME}/.claude/quality-pack/scripts/resume-watchdog.sh"
+  quoted_script="${quoted_script//%/\\%}"
   {
     printf '# oh-my-claude resume-watchdog\n'
     printf '*/2 * * * * bash %s >/dev/null 2>&1\n' "${quoted_script}"
@@ -232,9 +274,13 @@ assert_contains "missing excellence reviewer increments Errors" \
 mv "${EXCELLENCE_AGENT}.missing-fixture" "${EXCELLENCE_AGENT}"
 
 # Presence of a bundled command is not enough: a narrowed matcher silently
-# removes the tool surface while basename-only verification still looks green.
+# removes the tool surface unless the complete patch contract is checked.
 cp "${SETTINGS}" "${SETTINGS}.matcher-pristine"
 jq '
+  (.hooks.PreToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("dispatch-recovery-guard.sh")))
+    | .matcher) = "Read"
+  |
   (.hooks.PreToolUse[]
     | select(any(.hooks[]?; (.command // "") | contains("pretool-intent-guard.sh")))
     | .matcher) = "NotebookEdit"
@@ -259,29 +305,271 @@ jq '
 verify_output_1matcher="$(run_verify_with_rc)"
 verify_rc_1matcher="$(printf '%s' "${verify_output_1matcher}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
 assert_eq "verify.sh exits 1 when mutation matchers are narrowed" "1" "${verify_rc_1matcher}"
+assert_contains "verify catches non-universal dispatch recovery fence" \
+  "Managed hook command has non-canonical tuple/object contract: PreToolUse" "${verify_output_1matcher}"
 assert_contains "verify catches incomplete PreTool mutation matcher" \
-  "pretool-intent-guard.sh must use Bash|Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1matcher}"
+  "command=\$HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh" "${verify_output_1matcher}"
 assert_contains "verify catches incomplete direct PostTool edit matcher" \
-  "mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1matcher}"
+  "command=\$HOME/.claude/skills/autowork/scripts/mark-edit.sh" "${verify_output_1matcher}"
 assert_contains "verify catches wrong failed-Bash matcher" \
-  "PostToolUseFailure -> mark-edit.sh must use Bash" "${verify_output_1matcher}"
+  "Managed hook tuple count is 0, expected 1: PostToolUseFailure" "${verify_output_1matcher}"
 assert_contains "verify catches incomplete failed-verification matcher" \
-  "PostToolUseFailure -> record-verification.sh must use Bash|Read|Grep|mcp__.*" "${verify_output_1matcher}"
+  "command=\$HOME/.claude/skills/autowork/scripts/record-verification.sh" "${verify_output_1matcher}"
 assert_contains "verify catches non-universal successful-Bash dispatcher" \
-  "posttool-dispatch.sh must use a universal matcher" "${verify_output_1matcher}"
+  "command=\$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh" "${verify_output_1matcher}"
 mv "${SETTINGS}.matcher-pristine" "${SETTINGS}"
 
-# One correct entry must not mask a duplicate managed hook under another
-# matcher. Duplicate dispatchers double timing/circuit-breaker side effects.
+# A foreign command that reuses the universal fence's basename must not satisfy
+# the managed hook requirement. This guard owns every PreTool surface, so path
+# identity is part of its install contract just as it is for closeout owners.
+cp "${SETTINGS}" "${SETTINGS}.dispatch-owner-pristine"
+jq '(.hooks.PreToolUse[] | .hooks[]?
+      | select((.command // "")
+        | contains("/.claude/skills/autowork/scripts/dispatch-recovery-guard.sh"))
+      | .command) = "/opt/acme/dispatch-recovery-guard.sh --foreign-fence"' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_dispatch_spoof="$(run_verify_with_rc)"
+verify_rc_dispatch_spoof="$(printf '%s' "${verify_output_dispatch_spoof}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects a foreign same-basename dispatch fence" \
+  "1" "${verify_rc_dispatch_spoof}"
+assert_contains "foreign dispatch basename cannot replace managed hook" \
+  "Managed hook tuple count is 0, expected 1: PreToolUse" \
+  "${verify_output_dispatch_spoof}"
+mv "${SETTINGS}.dispatch-owner-pristine" "${SETTINGS}"
+
+# Constitution profile mutation owns a security-sensitive path too. A foreign
+# command with the same basename must remain visible as foreign and cannot
+# satisfy the managed authority guard requirement or matcher contract.
+cp "${SETTINGS}" "${SETTINGS}.constitution-owner-pristine"
+jq '(.hooks.PreToolUse[] | .hooks[]?
+      | select((.command // "")
+        | contains("/.claude/skills/autowork/scripts/quality-constitution-authority-guard.sh"))
+      | .command) = "/opt/acme/quality-constitution-authority-guard.sh --foreign-authority"' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_constitution_spoof="$(run_verify_with_rc)"
+verify_rc_constitution_spoof="$(printf '%s' "${verify_output_constitution_spoof}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects a foreign same-basename Constitution authority guard" \
+  "1" "${verify_rc_constitution_spoof}"
+assert_contains "foreign Constitution authority basename cannot replace managed hook" \
+  "Managed hook tuple count is 0, expected 1: PreToolUse" \
+  "${verify_output_constitution_spoof}"
+mv "${SETTINGS}.constitution-owner-pristine" "${SETTINGS}"
+
+# A foreign wrapper/decoy invocation is not a duplicate managed dispatcher.
+# Default verify warns, while the exact canonical tuple remains healthy.
 cp "${SETTINGS}" "${SETTINGS}.duplicate-pristine"
 jq '.hooks.PostToolUse += [{matcher:"Bash",hooks:[{type:"command",command:"exec -a decoy.sh /usr/bin/bash \"$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh\""}]}]' \
   "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
 verify_output_1duplicate="$(run_verify_with_rc)"
 verify_rc_1duplicate="$(printf '%s' "${verify_output_1duplicate}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
-assert_eq "verify.sh exits 1 on duplicate managed dispatcher" "1" "${verify_rc_1duplicate}"
-assert_contains "verify catches duplicate/misplaced dispatcher" \
-  "posttool-dispatch.sh must appear exactly once" "${verify_output_1duplicate}"
+assert_eq "verify.sh default mode preserves foreign dispatcher decoy" "0" "${verify_rc_1duplicate}"
+assert_contains "verify reports dispatcher decoy as foreign" \
+  "Foreign hook command: exec -a decoy.sh" "${verify_output_1duplicate}"
 mv "${SETTINGS}.duplicate-pristine" "${SETTINGS}"
+
+# An exact duplicate of a patch tuple is managed and must hard-fail.
+cp "${SETTINGS}" "${SETTINGS}.exact-duplicate-pristine"
+jq '(.hooks.PostToolUse
+      | map(select(any(.hooks[]?; (.command // "")
+        == "$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh")))
+      | .[0]) as $managed
+    | .hooks.PostToolUse += [$managed]' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_exact_duplicate="$(run_verify_with_rc)"
+verify_rc_exact_duplicate="$(printf '%s' "${verify_output_exact_duplicate}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails an exact duplicate managed tuple" \
+  "1" "${verify_rc_exact_duplicate}"
+assert_contains "exact duplicate reports tuple count two" \
+  "Managed hook tuple count is 2, expected 1: PostToolUse" \
+  "${verify_output_exact_duplicate}"
+mv "${SETTINGS}.exact-duplicate-pristine" "${SETTINGS}"
+
+# The expected authority must itself be a set. Without an explicit duplicate
+# check, two identical patch entries each observed the same single installed
+# entry and both reported count=1. Run a copied verifier against a deliberately
+# duplicated source authority so the repository's real patch is never mutated.
+authority_copy="${TEST_HOME}/verify-authority-copy"
+mkdir -p "${authority_copy}/config" "${authority_copy}/tools"
+cp "${REPO_ROOT}/verify.sh" "${authority_copy}/verify.sh"
+cp "${REPO_ROOT}/VERSION" "${authority_copy}/VERSION"
+cp "${REPO_ROOT}/config/settings.patch.json" \
+  "${authority_copy}/config/settings.patch.json"
+cp "${REPO_ROOT}/tools/install-state-report.sh" \
+  "${authority_copy}/tools/install-state-report.sh"
+cp -R "${REPO_ROOT}/bundle" "${authority_copy}/bundle"
+jq '(.hooks.PostToolUse
+      | map(select(any(.hooks[]?; (.command // "")
+        == "$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh")))
+      | .[0]) as $managed
+    | .hooks.PostToolUse += [$managed]' \
+  "${authority_copy}/config/settings.patch.json" \
+  > "${authority_copy}/config/settings.patch.json.tmp"
+mv "${authority_copy}/config/settings.patch.json.tmp" \
+  "${authority_copy}/config/settings.patch.json"
+set +e
+duplicate_authority_raw="$(TARGET_HOME="${TEST_HOME}" \
+  bash "${authority_copy}/verify.sh" 2>&1)"
+duplicate_authority_rc=$?
+set -e
+duplicate_authority_out="${duplicate_authority_raw}"$'\n'"__EXIT__=${duplicate_authority_rc}"
+assert_eq "verify hard-fails duplicate identical expected entries" \
+  "1" "${duplicate_authority_rc}"
+assert_contains "duplicate expected authority is named explicitly" \
+  "Managed hook authority contains 2 identical expected entries" \
+  "${duplicate_authority_out}"
+
+# The source bundle is the independent completeness authority for the two
+# mutable installed ledgers. A verifier copy without that authority must fail
+# closed rather than silently degrading to manifest/hash equality alone.
+cp "${REPO_ROOT}/config/settings.patch.json" \
+  "${authority_copy}/config/settings.patch.json"
+mv "${authority_copy}/bundle" "${authority_copy}/bundle.missing"
+set +e
+missing_source_raw="$(TARGET_HOME="${TEST_HOME}" \
+  bash "${authority_copy}/verify.sh" 2>&1)"
+missing_source_rc=$?
+set -e
+assert_eq "verify hard-fails without independent source coverage" \
+  "1" "${missing_source_rc}"
+assert_contains "missing source authority is named explicitly" \
+  "Source bundle is missing or unsafe; independent managed-file coverage cannot be proved" \
+  "${missing_source_raw}"
+mv "${authority_copy}/bundle.missing" "${authority_copy}/bundle"
+rm -rf "${authority_copy}"
+
+# Multi-hook entries are ordered lifecycle units. Flattened per-hook tuples
+# cannot distinguish a split entry, reversed order, or an in-entry duplicate;
+# the verifier's entry projection must reject all three while allowing foreign
+# sibling hooks interleaved around the exact managed sequence.
+cp "${SETTINGS}" "${SETTINGS}.entry-projection-pristine"
+jq '.hooks.UserPromptSubmit[0] as $entry
+    | .hooks.UserPromptSubmit = [
+        ($entry | .hooks = [$entry.hooks[0]]),
+        ($entry | .hooks = [$entry.hooks[1]])
+      ]' "${SETTINGS}" > "${SETTINGS}.tmp" \
+  && mv "${SETTINGS}.tmp" "${SETTINGS}"
+split_entry_out="$(run_verify_with_rc)"
+split_entry_rc="$(printf '%s' "${split_entry_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects split UserPromptSubmit managed entry" \
+  "1" "${split_entry_rc}"
+assert_contains "split entry reports missing canonical projection" \
+  "Managed hook tuple count is 0, expected 1: UserPromptSubmit" \
+  "${split_entry_out}"
+cp "${SETTINGS}.entry-projection-pristine" "${SETTINGS}"
+
+jq '.hooks.UserPromptSubmit[0].hooks |= reverse' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+reverse_entry_out="$(run_verify_with_rc)"
+reverse_entry_rc="$(printf '%s' "${reverse_entry_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects reversed UserPromptSubmit hook order" \
+  "1" "${reverse_entry_rc}"
+assert_contains "reversed entry reports missing canonical projection" \
+  "Managed hook tuple count is 0, expected 1: UserPromptSubmit" \
+  "${reverse_entry_out}"
+cp "${SETTINGS}.entry-projection-pristine" "${SETTINGS}"
+
+jq '.hooks.UserPromptSubmit[0].hooks |=
+      [.[0], {"type":"command","command":"/opt/acme/user-prompt-audit.sh"}, .[1]]' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+foreign_sibling_out="$(run_verify_with_rc)"
+foreign_sibling_rc="$(printf '%s' "${foreign_sibling_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "foreign sibling does not break canonical managed entry" \
+  "0" "${foreign_sibling_rc}"
+assert_contains "foreign sibling remains visible to foreign-hook audit" \
+  "Foreign hook command: /opt/acme/user-prompt-audit.sh" \
+  "${foreign_sibling_out}"
+assert_not_contains "foreign sibling does not cause managed entry failure" \
+  "Managed hook tuple count is 0, expected 1: UserPromptSubmit" \
+  "${foreign_sibling_out}"
+cp "${SETTINGS}.entry-projection-pristine" "${SETTINGS}"
+
+jq '.hooks.UserPromptSubmit[0].hooks += [.hooks.UserPromptSubmit[0].hooks[0]]' \
+  "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+duplicate_in_entry_out="$(run_verify_with_rc)"
+duplicate_in_entry_rc="$(printf '%s' "${duplicate_in_entry_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects duplicate managed hook inside entry" \
+  "1" "${duplicate_in_entry_rc}"
+assert_contains "in-entry duplicate reports missing canonical projection" \
+  "Managed hook tuple count is 0, expected 1: UserPromptSubmit" \
+  "${duplicate_in_entry_out}"
+mv "${SETTINGS}.entry-projection-pristine" "${SETTINGS}"
+
+# Required positional arguments are part of the exact tuple. Exercise the
+# native start binder, closeout phase selector, and reviewer dimension role.
+for arg_case in binder preflight reviewer; do
+  cp "${SETTINGS}" "${SETTINGS}.arg-pristine"
+  case "${arg_case}" in
+    binder)
+      jq '(.hooks.SubagentStart[].hooks[]
+            | select((.command // "") | contains("record-pending-agent.sh start"))
+            | .command) |= sub(" start$"; "")' \
+        "${SETTINGS}" > "${SETTINGS}.tmp"
+      expected_event="SubagentStart"
+      ;;
+    preflight)
+      jq '(.hooks.PostToolBatch[].hooks[]
+            | select((.command // "") | contains("closeout-preflight.sh --posttool-batch"))
+            | .command) |= sub(" --posttool-batch$"; "")' \
+        "${SETTINGS}" > "${SETTINGS}.tmp"
+      expected_event="PostToolBatch"
+      ;;
+    reviewer)
+      jq '(.hooks.SubagentStop[] | select(.matcher == "design-reviewer")
+            | .hooks[] | .command) |= sub(" design_quality$"; "")' \
+        "${SETTINGS}" > "${SETTINGS}.tmp"
+      expected_event="SubagentStop"
+      ;;
+  esac
+  mv "${SETTINGS}.tmp" "${SETTINGS}"
+  omitted_out="$(run_verify_with_rc)"
+  omitted_rc="$(printf '%s' "${omitted_out}" \
+    | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+  assert_eq "verify hard-fails omitted required arg (${arg_case})" "1" "${omitted_rc}"
+  assert_contains "omitted required arg names exact ${expected_event} tuple" \
+    "Managed hook tuple count is 0, expected 1: ${expected_event}" "${omitted_out}"
+  mv "${SETTINGS}.arg-pristine" "${SETTINGS}"
+done
+
+# Last-argv and suffix lookalikes cannot satisfy a required tuple.
+for spoof_kind in decoy suffix extra_argv; do
+  cp "${SETTINGS}" "${SETTINGS}.identity-pristine"
+  case "${spoof_kind}" in
+    decoy)
+      spoof_command='bash /tmp/evil.sh $HOME/.claude/skills/autowork/scripts/mark-edit.sh'
+      ;;
+    suffix)
+      spoof_command='/tmp/alternate/.claude/skills/autowork/scripts/mark-edit.sh'
+      ;;
+    extra_argv)
+      spoof_command='$HOME/.claude/skills/autowork/scripts/mark-edit.sh --custom'
+      ;;
+  esac
+  jq --arg cmd "${spoof_command}" '
+    (.hooks.PostToolUse[]
+      | select(any(.hooks[]?; (.command // "")
+        == "$HOME/.claude/skills/autowork/scripts/mark-edit.sh"))
+      | .hooks[]
+      | select((.command // "")
+        == "$HOME/.claude/skills/autowork/scripts/mark-edit.sh")
+      | .command) = $cmd
+  ' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+  spoof_out="$(run_verify_with_rc)"
+  spoof_rc="$(printf '%s' "${spoof_out}" \
+    | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+  assert_eq "verify rejects ${spoof_kind} as required mark-edit tuple" "1" "${spoof_rc}"
+  assert_contains "${spoof_kind} leaves exact mark-edit tuple missing" \
+    "Managed hook tuple count is 0, expected 1: PostToolUse" "${spoof_out}"
+  assert_contains "${spoof_kind} remains visible as foreign" \
+    "Foreign hook command: ${spoof_command}" "${spoof_out}"
+  mv "${SETTINGS}.identity-pristine" "${SETTINGS}"
+done
 
 # Basenames are not ownership. A legitimate custom Stop hook may share an old
 # OMC filename; default verify can warn that it is foreign, but the dispatcher
@@ -296,14 +584,14 @@ assert_eq "verify preserves same-basename foreign Stop hook in default mode" \
 assert_contains "verify still reports the custom hook as foreign" \
   "Foreign hook command: /opt/acme/stop-guard.sh --foreign-policy" \
   "${verify_output_foreign_basename}"
-assert_contains "verify does not count foreign basename as legacy managed" \
-  "Stop dispatcher has no legacy direct managed co-hooks" \
+assert_not_contains "verify does not misclassify foreign basename as managed tuple drift" \
+  "Managed hook command has non-canonical tuple" \
   "${verify_output_foreign_basename}"
 mv "${SETTINGS}.foreign-basename-pristine" "${SETTINGS}"
 
-# The three closeout owners use path-aware identity. Foreign hooks may reuse
-# their filenames without being collapsed into, counted as, or substituted for
-# the managed commands.
+# Managed ownership is exact for every hook command. Foreign hooks may reuse
+# closeout filenames without being collapsed into, counted as, or substituted
+# for the patch-owned commands.
 cp "${SETTINGS}" "${SETTINGS}.closeout-owner-pristine"
 jq '
   .hooks.MessageDisplay += [{hooks:[{type:"command",command:"/opt/acme/closeout-display.sh --foreign-closeout"}]}]
@@ -315,11 +603,11 @@ verify_rc_closeout_both="$(printf '%s' "${verify_output_closeout_both}" | grep -
 assert_eq "verify allows foreign same-basename closeout hooks beside managed owners" \
   "0" "${verify_rc_closeout_both}"
 assert_contains "verify still finds the managed MessageDisplay owner" \
-  "Hook: MessageDisplay -> closeout-display.sh" "${verify_output_closeout_both}"
+  "Hook tuple: MessageDisplay [universal] -> \$HOME/.claude/skills/autowork/scripts/closeout-display.sh" "${verify_output_closeout_both}"
 assert_contains "verify still finds the managed PostToolBatch owner" \
-  "Hook: PostToolBatch -> closeout-preflight.sh" "${verify_output_closeout_both}"
+  "Hook tuple: PostToolBatch [universal] -> \$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh --posttool-batch" "${verify_output_closeout_both}"
 assert_contains "verify still finds the managed Stop owner" \
-  "Hook: Stop -> stop-dispatch.sh" "${verify_output_closeout_both}"
+  "Hook tuple: Stop [universal] -> \$HOME/.claude/skills/autowork/scripts/stop-dispatch.sh" "${verify_output_closeout_both}"
 mv "${SETTINGS}.closeout-owner-pristine" "${SETTINGS}"
 
 cp "${SETTINGS}" "${SETTINGS}.closeout-spoof-pristine"
@@ -339,11 +627,11 @@ verify_rc_closeout_spoof="$(printf '%s' "${verify_output_closeout_spoof}" | grep
 assert_eq "foreign same-basename closeout hooks cannot satisfy managed ownership" \
   "1" "${verify_rc_closeout_spoof}"
 assert_contains "verify rejects foreign-only MessageDisplay owner" \
-  "Missing hook: MessageDisplay -> closeout-display.sh" "${verify_output_closeout_spoof}"
+  "Managed hook tuple count is 0, expected 1: MessageDisplay" "${verify_output_closeout_spoof}"
 assert_contains "verify rejects foreign-only PostToolBatch owner" \
-  "Missing hook: PostToolBatch -> closeout-preflight.sh" "${verify_output_closeout_spoof}"
+  "Managed hook tuple count is 0, expected 1: PostToolBatch" "${verify_output_closeout_spoof}"
 assert_contains "verify rejects foreign-only Stop owner" \
-  "Missing hook: Stop -> stop-dispatch.sh" "${verify_output_closeout_spoof}"
+  "Managed hook tuple count is 0, expected 1: Stop" "${verify_output_closeout_spoof}"
 mv "${SETTINGS}.closeout-spoof-pristine" "${SETTINGS}"
 
 # A command string under the right event/matcher is still inert if the hook
@@ -362,14 +650,46 @@ verify_output_1type="$(run_verify_with_rc)"
 verify_rc_1type="$(printf '%s' "${verify_output_1type}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
 assert_eq "verify.sh exits 1 when required hook handler type is not command" "1" "${verify_rc_1type}"
 assert_contains "verify rejects non-command required handler" \
-  "Missing hook: PostToolUse -> mark-edit.sh" "${verify_output_1type}"
-assert_contains "matcher invariant also requires a command handler" \
-  "PostToolUse -> mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1type}"
+  "Managed hook command has non-canonical tuple/object contract: PostToolUse" "${verify_output_1type}"
 mv "${SETTINGS}.type-pristine" "${SETTINGS}"
 
-# A substring lookalike must not satisfy required-hook presence. The general
-# bundled-path allowlist intentionally accepts user script names, so Step 4
-# must compare the parsed script basename exactly.
+# Execution modifiers are part of the patch-owned contract even when the
+# event, matcher, type, and command text still look canonical.
+cp "${SETTINGS}" "${SETTINGS}.hook-modifier-pristine"
+jq '
+  (.hooks.PostToolUse[]
+    | .hooks[]?
+    | select((.command // "") | contains("mark-edit.sh"))
+    | .timeout) = 1
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_hook_modifier="$(run_verify_with_rc)"
+verify_rc_hook_modifier="$(printf '%s' "${verify_output_hook_modifier}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects an extra managed-hook execution modifier" \
+  "1" "${verify_rc_hook_modifier}"
+assert_contains "verify names non-canonical managed-hook object" \
+  "Managed hook command has non-canonical tuple/object contract: PostToolUse" \
+  "${verify_output_hook_modifier}"
+mv "${SETTINGS}.hook-modifier-pristine" "${SETTINGS}"
+
+cp "${SETTINGS}" "${SETTINGS}.entry-modifier-pristine"
+jq '
+  (.hooks.PostToolUse[]
+    | select(any(.hooks[]?; (.command // "") | contains("mark-edit.sh")))
+    | .async) = true
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+verify_output_entry_modifier="$(run_verify_with_rc)"
+verify_rc_entry_modifier="$(printf '%s' "${verify_output_entry_modifier}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify rejects an extra managed-entry execution modifier" \
+  "1" "${verify_rc_entry_modifier}"
+assert_contains "verify names non-canonical managed-entry envelope" \
+  "Managed hook command has non-canonical tuple/object contract: PostToolUse" \
+  "${verify_output_entry_modifier}"
+mv "${SETTINGS}.entry-modifier-pristine" "${SETTINGS}"
+
+# A substring lookalike must not satisfy required-hook presence. Step 4 and
+# the patch-derived allowlist both compare the complete command literally.
 cp "${SETTINGS}" "${SETTINGS}.basename-pristine"
 jq '
   (.hooks.PostToolUse[]
@@ -382,9 +702,7 @@ verify_output_1basename="$(run_verify_with_rc)"
 verify_rc_1basename="$(printf '%s' "${verify_output_1basename}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
 assert_eq "verify.sh exits 1 on required-hook basename lookalike" "1" "${verify_rc_1basename}"
 assert_contains "verify rejects not-mark-edit.sh basename spoof" \
-  "Missing hook: PostToolUse -> mark-edit.sh" "${verify_output_1basename}"
-assert_contains "matcher invariant rejects basename spoof too" \
-  "PostToolUse -> mark-edit.sh must use Edit|Write|MultiEdit|NotebookEdit" "${verify_output_1basename}"
+  "Managed hook tuple count is 0, expected 1: PostToolUse" "${verify_output_1basename}"
 mv "${SETTINGS}.basename-pristine" "${SETTINGS}"
 
 # `disableAllHooks` overrides every structurally correct entry. The installer
@@ -559,6 +877,30 @@ jq --arg cmd "${foreign_cmd}" '
   .hooks.PostToolUse |= map(select(.hooks[0].command != $cmd))
 ' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
 
+# A script merely placed in a managed directory is not patch-owned.
+untracked_managed_cmd='$HOME/.claude/skills/autowork/scripts/not-in-settings-patch.sh'
+jq --arg cmd "${untracked_managed_cmd}" '
+  .hooks.PostToolUse += [{matcher:"*",hooks:[{type:"command",command:$cmd}]}]
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+untracked_install_out="$(run_install)"
+assert_contains "installer warns for untracked managed-directory command" \
+  "${untracked_managed_cmd}" "${untracked_install_out}"
+untracked_default_out="$(run_verify_with_rc)"
+untracked_default_rc="$(printf '%s' "${untracked_default_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "untracked managed-directory command warns by default" \
+  "0" "${untracked_default_rc}"
+assert_contains "untracked managed-directory command is named" \
+  "Foreign hook command: ${untracked_managed_cmd}" "${untracked_default_out}"
+untracked_strict_out="$(run_verify_with_rc --strict)"
+untracked_strict_rc="$(printf '%s' "${untracked_strict_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "untracked managed-directory command fails strict mode" \
+  "1" "${untracked_strict_rc}"
+jq --arg cmd "${untracked_managed_cmd}" '
+  .hooks.PostToolUse |= map(select(.hooks[0].command != $cmd))
+' "${SETTINGS}" > "${SETTINGS}.tmp" && mv "${SETTINGS}.tmp" "${SETTINGS}"
+
 printf '\n'
 
 # ---------------------------------------------------------------------------
@@ -585,19 +927,207 @@ else
   # bundled-bytes hash no longer matches.
   printf '\n# A2 SIMULATED TAMPER %s\n' "$$" >> "${TARGET_SCRIPT}"
 
-  # Default mode: drift detected as warn, exit 0.
+  # Managed-file drift is always a hard failure, independent of --strict.
   verify_output_3b="$(run_verify_with_rc)"
   verify_rc_3b="$(printf '%s' "${verify_output_3b}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
-  assert_eq "verify.sh default mode exits 0 on drift (warn only)" "0" "${verify_rc_3b}"
+  assert_eq "verify.sh default mode hard-fails managed drift" "1" "${verify_rc_3b}"
   assert_contains "verify.sh Step 9 names the drifted file" \
     "stop-guard.sh" "${verify_output_3b}"
   assert_contains "verify.sh Step 9 says Drift" \
     "Drift:" "${verify_output_3b}"
 
-  # --strict mode: drift escalates to FAIL exit 1.
+  # --strict mode remains a hard failure too.
   verify_output_3s="$(run_verify_with_rc --strict)"
   verify_rc_3s="$(printf '%s' "${verify_output_3s}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
   assert_eq "verify.sh --strict exits 1 on drift" "1" "${verify_rc_3s}"
+fi
+
+printf '\n'
+
+# ---------------------------------------------------------------------------
+# Test 3a: manifest-owned libraries receive bash -n coverage
+# ---------------------------------------------------------------------------
+printf '3a. Manifest-owned library syntax coverage\n'
+
+# Restore the drifted fixture, then corrupt a sourced library that the old
+# hand-maintained syntax list omitted.
+run_install >/dev/null
+
+cp "${HASHES_PATH}" "${HASHES_PATH}.pristine"
+: > "${HASHES_PATH}"
+empty_hash_out="$(run_verify_with_rc)"
+empty_hash_rc="$(printf '%s' "${empty_hash_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails an empty checksum manifest" "1" "${empty_hash_rc}"
+assert_contains "empty checksum manifest is named" \
+  "Checksum manifest is empty" "${empty_hash_out}"
+cp "${HASHES_PATH}.pristine" "${HASHES_PATH}"
+
+printf '%s\n' 'not-a-checksum-line' > "${HASHES_PATH}"
+malformed_hash_out="$(run_verify_with_rc)"
+malformed_hash_rc="$(printf '%s' "${malformed_hash_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails malformed checksum manifest syntax" \
+  "1" "${malformed_hash_rc}"
+assert_contains "malformed checksum line is named" \
+  "Malformed checksum manifest line" "${malformed_hash_out}"
+cp "${HASHES_PATH}.pristine" "${HASHES_PATH}"
+
+printf '%064d  ../outside.sh\n' 0 > "${HASHES_PATH}"
+unsafe_hash_out="$(run_verify_with_rc)"
+unsafe_hash_rc="$(printf '%s' "${unsafe_hash_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails checksum path traversal" "1" "${unsafe_hash_rc}"
+assert_contains "unsafe checksum path is named" \
+  "Unsafe checksum manifest path: ../outside.sh" "${unsafe_hash_out}"
+cp "${HASHES_PATH}.pristine" "${HASHES_PATH}"
+
+mv "${HASHES_PATH}" "${HASHES_PATH}.real"
+ln -s "${HASHES_PATH}.real" "${HASHES_PATH}"
+symlink_hash_out="$(run_verify_with_rc)"
+symlink_hash_rc="$(printf '%s' "${symlink_hash_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails symlinked checksum manifest" "1" "${symlink_hash_rc}"
+assert_contains "symlinked checksum manifest is named" \
+  "installed-hashes.txt is not a safe regular file" "${symlink_hash_out}"
+rm -f "${HASHES_PATH}"
+mv "${HASHES_PATH}.real" "${HASHES_PATH}"
+
+mv "${HASHES_PATH}" "${HASHES_PATH}.missing-fixture"
+missing_hash_out="$(run_verify_with_rc)"
+missing_hash_rc="$(printf '%s' "${missing_hash_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails a missing checksum manifest" \
+  "1" "${missing_hash_rc}"
+assert_contains "missing checksum manifest names incomplete coverage" \
+  "complete managed-file coverage cannot be proved" "${missing_hash_out}"
+assert_contains "missing checksum manifest still reaches summary" \
+  "Errors:" "${missing_hash_out}"
+mv "${HASHES_PATH}.missing-fixture" "${HASHES_PATH}"
+
+MANIFEST_PATH="${CLAUDE_HOME}/quality-pack/state/installed-manifest.txt"
+cp "${MANIFEST_PATH}" "${MANIFEST_PATH}.coverage-pristine"
+cp "${HASHES_PATH}" "${HASHES_PATH}.coverage-pristine"
+
+# `exclude_ios` is install metadata, but it follows the same trimmed
+# last-valid duplicate rule as runtime config. Model a --no-ios ledger while
+# leaving an invalid later hand edit in place: the valid `on` row must remain
+# authoritative for the independent source-set comparison.
+cp "${CLAUDE_HOME}/oh-my-claude.conf" \
+  "${CLAUDE_HOME}/oh-my-claude.conf.coverage-pristine"
+grep -v '^agents/ios-' "${MANIFEST_PATH}.coverage-pristine" \
+  > "${MANIFEST_PATH}"
+grep -v '  agents/ios-' "${HASHES_PATH}.coverage-pristine" \
+  > "${HASHES_PATH}"
+printf 'exclude_ios= on \nexclude_ios=invalid\n' \
+  >> "${CLAUDE_HOME}/oh-my-claude.conf"
+exclude_last_valid_out="$(run_verify_with_rc)"
+exclude_last_valid_rc="$(printf '%s' "${exclude_last_valid_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify uses last-valid exclude_ios metadata" \
+  "0" "${exclude_last_valid_rc}"
+assert_contains "last-valid no-ios source coverage still matches" \
+  "Source bundle and installed manifest coverage sets match exactly" \
+  "${exclude_last_valid_out}"
+cp "${MANIFEST_PATH}.coverage-pristine" "${MANIFEST_PATH}"
+cp "${HASHES_PATH}.coverage-pristine" "${HASHES_PATH}"
+mv "${CLAUDE_HOME}/oh-my-claude.conf.coverage-pristine" \
+  "${CLAUDE_HOME}/oh-my-claude.conf"
+
+sed '1d' "${HASHES_PATH}.coverage-pristine" > "${HASHES_PATH}"
+coverage_mismatch_out="$(run_verify_with_rc)"
+coverage_mismatch_rc="$(printf '%s' "${coverage_mismatch_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails manifest/hash path-set mismatch" \
+  "1" "${coverage_mismatch_rc}"
+assert_contains "manifest/hash mismatch reports both path authorities" \
+  "Installed manifest/checksum path sets differ" "${coverage_mismatch_out}"
+cp "${HASHES_PATH}.coverage-pristine" "${HASHES_PATH}"
+
+# Removing the same row from both mutable installed ledgers used to preserve
+# Errors: 0. The source checkout is the independent completeness authority.
+omitted_coverage_path="$(grep -v '^agents/ios-' \
+  "${MANIFEST_PATH}.coverage-pristine" | head -n 1)"
+grep -Fvx -- "${omitted_coverage_path}" \
+  "${MANIFEST_PATH}.coverage-pristine" > "${MANIFEST_PATH}"
+: > "${HASHES_PATH}"
+while IFS= read -r checksum_row || [[ -n "${checksum_row}" ]]; do
+  checksum_path="${checksum_row#*  }"
+  [[ "${checksum_path}" == "${omitted_coverage_path}" ]] && continue
+  printf '%s\n' "${checksum_row}" >> "${HASHES_PATH}"
+done < "${HASHES_PATH}.coverage-pristine"
+source_coverage_out="$(run_verify_with_rc)"
+source_coverage_rc="$(printf '%s' "${source_coverage_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "verify hard-fails a row removed from both installed ledgers" \
+  "1" "${source_coverage_rc}"
+assert_contains "source coverage comparison names the omitted path" \
+  "Source bundle/installed manifest path sets differ" "${source_coverage_out}"
+cp "${MANIFEST_PATH}.coverage-pristine" "${MANIFEST_PATH}"
+cp "${HASHES_PATH}.coverage-pristine" "${HASHES_PATH}"
+rm -f "${MANIFEST_PATH}.coverage-pristine" \
+  "${HASHES_PATH}.coverage-pristine"
+rm -f "${HASHES_PATH}.pristine"
+
+checker_stub_dir="$(mktemp -d)"
+cat > "${checker_stub_dir}/shasum" <<'SHASUM_STUB'
+#!/usr/bin/env bash
+printf 'simulated checker internal failure\n' >&2
+exit 42
+SHASUM_STUB
+chmod +x "${checker_stub_dir}/shasum"
+checker_failure_out="$(PATH="${checker_stub_dir}:${PATH}" run_verify_with_rc)"
+checker_failure_rc="$(printf '%s' "${checker_failure_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "untrusted PATH checksum checker is ignored" \
+  "0" "${checker_failure_rc}"
+assert_contains "trusted system checksum checker remains authoritative" \
+  "Trusted SHA-256 authority executable (" "${checker_failure_out}"
+assert_not_contains "writable PATH checksum stub is not selected" \
+  "${checker_stub_dir}/shasum" "${checker_failure_out}"
+assert_not_contains "untrusted checksum stub never executes" \
+  "simulated checker internal failure" "${checker_failure_out}"
+rm -rf "${checker_stub_dir}"
+
+CORRUPT_LIB="${CLAUDE_HOME}/skills/autowork/scripts/lib/verification.sh"
+if [[ -f "${CORRUPT_LIB}" ]]; then
+  mv "${CORRUPT_LIB}" "${CORRUPT_LIB}.real"
+  ln -s "${CORRUPT_LIB}.real" "${CORRUPT_LIB}"
+  symlink_lib_out="$(run_verify_with_rc)"
+  symlink_lib_rc="$(printf '%s' "${symlink_lib_out}" \
+    | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+  assert_eq "verify hard-fails a symlinked manifest-owned shell script" \
+    "1" "${symlink_lib_rc}"
+  assert_contains "verify names symlinked manifest-owned shell script" \
+    "Cannot check (missing, nonregular, or symlinked): ${CORRUPT_LIB}" \
+    "${symlink_lib_out}"
+  rm -f "${CORRUPT_LIB}"
+  mv "${CORRUPT_LIB}.real" "${CORRUPT_LIB}"
+
+  corrupt_lib_parent="${CLAUDE_HOME}/skills/autowork/scripts/lib"
+  mv "${corrupt_lib_parent}" "${corrupt_lib_parent}.real-parent"
+  ln -s "${corrupt_lib_parent}.real-parent" "${corrupt_lib_parent}"
+  symlink_parent_out="$(run_verify_with_rc)"
+  symlink_parent_rc="$(printf '%s' "${symlink_parent_out}" \
+    | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+  assert_eq "verify hard-fails a symlinked parent of managed files" \
+    "1" "${symlink_parent_rc}"
+  assert_contains "verify names unsafe managed parent component" \
+    "Unsafe symlinked or non-directory managed path: ${CORRUPT_LIB}" \
+    "${symlink_parent_out}"
+  rm -f "${corrupt_lib_parent}"
+  mv "${corrupt_lib_parent}.real-parent" "${corrupt_lib_parent}"
+
+  printf '\nif then\n' >> "${CORRUPT_LIB}"
+  corrupt_lib_out="$(run_verify_with_rc)"
+  corrupt_lib_rc="$(printf '%s' "${corrupt_lib_out}" \
+    | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+  assert_eq "verify hard-fails syntax corruption in manifest-owned library" \
+    "1" "${corrupt_lib_rc}"
+  assert_contains "verify names corrupt library syntax" \
+    "Syntax error in: ${CORRUPT_LIB}" "${corrupt_lib_out}"
+else
+  printf '  SKIP: verification library not installed\n'
 fi
 
 printf '\n'
@@ -663,13 +1193,13 @@ done
 printf '\n'
 
 # ---------------------------------------------------------------------------
-# Test 3c: Cosmetic-variant false-positive resistance
+# Test 3c: Exact command allowlist rejects cosmetic rewrites
 # ---------------------------------------------------------------------------
 #
-# Whitespace-normalization should accept legitimate cosmetic variants
-# (double space, tab) as bundled. Tab and double-space are reformats
-# of the bundled command; they should NOT trigger the foreign warning.
-printf '3c. Cosmetic legitimate variants accepted\n'
+# Patch ownership is byte-exact. Double-space/tab rewrites and retired
+# managed-dir commands remain foreign until the patch explicitly declares
+# those command strings.
+printf '3c. Cosmetic command rewrites remain foreign\n'
 
 cosmetic_cmds=(
   'bash  $HOME/.claude/skills/autowork/scripts/canary-claim-audit.sh'
@@ -686,10 +1216,11 @@ for cosmetic in "${cosmetic_cmds[@]}"; do
 
   cosmetic_out="$(run_verify_with_rc --strict)"
   cosmetic_rc="$(printf '%s' "${cosmetic_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
-  if [[ "${cosmetic_rc}" == "0" ]]; then
+  if [[ "${cosmetic_rc}" == "1" ]] \
+    && [[ "${cosmetic_out}" == *"Foreign hook command:"* ]]; then
     pass=$((pass + 1))
   else
-    printf '  FAIL: cosmetic legit variant flagged: %q (rc=%s)\n' "${cosmetic}" "${cosmetic_rc}" >&2
+    printf '  FAIL: cosmetic rewrite not flagged: %q (rc=%s)\n' "${cosmetic}" "${cosmetic_rc}" >&2
     fail=$((fail + 1))
   fi
 
@@ -723,6 +1254,10 @@ else
   printf '  FAIL: verify.sh exited 0 on malformed JSON (expected non-zero)\n' >&2
   fail=$((fail + 1))
 fi
+assert_contains "malformed settings reaches explicit jq diagnostic" \
+  "settings.json failed jq parse:" "${verify_malformed_out}"
+assert_contains "malformed settings still reaches verification summary" \
+  "Errors:" "${verify_malformed_out}"
 
 # Recover legitimate state.
 mv "${SETTINGS}.legit.bak" "${SETTINGS}"
@@ -807,6 +1342,23 @@ verify_recovered_out="$(run_verify_with_rc)"
 verify_recovered_rc="$(printf '%s' "${verify_recovered_out}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
 assert_eq "verify.sh exits 0 after install.sh restores .statusLine" \
   "0" "${verify_recovered_rc}"
+
+# Command equality alone is insufficient: type and padding are part of the
+# patch-owned statusLine object.
+jq '.statusLine.padding = 7' "${SETTINGS}" > "${SETTINGS}.tmp" \
+  && mv "${SETTINGS}.tmp" "${SETTINGS}"
+status_object_out="$(run_verify_with_rc)"
+status_object_rc="$(printf '%s' "${status_object_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "statusLine object drift warns in default mode" "0" "${status_object_rc}"
+assert_contains "statusLine object drift is named" \
+  ".statusLine object differs from bundled type/command/padding contract" \
+  "${status_object_out}"
+status_object_strict_out="$(run_verify_with_rc --strict)"
+status_object_strict_rc="$(printf '%s' "${status_object_strict_out}" \
+  | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
+assert_eq "statusLine object drift fails strict mode" "1" "${status_object_strict_rc}"
+run_install >/dev/null
 
 # Note: the quality-reviewer flagged "warning silently skipped when
 # jq absent" as MEDIUM, but install.sh:898 hard-requires jq before
@@ -1019,6 +1571,8 @@ chmod +x "${VERIFY_STUB_BIN}/uname"
 cron_store="${TEST_HOME}/mock.crontab"
 write_verify_crontab_stub "${VERIFY_STUB_BIN}" "${cron_store}"
 render_watchdog_cron_fixture "${cron_store}"
+printf '%s\n' '17 * * * * bash /opt/acme/resume-watchdog.sh --custom' \
+  >> "${cron_store}"
 
 verify_path_cron="${VERIFY_STUB_BIN}:$PATH"
 verify_watchdog_cron_out="$(run_verify_env_with_rc "${verify_path_cron}" "")"
@@ -1026,6 +1580,8 @@ verify_watchdog_cron_rc="$(printf '%s' "${verify_watchdog_cron_out}" | grep -o '
 assert_eq "verify.sh exits 0 on matching cron fallback" "0" "${verify_watchdog_cron_rc}"
 assert_contains "verify.sh passes matching cron fallback" \
   "resume-watchdog cron entry matches installed render" "${verify_watchdog_cron_out}"
+assert_not_contains "foreign same-basename cron is not claimed as managed" \
+  "multiple resume-watchdog cron entries" "${verify_watchdog_cron_out}"
 
 # 6h. Stale or mismatched cron fallback warns by default and fails under --strict.
 cat > "${cron_store}" <<'EOF'
@@ -1091,6 +1647,43 @@ assert_contains "verify.sh names unexpected cron alongside LaunchAgent" \
 verify_watchdog_mac_extra_cron_strict="$(run_verify_env_with_rc "${verify_path_mac_cron}" "" --strict)"
 verify_watchdog_mac_extra_cron_strict_rc="$(printf '%s' "${verify_watchdog_mac_extra_cron_strict}" | grep -o '__EXIT__=[0-9]*' | cut -d= -f2)"
 assert_eq "verify.sh --strict exits 1 on unexpected cron alongside LaunchAgent" "1" "${verify_watchdog_mac_extra_cron_strict_rc}"
+
+# jq is a harness runtime dependency, including in the one-line health path.
+# Build a command allowlist that deliberately omits jq so this remains valid
+# on hosts where jq lives in /usr/bin beside every other system utility.
+no_jq_bin="${TEST_HOME}/no-jq-bin"
+mkdir -p "${no_jq_bin}"
+for no_jq_cmd in bash date cat head tr find wc rm grep sed awk uname python3 \
+    git sort uniq mktemp cmp tail cut dirname basename stat readlink timeout; do
+  no_jq_source="$(command -v "${no_jq_cmd}" 2>/dev/null || true)"
+  [[ -n "${no_jq_source}" ]] || continue
+  ln -sf "${no_jq_source}" "${no_jq_bin}/${no_jq_cmd}"
+done
+
+set +e
+no_jq_health_out="$(PATH="${no_jq_bin}" TARGET_HOME="${TEST_HOME}" \
+  /bin/bash "${REPO_ROOT}/verify.sh" --health 2>&1)"
+no_jq_health_rc=$?
+set -e
+assert_eq "verify --health hard-fails without jq" "2" "${no_jq_health_rc}"
+assert_eq "verify --health no-jq output is one-line canonical FAIL" \
+  "FAIL: jq runtime dependency is missing" "${no_jq_health_out}"
+
+set +e
+no_jq_full_out="$(PATH="${no_jq_bin}" TARGET_HOME="${TEST_HOME}" \
+  /bin/bash "${REPO_ROOT}/verify.sh" 2>&1)"
+no_jq_full_rc=$?
+set -e
+if [[ "${no_jq_full_rc}" -ne 0 ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: full verify must exit nonzero without jq\n' >&2
+  fail=$((fail + 1))
+fi
+assert_contains "full verify names missing jq as a hard failure" \
+  "[FAIL] jq runtime dependency is missing" "${no_jq_full_out}"
+assert_not_contains "full verify cannot claim Errors: 0 without jq" \
+  "Errors:        0" "${no_jq_full_out}"
 
 printf '\n'
 

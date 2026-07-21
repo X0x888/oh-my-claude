@@ -2,6 +2,58 @@
 
 set -euo pipefail
 
+# Close the BASH_ENV alias surface before any downstream function body or
+# source command is parsed. Entering POSIX lookup makes the real special
+# unset/set builtins outrank same-named functions; then remove functions that
+# could intercept alias control or the two critical library loads and disable
+# parse-time alias expansion. Preserve the caller's POSIX mode and
+# POSIXLY_CORRECT state exactly.
+_OMC_ALIAS_POSIX_WAS_SET=0
+_OMC_ALIAS_POSIX_VAR_WAS_SET=0
+_OMC_ALIAS_POSIX_VALUE=""
+if [[ -o posix ]]; then
+  _OMC_ALIAS_POSIX_WAS_SET=1
+fi
+if [[ "${POSIXLY_CORRECT+x}" == "x" ]]; then
+  _OMC_ALIAS_POSIX_VAR_WAS_SET=1
+  _OMC_ALIAS_POSIX_VALUE="${POSIXLY_CORRECT}"
+fi
+POSIXLY_CORRECT=1 || \return 1
+if ! \unset -f shopt unset set builtin command source return; then
+  if [[ "${_OMC_ALIAS_POSIX_VAR_WAS_SET}" == "1" ]]; then
+    POSIXLY_CORRECT="${_OMC_ALIAS_POSIX_VALUE}" || \return 1
+  else
+    \unset POSIXLY_CORRECT || \return 1
+  fi
+  if [[ "${_OMC_ALIAS_POSIX_WAS_SET}" == "1" ]]; then
+    \set -o posix || \return 1
+  else
+    \set +o posix || \return 1
+    # POSIX `unset -f` rejects `.` as a non-identifier even though Bash can
+    # import and invoke a function with that name outside POSIX mode. Remove
+    # it only after the trusted unset builtin has been restored and lookup is
+    # back in the caller's non-POSIX mode.
+    \unset -f '.' || \return 1
+  fi
+  \unset _OMC_ALIAS_POSIX_WAS_SET _OMC_ALIAS_POSIX_VAR_WAS_SET \
+    _OMC_ALIAS_POSIX_VALUE || \return 1
+  \return 1
+fi
+\shopt -u expand_aliases || \return 1
+if [[ "${_OMC_ALIAS_POSIX_VAR_WAS_SET}" == "1" ]]; then
+  POSIXLY_CORRECT="${_OMC_ALIAS_POSIX_VALUE}" || \return 1
+else
+  \unset POSIXLY_CORRECT || \return 1
+fi
+if [[ "${_OMC_ALIAS_POSIX_WAS_SET}" == "1" ]]; then
+  \set -o posix || \return 1
+else
+  \set +o posix || \return 1
+  \unset -f '.' || \return 1
+fi
+\unset _OMC_ALIAS_POSIX_WAS_SET _OMC_ALIAS_POSIX_VAR_WAS_SET \
+  _OMC_ALIAS_POSIX_VALUE || \return 1
+
 # Idempotent re-source guard (v1.48 W3.1). The posttool dispatcher sources
 # common.sh once and then pipeline-subshell-sources each handler script;
 # every handler's own `. common.sh` line lands here and returns immediately
@@ -86,8 +138,172 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 # --- Configurable thresholds (tunable via oh-my-claude.conf) ---
-# Precedence: env var > conf file > built-in default.
+# Precedence: valid env var > nearest allowed project conf > user conf >
+# built-in default. Malformed sources are ignored rather than becoming
+# authoritative merely because they are non-empty.
 # Track which vars were set via env before applying defaults.
+
+# Compare a canonical unsigned decimal against trusted canonical bounds without
+# ever evaluating the caller-controlled text as Bash arithmetic. This is shared
+# by every public numeric config flag: Bash 3.2 accepts octal-looking literals
+# and machine-width arithmetic can wrap attacker-sized decimals.
+_omc_canonical_uint_in_range() {
+  local value="${1:-}" minimum="${2:-}" maximum="${3:-}"
+  local value_len minimum_len maximum_len
+  local LC_ALL=C
+  # This is a shell pattern, not a regex: `[0-9]*` would mean "one digit,
+  # then any suffix" and would both reject single-digit nonzero values and
+  # admit text such as `12abc`. Validate the complete byte string first,
+  # then reject non-canonical leading zeroes explicitly.
+  case "${value}" in
+    ''|*[!0-9]*|0?*) return 1 ;;
+    0|[1-9]*) ;;
+    *) return 1 ;;
+  esac
+  value_len="${#value}"
+  minimum_len="${#minimum}"
+  maximum_len="${#maximum}"
+  (( value_len < minimum_len || value_len > maximum_len )) && return 1
+  if (( value_len == minimum_len )) && [[ "${value}" < "${minimum}" ]]; then
+    return 1
+  fi
+  if (( value_len == maximum_len )) && [[ "${value}" > "${maximum}" ]]; then
+    return 1
+  fi
+  return 0
+}
+
+_omc_claude_bin_value_is_valid() {
+  local value="${1:-}"
+  local LC_ALL=C
+  [[ "${value}" == /* && "${value}" != *[[:cntrl:]]* \
+      && -f "${value}" \
+      && -x "${value}" ]] || return 1
+  case "${value}" in
+    /tmp/*|/private/tmp/*|/var/tmp/*|/Users/Shared/*|/dev/shm/*) return 1 ;;
+  esac
+  return 0
+}
+
+_omc_diagnostic_preview() {
+  local raw="${1-}" bounded="" suffix="" escaped=""
+  bounded="${raw:0:120}"
+  [[ "${#raw}" -le 120 ]] || suffix="…"
+  printf -v escaped '%q' "${bounded}"
+  printf '%s%s' "${escaped}" "${suffix}"
+}
+
+_omc_normalize_compat_toggle() {
+  local value="${1:-}" enabled="${2:-on}" disabled="${3:-off}"
+  case "${value}" in
+    [Tt][Rr][Uu][Ee]|[Oo][Nn]|1|[Yy][Ee][Ss]) printf '%s' "${enabled}" ;;
+    [Ff][Aa][Ll][Ss][Ee]|[Oo][Ff][Ff]|0|[Nn][Oo]) printf '%s' "${disabled}" ;;
+    *) return 1 ;;
+  esac
+}
+
+_omc_ere_is_valid() {
+  local pattern="${1-}" rc=0 PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  LC_ALL=C grep -Eq -- "${pattern}" </dev/null 2>/dev/null || rc=$?
+  [[ "${rc}" -ne 2 ]]
+}
+
+# Normalize one config value to the exact spelling consumed by the runtime.
+# Invalid values print nothing and fail, allowing the next lower-precedence
+# source to load. Keep the key groups aligned with omc-config.sh.
+_omc_normalize_config_value() {
+  local key="${1:-}" value="${2-}"
+  local LC_ALL=C
+  case "${key}" in
+    agent_first_gate)
+      case "${value}" in
+        [Oo][Nn]) printf 'on' ;;
+        [Oo][Ff][Ff]) printf 'off' ;;
+        *) return 1 ;;
+      esac
+      ;;
+    guard_exhaustion_mode)
+      case "${value}" in
+        silent|release) printf 'silent' ;;
+        scorecard|warn) printf 'scorecard' ;;
+        block|strict) printf 'block' ;;
+        *) return 1 ;;
+      esac
+      ;;
+    gate_level)
+      case "${value}" in basic|standard|full) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    quality_policy)
+      case "${value}" in balanced|zero_steering) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    definition_of_excellent)
+      case "${value}" in adaptive|always|off) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    taste_learning)
+      case "${value}" in off|review|adaptive) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    model_tier)
+      case "${value}" in quality|balanced|economy) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    output_style)
+      case "${value}" in opencode|executive|preserve) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    directive_budget)
+      case "${value}" in off|maximum|balanced|minimal) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    pretool_intent_guard|bg_spawn_gate|whats_new_session_hint)
+      case "${value}" in true|false) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    quality_constitution|discovered_scope|advisory_no_findings_gate|ulw_pause_validator|council_deep_default|auto_memory|repo_lessons|metis_on_plan_gate|prometheus_suggest|intent_verify_directive|exemplifying_directive|exemplifying_scope_gate|objective_contract_gate|objective_contract_arm_on_god_scope|goal_gate|goal_auto_arm|prompt_text_override|mark_deferred_strict|shortcut_ratio_gate|no_defer_mode|god_scope_on_bare_prompt|exhaustive_auth_directive|circuit_breaker|transcript_archive|stop_failure_capture|prompt_persist|resume_watchdog|time_tracking|token_tracking|model_drift_canary|blindspot_inventory|intent_broadening|inferred_contract|divergence_directive|workflow_substrate|classifier_telemetry|self_audit_nudge|auto_tune|lazy_session_start|mid_session_memory_checkpoint)
+      case "${value}" in on|off) printf '%s' "${value}" ;; *) return 1 ;; esac
+      ;;
+    verify_confidence_threshold)
+      _omc_canonical_uint_in_range "${value}" 0 100 || return 1
+      printf '%s' "${value}"
+      ;;
+    quality_constitution_max_context_chars)
+      _omc_canonical_uint_in_range "${value}" 512 12000 || return 1
+      printf '%s' "${value}"
+      ;;
+    stall_threshold|excellence_file_count|state_ttl_days|dimension_gate_file_count|traceability_file_count|resume_request_ttl_days|resume_watchdog_cooldown_secs|resume_session_ttl_secs|resume_scan_max_sessions|time_tracking_xs_retain_days|blindspot_ttl_seconds|advisory_no_findings_threshold)
+      _omc_canonical_uint_in_range "${value}" 1 2147483647 || return 1
+      printf '%s' "${value}"
+      ;;
+    pause_external_blocker_threshold|objective_contract_min_files|goal_stuck_threshold|wave_override_ttl_seconds|time_card_min_seconds|resume_request_per_cwd_cap)
+      _omc_canonical_uint_in_range "${value}" 0 2147483647 || return 1
+      printf '%s' "${value}"
+      ;;
+    custom_verify_mcp_tools)
+      [[ "${value}" != *[[:cntrl:]]* ]] || return 1
+      printf '%s' "${value}"
+      ;;
+    custom_verify_patterns)
+      [[ "${value}" != *[[:cntrl:]]* ]] || return 1
+      [[ -n "${value}" ]] || return 0
+      _omc_ere_is_valid "${value}" || return 1
+      printf '%s' "${value}"
+      ;;
+    claude_bin)
+      _omc_claude_bin_value_is_valid "${value}" || return 1
+      printf '%s' "${value}"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_omc_sanitize_captured_env() {
+  local capture_name="$1" env_name="$2" key="$3" raw normalized
+  raw="${!capture_name-}"
+  [[ -n "${raw}" ]] || return 0
+  if normalized="$(_omc_normalize_config_value "${key}" "${raw}")"; then
+    printf -v "${capture_name}" '%s' "${normalized}"
+    printf -v "${env_name}" '%s' "${normalized}"
+  else
+    printf -v "${capture_name}" '%s' ''
+    unset "${env_name}"
+  fi
+}
+
 _omc_env_stall="${OMC_STALL_THRESHOLD:-}"
 _omc_env_excellence="${OMC_EXCELLENCE_FILE_COUNT:-}"
 _omc_env_ttl="${OMC_STATE_TTL_DAYS:-}"
@@ -97,18 +313,9 @@ _omc_env_exhaustion="${OMC_GUARD_EXHAUSTION_MODE:-}"
 _omc_env_verify_conf="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-}"
 _omc_env_gate_level="${OMC_GATE_LEVEL:-}"
 _omc_env_verify_mcp="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
+_omc_env_verify_patterns="${OMC_CUSTOM_VERIFY_PATTERNS:-}"
 _omc_env_pretool_intent="${OMC_PRETOOL_INTENT_GUARD:-}"
 _omc_env_agent_first_gate="${OMC_AGENT_FIRST_GATE:-}"
-# v1.43+: case-fold the env capture so OMC_AGENT_FIRST_GATE=ON/On/oN all
-# normalize to lowercase before the in-script comparisons. The conf
-# parser does the same on the conf-source path (see _parse_conf_file
-# agent_first_gate case). Closes quality-reviewer F1 — users who write
-# `OMC_AGENT_FIRST_GATE=ON` or `agent_first_gate=ON` previously got
-# silent default-off because the comparison was case-sensitive.
-if [[ -n "${_omc_env_agent_first_gate}" ]]; then
-  _omc_env_agent_first_gate="$(printf '%s' "${_omc_env_agent_first_gate}" | tr '[:upper:]' '[:lower:]')"
-  OMC_AGENT_FIRST_GATE="${_omc_env_agent_first_gate}"
-fi
 _omc_env_bg_spawn_gate="${OMC_BG_SPAWN_GATE:-}"
 _omc_env_classifier_tel="${OMC_CLASSIFIER_TELEMETRY:-}"
 _omc_env_discovered_scope="${OMC_DISCOVERED_SCOPE:-}"
@@ -163,41 +370,26 @@ _omc_env_taste_learning="${OMC_TASTE_LEARNING:-}"
 _omc_env_quality_constitution_max_context_chars="${OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS:-}"
 _omc_env_blindspot_ttl="${OMC_BLINDSPOT_TTL_SECONDS:-}"
 _omc_env_claude_bin="${OMC_CLAUDE_BIN:-}"
+# Preserve the rejected environment candidate for the existing one-line
+# security diagnostic after conf fallback has loaded. The active value itself
+# is still cleared now so a valid saved executable may win.
+_omc_rejected_env_claude_bin=""
+if [[ -n "${_omc_env_claude_bin}" ]] \
+    && ! _omc_claude_bin_value_is_valid "${_omc_env_claude_bin}"; then
+  _omc_rejected_env_claude_bin="${_omc_env_claude_bin}"
+fi
 _omc_env_resume_request_per_cwd_cap="${OMC_RESUME_REQUEST_PER_CWD_CAP:-}"
 _omc_env_inferred_contract="${OMC_INFERRED_CONTRACT:-}"
 _omc_env_whats_new_session_hint="${OMC_WHATS_NEW_SESSION_HINT:-}"
 _omc_env_lazy_session_start="${OMC_LAZY_SESSION_START:-}"
 _omc_env_mid_session_memory_checkpoint="${OMC_MID_SESSION_MEMORY_CHECKPOINT:-}"
 _omc_env_model_tier="${OMC_MODEL_TIER:-}"
-# An invalid environment value is not authoritative. Treat it like a malformed
-# override and let a valid user conf tier load; only the absence of every valid
-# source falls back to Balanced. This avoids a typo silently demoting a saved
-# Quality posture for the entire session.
-case "${_omc_env_model_tier}" in
-  ""|quality|balanced|economy) ;;
-  *) _omc_env_model_tier=""; unset OMC_MODEL_TIER ;;
-esac
-# The Definition/Constitution controls carry the same user-authority rule as
-# model tier. An invalid environment value must not shadow a valid user conf
-# value merely because it is non-empty.
-case "${_omc_env_definition_of_excellent}" in
-  ""|adaptive|always|off) ;;
-  *) _omc_env_definition_of_excellent=""; unset OMC_DEFINITION_OF_EXCELLENT ;;
-esac
-case "${_omc_env_quality_constitution}" in
-  ""|on|off) ;;
-  *) _omc_env_quality_constitution=""; unset OMC_QUALITY_CONSTITUTION ;;
-esac
-case "${_omc_env_taste_learning}" in
-  ""|off|review|adaptive) ;;
-  *) _omc_env_taste_learning=""; unset OMC_TASTE_LEARNING ;;
-esac
-if [[ -n "${_omc_env_quality_constitution_max_context_chars}" ]] \
-  && { [[ ! "${_omc_env_quality_constitution_max_context_chars}" =~ ^[1-9][0-9]*$ ]] \
-    || (( _omc_env_quality_constitution_max_context_chars > 12000 )); }; then
-  _omc_env_quality_constitution_max_context_chars=""
-  unset OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS
-fi
+
+# Validate the shared Constitution render bound through the generic lexical
+# decimal comparator. The public range is exactly 512..12000.
+_omc_quality_constitution_context_cap_is_valid() {
+  _omc_canonical_uint_in_range "${1:-}" 512 12000
+}
 # `inherit` is not a valid Agent-tool model value: it is implemented by
 # omitting `.model`, which then uses the installed agent definition. Such a pin
 # is truthful only when a bare installed definition already declares inherit
@@ -265,6 +457,85 @@ _omc_env_repo_lessons="${OMC_REPO_LESSONS:-}"
 _omc_env_self_audit_nudge="${OMC_SELF_AUDIT_NUDGE:-}"
 _omc_env_auto_tune="${OMC_AUTO_TUNE:-}"
 
+# A malformed environment value is not an authority merely because it is
+# non-empty. Canonicalize every documented override before defaults or conf
+# parsing; invalid values are unset so the next valid source can load.
+_omc_sanitize_captured_env _omc_env_stall OMC_STALL_THRESHOLD stall_threshold
+_omc_sanitize_captured_env _omc_env_excellence OMC_EXCELLENCE_FILE_COUNT excellence_file_count
+_omc_sanitize_captured_env _omc_env_ttl OMC_STATE_TTL_DAYS state_ttl_days
+_omc_sanitize_captured_env _omc_env_dimgate OMC_DIMENSION_GATE_FILE_COUNT dimension_gate_file_count
+_omc_sanitize_captured_env _omc_env_traceability OMC_TRACEABILITY_FILE_COUNT traceability_file_count
+_omc_sanitize_captured_env _omc_env_exhaustion OMC_GUARD_EXHAUSTION_MODE guard_exhaustion_mode
+_omc_sanitize_captured_env _omc_env_verify_conf OMC_VERIFY_CONFIDENCE_THRESHOLD verify_confidence_threshold
+_omc_sanitize_captured_env _omc_env_gate_level OMC_GATE_LEVEL gate_level
+_omc_sanitize_captured_env _omc_env_verify_mcp OMC_CUSTOM_VERIFY_MCP_TOOLS custom_verify_mcp_tools
+_omc_sanitize_captured_env _omc_env_verify_patterns OMC_CUSTOM_VERIFY_PATTERNS custom_verify_patterns
+_omc_sanitize_captured_env _omc_env_pretool_intent OMC_PRETOOL_INTENT_GUARD pretool_intent_guard
+_omc_sanitize_captured_env _omc_env_agent_first_gate OMC_AGENT_FIRST_GATE agent_first_gate
+_omc_sanitize_captured_env _omc_env_bg_spawn_gate OMC_BG_SPAWN_GATE bg_spawn_gate
+_omc_sanitize_captured_env _omc_env_classifier_tel OMC_CLASSIFIER_TELEMETRY classifier_telemetry
+_omc_sanitize_captured_env _omc_env_discovered_scope OMC_DISCOVERED_SCOPE discovered_scope
+_omc_sanitize_captured_env _omc_env_advisory_no_findings_gate OMC_ADVISORY_NO_FINDINGS_GATE advisory_no_findings_gate
+_omc_sanitize_captured_env _omc_env_advisory_no_findings_threshold OMC_ADVISORY_NO_FINDINGS_THRESHOLD advisory_no_findings_threshold
+_omc_sanitize_captured_env _omc_env_ulw_pause_validator OMC_ULW_PAUSE_VALIDATOR ulw_pause_validator
+_omc_sanitize_captured_env _omc_env_pause_external_blocker_threshold OMC_PAUSE_EXTERNAL_BLOCKER_THRESHOLD pause_external_blocker_threshold
+_omc_sanitize_captured_env _omc_env_council_deep_default OMC_COUNCIL_DEEP_DEFAULT council_deep_default
+_omc_sanitize_captured_env _omc_env_auto_memory OMC_AUTO_MEMORY auto_memory
+_omc_sanitize_captured_env _omc_env_output_style OMC_OUTPUT_STYLE output_style
+_omc_sanitize_captured_env _omc_env_metis_on_plan_gate OMC_METIS_ON_PLAN_GATE metis_on_plan_gate
+_omc_sanitize_captured_env _omc_env_prometheus_suggest OMC_PROMETHEUS_SUGGEST prometheus_suggest
+_omc_sanitize_captured_env _omc_env_intent_verify_directive OMC_INTENT_VERIFY_DIRECTIVE intent_verify_directive
+_omc_sanitize_captured_env _omc_env_exemplifying_directive OMC_EXEMPLIFYING_DIRECTIVE exemplifying_directive
+_omc_sanitize_captured_env _omc_env_exemplifying_scope_gate OMC_EXEMPLIFYING_SCOPE_GATE exemplifying_scope_gate
+_omc_sanitize_captured_env _omc_env_objective_contract_gate OMC_OBJECTIVE_CONTRACT_GATE objective_contract_gate
+_omc_sanitize_captured_env _omc_env_objective_contract_min_files OMC_OBJECTIVE_CONTRACT_MIN_FILES objective_contract_min_files
+_omc_sanitize_captured_env _omc_env_objective_contract_arm_on_god_scope OMC_OBJECTIVE_CONTRACT_ARM_ON_GOD_SCOPE objective_contract_arm_on_god_scope
+_omc_sanitize_captured_env _omc_env_goal_gate OMC_GOAL_GATE goal_gate
+_omc_sanitize_captured_env _omc_env_goal_stuck_threshold OMC_GOAL_STUCK_THRESHOLD goal_stuck_threshold
+_omc_sanitize_captured_env _omc_env_goal_auto_arm OMC_GOAL_AUTO_ARM goal_auto_arm
+_omc_sanitize_captured_env _omc_env_prompt_text_override OMC_PROMPT_TEXT_OVERRIDE prompt_text_override
+_omc_sanitize_captured_env _omc_env_mark_deferred_strict OMC_MARK_DEFERRED_STRICT mark_deferred_strict
+_omc_sanitize_captured_env _omc_env_shortcut_ratio_gate OMC_SHORTCUT_RATIO_GATE shortcut_ratio_gate
+_omc_sanitize_captured_env _omc_env_no_defer_mode OMC_NO_DEFER_MODE no_defer_mode
+_omc_sanitize_captured_env _omc_env_god_scope_on_bare_prompt OMC_GOD_SCOPE_ON_BARE_PROMPT god_scope_on_bare_prompt
+_omc_sanitize_captured_env _omc_env_exhaustive_auth_directive OMC_EXHAUSTIVE_AUTH_DIRECTIVE exhaustive_auth_directive
+_omc_sanitize_captured_env _omc_env_circuit_breaker OMC_CIRCUIT_BREAKER circuit_breaker
+_omc_sanitize_captured_env _omc_env_transcript_archive OMC_TRANSCRIPT_ARCHIVE transcript_archive
+_omc_sanitize_captured_env _omc_env_wave_override_ttl OMC_WAVE_OVERRIDE_TTL_SECONDS wave_override_ttl_seconds
+_omc_sanitize_captured_env _omc_env_stop_failure_capture OMC_STOP_FAILURE_CAPTURE stop_failure_capture
+_omc_sanitize_captured_env _omc_env_prompt_persist OMC_PROMPT_PERSIST prompt_persist
+_omc_sanitize_captured_env _omc_env_resume_request_ttl OMC_RESUME_REQUEST_TTL_DAYS resume_request_ttl_days
+_omc_sanitize_captured_env _omc_env_resume_watchdog OMC_RESUME_WATCHDOG resume_watchdog
+_omc_sanitize_captured_env _omc_env_resume_watchdog_cooldown OMC_RESUME_WATCHDOG_COOLDOWN_SECS resume_watchdog_cooldown_secs
+_omc_sanitize_captured_env _omc_env_resume_session_ttl OMC_RESUME_SESSION_TTL_SECS resume_session_ttl_secs
+_omc_sanitize_captured_env _omc_env_resume_scan_max_sessions OMC_RESUME_SCAN_MAX_SESSIONS resume_scan_max_sessions
+_omc_sanitize_captured_env _omc_env_time_tracking OMC_TIME_TRACKING time_tracking
+_omc_sanitize_captured_env _omc_env_time_tracking_xs_retain OMC_TIME_TRACKING_XS_RETAIN_DAYS time_tracking_xs_retain_days
+_omc_sanitize_captured_env _omc_env_time_card_min_seconds OMC_TIME_CARD_MIN_SECONDS time_card_min_seconds
+_omc_sanitize_captured_env _omc_env_token_tracking OMC_TOKEN_TRACKING token_tracking
+_omc_sanitize_captured_env _omc_env_model_drift_canary OMC_MODEL_DRIFT_CANARY model_drift_canary
+_omc_sanitize_captured_env _omc_env_blindspot_inventory OMC_BLINDSPOT_INVENTORY blindspot_inventory
+_omc_sanitize_captured_env _omc_env_intent_broadening OMC_INTENT_BROADENING intent_broadening
+_omc_sanitize_captured_env _omc_env_divergence_directive OMC_DIVERGENCE_DIRECTIVE divergence_directive
+_omc_sanitize_captured_env _omc_env_workflow_substrate OMC_WORKFLOW_SUBSTRATE workflow_substrate
+_omc_sanitize_captured_env _omc_env_directive_budget OMC_DIRECTIVE_BUDGET directive_budget
+_omc_sanitize_captured_env _omc_env_quality_policy OMC_QUALITY_POLICY quality_policy
+_omc_sanitize_captured_env _omc_env_definition_of_excellent OMC_DEFINITION_OF_EXCELLENT definition_of_excellent
+_omc_sanitize_captured_env _omc_env_quality_constitution OMC_QUALITY_CONSTITUTION quality_constitution
+_omc_sanitize_captured_env _omc_env_taste_learning OMC_TASTE_LEARNING taste_learning
+_omc_sanitize_captured_env _omc_env_quality_constitution_max_context_chars OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS quality_constitution_max_context_chars
+_omc_sanitize_captured_env _omc_env_blindspot_ttl OMC_BLINDSPOT_TTL_SECONDS blindspot_ttl_seconds
+_omc_sanitize_captured_env _omc_env_claude_bin OMC_CLAUDE_BIN claude_bin
+_omc_sanitize_captured_env _omc_env_resume_request_per_cwd_cap OMC_RESUME_REQUEST_PER_CWD_CAP resume_request_per_cwd_cap
+_omc_sanitize_captured_env _omc_env_inferred_contract OMC_INFERRED_CONTRACT inferred_contract
+_omc_sanitize_captured_env _omc_env_whats_new_session_hint OMC_WHATS_NEW_SESSION_HINT whats_new_session_hint
+_omc_sanitize_captured_env _omc_env_lazy_session_start OMC_LAZY_SESSION_START lazy_session_start
+_omc_sanitize_captured_env _omc_env_mid_session_memory_checkpoint OMC_MID_SESSION_MEMORY_CHECKPOINT mid_session_memory_checkpoint
+_omc_sanitize_captured_env _omc_env_model_tier OMC_MODEL_TIER model_tier
+_omc_sanitize_captured_env _omc_env_repo_lessons OMC_REPO_LESSONS repo_lessons
+_omc_sanitize_captured_env _omc_env_self_audit_nudge OMC_SELF_AUDIT_NUDGE self_audit_nudge
+_omc_sanitize_captured_env _omc_env_auto_tune OMC_AUTO_TUNE auto_tune
+
 OMC_STALL_THRESHOLD="${OMC_STALL_THRESHOLD:-12}"
 # Cross-surface breadth floors for adaptive completeness/traceability. Surface-
 # specific quality, prose, and design coverage does not wait for these counts.
@@ -280,8 +551,8 @@ OMC_TRACEABILITY_FILE_COUNT="${OMC_TRACEABILITY_FILE_COUNT:-6}"
 # Steering preset. Softer postures remain one conf line away.
 OMC_GUARD_EXHAUSTION_MODE="${OMC_GUARD_EXHAUSTION_MODE:-block}"
 # Minimum verification confidence (0-100) to satisfy the verify gate.
-# Default 40: blocks lint-only checks (shellcheck=30, bash -n=30) while
-# accepting project test suites (npm test=70+) and framework runs (jest=50+).
+# Default 40: admits hook-observed authoritative lint/syntax execution at its
+# exact floor while stronger framework/project suites score well above it.
 OMC_VERIFY_CONFIDENCE_THRESHOLD="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
 # Gate level: basic (quality gate only), standard (+ excellence), full (+ dimensions)
 OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
@@ -291,6 +562,10 @@ OMC_GATE_LEVEL="${OMC_GATE_LEVEL:-full}"
 # settings.json to trigger record-verification.sh. The builtin matcher only
 # covers Playwright and computer-use tools.
 OMC_CUSTOM_VERIFY_MCP_TOOLS="${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}"
+# User-authorized extended regular expression for Bash verification wrappers.
+# This is deliberately project-denied: a repository-controlled `.*` pattern
+# would let arbitrary successful Bash calls mint verification evidence.
+OMC_CUSTOM_VERIFY_PATTERNS="${OMC_CUSTOM_VERIFY_PATTERNS:-}"
 # Pinned absolute path to the `claude` binary. Default empty = live
 # `command -v claude` lookup at watchdog launch time (legacy behavior
 # preserved). When set, the watchdog validates the pin via `${pinned}
@@ -650,9 +925,9 @@ OMC_RESUME_SESSION_TTL_SECS="${OMC_RESUME_SESSION_TTL_SECS:-7200}"
 # `<session>/timing.jsonl` and emits a one-line distribution summary as
 # Stop additionalContext when the session releases. Surfaces via the
 # `/ulw-time` skill, `/ulw-status`, and `/ulw-report` cross-session
-# rollups. Default `on` because the hook layer is append-only and
-# non-blocking; opt out on shared machines or when the residual disk
-# noise (one JSONL per session) is unwanted.
+# rollups. Default `on`; the hook layer uses a dedicated per-log mutex
+# without taking the broader session-state lock. Opt out on shared machines
+# or when the residual disk noise (one JSONL per session) is unwanted.
 OMC_TIME_TRACKING="${OMC_TIME_TRACKING:-on}"
 # Cross-session timing rollup retention (days). Per-session timing files
 # are swept by OMC_STATE_TTL_DAYS; this independent TTL governs the
@@ -737,8 +1012,22 @@ OMC_MODEL_OVERRIDES="${OMC_MODEL_OVERRIDES:-}"
 
 _omc_conf_loaded=0
 
+# Compare two already-normalized public uint values without evaluating their
+# text as shell arithmetic. Used for monotonic project privacy overlays below.
+_omc_uint_lte() {
+  local left="${1:-}" right="${2:-}" left_len right_len
+  local LC_ALL=C
+  _omc_canonical_uint_in_range "${left}" 0 2147483647 || return 1
+  _omc_canonical_uint_in_range "${right}" 0 2147483647 || return 1
+  left_len="${#left}"
+  right_len="${#right}"
+  (( left_len < right_len )) && return 0
+  (( left_len > right_len )) && return 1
+  [[ "${left}" < "${right}" || "${left}" == "${right}" ]]
+}
+
 # Parse a single conf file, applying values that pass validation.
-# Env vars always take precedence (checked via _omc_env_* guards).
+# Valid env vars always take precedence (checked via _omc_env_* guards).
 #
 # v1.43+ (security-lens P1): `level` argument (`user`|`project`) marks
 # which conf-source we are parsing. Security-load-bearing flags
@@ -766,6 +1055,24 @@ _parse_conf_file() {
   [[ -f "${conf}" ]] || return 0
 
   local line key value
+  # Snapshot the authority that existed before the project overlay. Sensitive
+  # capture switches are monotonic at project scope: a project may turn a
+  # writer off, but cannot turn it back on over a user/default opt-out. This
+  # snapshot is essential for duplicate project rows (`off` then `on`): the
+  # later valid row may restore `on` only when the user baseline allowed it.
+  local _project_classifier_baseline="${OMC_CLASSIFIER_TELEMETRY:-on}"
+  local _project_auto_memory_baseline="${OMC_AUTO_MEMORY:-on}"
+  local _project_prompt_persist_baseline="${OMC_PROMPT_PERSIST:-on}"
+  local _project_stop_capture_baseline="${OMC_STOP_FAILURE_CAPTURE:-on}"
+  local _project_transcript_baseline="${OMC_TRANSCRIPT_ARCHIVE:-off}"
+  local _project_time_baseline="${OMC_TIME_TRACKING:-on}"
+  local _project_token_baseline="${OMC_TOKEN_TRACKING:-on}"
+  local _project_canary_baseline="${OMC_MODEL_DRIFT_CANARY:-on}"
+  local _project_blindspot_baseline="${OMC_BLINDSPOT_INVENTORY:-on}"
+  local _project_resume_cap_baseline="${OMC_RESUME_REQUEST_PER_CWD_CAP:-3}"
+  local _project_wave_ttl_baseline="${OMC_WAVE_OVERRIDE_TTL_SECONDS:-7200}"
+  local _project_self_audit_baseline="${OMC_SELF_AUDIT_NUDGE:-on}"
+  local _project_whats_new_baseline="${OMC_WHATS_NEW_SESSION_HINT:-true}"
   while IFS= read -r line || [[ -n "${line}" ]]; do
     [[ "${line}" =~ ^[[:space:]]*# ]] && continue
     [[ -z "${line}" ]] && continue
@@ -812,7 +1119,7 @@ _parse_conf_file() {
     # section, which documents the deny-list explicitly.
     if [[ "${level}" == "project" ]]; then
       case "${key}" in
-        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|definition_of_excellent|quality_constitution|taste_learning|quality_constitution_max_context_chars|model_tier|model_overrides|repo_lessons|auto_tune)
+        pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|definition_of_excellent|quality_constitution|taste_learning|quality_constitution_max_context_chars|model_tier|model_overrides|council_deep_default|workflow_substrate|repo_lessons|auto_tune|output_style|resume_watchdog|resume_watchdog_cooldown_secs|resume_session_ttl_secs|resume_request_ttl_days|resume_scan_max_sessions|claude_bin|state_ttl_days|time_tracking_xs_retain_days|custom_verify_mcp_tools|custom_verify_patterns)
           # quality_policy joined v1.47 (security-lens A, oracle-verified):
           # a hostile repo's project conf setting quality_policy=balanced
           # silently strips the zero-steering block-escalation
@@ -855,8 +1162,78 @@ _parse_conf_file() {
           # unfamiliar repo's own committed project conf must not be
           # able to arm that for itself; only user-level conf or
           # `OMC_AUTO_TUNE=on` can.
+          #
+          # state_ttl_days and time_tracking_xs_retain_days govern destructive
+          # machine-wide retention sweeps under ~/.claude/quality-pack. A repo
+          # entered by the user must not shorten retention for sessions or
+          # timing rows belonging to other projects.
           continue
           ;;
+      esac
+    fi
+
+    # Normalize before the assignment case so duplicate rows have one precise
+    # rule: the last valid canonical value wins, while a later malformed row is
+    # ignored and cannot erase an earlier valid row. model_overrides retains
+    # its per-pin fail-soft filter before the ordinary assignment arm.
+    case "${key}" in
+      model_overrides)
+        if [[ -n "${value}" ]]; then
+          value="$(_omc_filter_model_overrides "${value}")"
+          [[ -n "${value}" ]] || continue
+        fi
+        ;;
+      stall_threshold|excellence_file_count|state_ttl_days|dimension_gate_file_count|traceability_file_count|guard_exhaustion_mode|verify_confidence_threshold|gate_level|custom_verify_mcp_tools|custom_verify_patterns|pretool_intent_guard|agent_first_gate|bg_spawn_gate|classifier_telemetry|discovered_scope|advisory_no_findings_gate|advisory_no_findings_threshold|ulw_pause_validator|pause_external_blocker_threshold|council_deep_default|auto_memory|repo_lessons|metis_on_plan_gate|prometheus_suggest|intent_verify_directive|exemplifying_directive|exemplifying_scope_gate|objective_contract_gate|objective_contract_min_files|objective_contract_arm_on_god_scope|goal_gate|goal_stuck_threshold|goal_auto_arm|prompt_text_override|mark_deferred_strict|shortcut_ratio_gate|no_defer_mode|god_scope_on_bare_prompt|exhaustive_auth_directive|circuit_breaker|transcript_archive|wave_override_ttl_seconds|stop_failure_capture|prompt_persist|resume_request_ttl_days|resume_watchdog|resume_watchdog_cooldown_secs|resume_session_ttl_secs|resume_scan_max_sessions|time_tracking|time_tracking_xs_retain_days|time_card_min_seconds|token_tracking|output_style|model_drift_canary|blindspot_inventory|intent_broadening|inferred_contract|divergence_directive|workflow_substrate|directive_budget|quality_policy|definition_of_excellent|quality_constitution|taste_learning|quality_constitution_max_context_chars|blindspot_ttl_seconds|claude_bin|resume_request_per_cwd_cap|whats_new_session_hint|lazy_session_start|mid_session_memory_checkpoint|model_tier|self_audit_nudge|auto_tune)
+        value="$(_omc_normalize_config_value "${key}" "${value}")" \
+          || continue
+        ;;
+    esac
+
+    # Project privacy and authorization settings are one-way reductions.
+    # Repositories retain the useful ability to opt out of capture for
+    # regulated work, but cannot override a user-level opt-out and begin
+    # persisting prompt/transcript, memory, activity, canary-preview, or
+    # inventory data. The resume artifact cap uses the same monotonic rule: 0
+    # means unlimited, so a project may not raise a positive user cap or
+    # replace it with 0. A project may shorten the stale-wave commit exception,
+    # but cannot widen the authorization window chosen by the user/default.
+    if [[ "${level}" == "project" ]]; then
+      case "${key}:${value}" in
+        classifier_telemetry:on)
+          [[ "${_project_classifier_baseline}" != "off" ]] || continue ;;
+        auto_memory:on)
+          [[ "${_project_auto_memory_baseline}" != "off" ]] || continue ;;
+        prompt_persist:on)
+          [[ "${_project_prompt_persist_baseline}" != "off" ]] || continue ;;
+        stop_failure_capture:on)
+          [[ "${_project_stop_capture_baseline}" != "off" ]] || continue ;;
+        transcript_archive:on)
+          [[ "${_project_transcript_baseline}" != "off" ]] || continue ;;
+        time_tracking:on)
+          [[ "${_project_time_baseline}" != "off" ]] || continue ;;
+        token_tracking:on)
+          [[ "${_project_token_baseline}" != "off" ]] || continue ;;
+        model_drift_canary:on)
+          [[ "${_project_canary_baseline}" != "off" ]] || continue ;;
+        blindspot_inventory:on)
+          [[ "${_project_blindspot_baseline}" != "off" ]] || continue ;;
+        resume_request_per_cwd_cap:0)
+          [[ "${_project_resume_cap_baseline}" == "0" ]] || continue ;;
+        resume_request_per_cwd_cap:*)
+          if [[ "${_project_resume_cap_baseline}" != "0" ]] \
+              && ! _omc_uint_lte "${value}" \
+                "${_project_resume_cap_baseline}"; then
+            continue
+          fi
+          ;;
+        wave_override_ttl_seconds:*)
+          _omc_uint_lte "${value}" "${_project_wave_ttl_baseline}" \
+            || continue
+          ;;
+        self_audit_nudge:on)
+          [[ "${_project_self_audit_baseline}" != "off" ]] || continue ;;
+        whats_new_session_hint:true)
+          [[ "${_project_whats_new_baseline}" != "false" ]] || continue ;;
       esac
     fi
 
@@ -878,7 +1255,9 @@ _parse_conf_file() {
       gate_level)
         [[ -z "${_omc_env_gate_level}" && "${value}" =~ ^(basic|standard|full)$ ]] && OMC_GATE_LEVEL="${value}" || true ;;
       custom_verify_mcp_tools)
-        [[ -z "${_omc_env_verify_mcp}" && -n "${value}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
+        [[ -z "${_omc_env_verify_mcp}" ]] && OMC_CUSTOM_VERIFY_MCP_TOOLS="${value}" || true ;;
+      custom_verify_patterns)
+        [[ -z "${_omc_env_verify_patterns}" ]] && OMC_CUSTOM_VERIFY_PATTERNS="${value}" || true ;;
       pretool_intent_guard)
         [[ -z "${_omc_env_pretool_intent}" && "${value}" =~ ^(true|false)$ ]] && OMC_PRETOOL_INTENT_GUARD="${value}" || true ;;
       agent_first_gate)
@@ -1007,7 +1386,9 @@ _parse_conf_file() {
       taste_learning)
         [[ -z "${_omc_env_taste_learning}" && "${value}" =~ ^(off|review|adaptive)$ ]] && OMC_TASTE_LEARNING="${value}" || true ;;
       quality_constitution_max_context_chars)
-        [[ -z "${_omc_env_quality_constitution_max_context_chars}" && "${value}" =~ ^[1-9][0-9]*$ && "${value}" -le 12000 ]] && OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS="${value}" || true ;;
+        [[ -z "${_omc_env_quality_constitution_max_context_chars}" ]] \
+          && _omc_quality_constitution_context_cap_is_valid "${value}" \
+          && OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS="${value}" || true ;;
       blindspot_ttl_seconds)
         [[ -z "${_omc_env_blindspot_ttl}" && "${value}" =~ ^[1-9][0-9]*$ ]] && OMC_BLINDSPOT_TTL_SECONDS="${value}" || true ;;
       claude_bin)
@@ -1015,19 +1396,12 @@ _parse_conf_file() {
         # the resume-watchdog daemon (LaunchAgent / systemd-user) launches
         # the user's chosen Claude Code install instead of whatever lands
         # first in the daemon's PATH (PATH-hijack defense — security-lens
-        # F-5). Validation requires absolute path; relative paths are
-        # silently ignored. Empty (default) preserves the legacy live
-        # `command -v claude` lookup. Host-specific — do not sync across
-        # machines if the binary lives at different paths.
-        #
-        # v1.32.16 (4-attacker security review, A1-MED-2): the absolute-
-        # path check here is parser-arm only — it does NOT validate
-        # ownership, executability, or path-prefix safety, AND the env
-        # override below short-circuits the conf-source code path
-        # entirely. Defense-in-depth post-load validation lives at the
-        # post-load_conf block (search "OMC_CLAUDE_BIN" further down)
-        # which rejects paths under /tmp, /var/tmp, /Users/Shared, etc.
-        # regardless of source.
+        # F-5). The shared normalizer above has already required an absolute,
+        # existing executable outside known world-writable/shared prefixes.
+        # Empty (default) preserves the legacy live `command -v claude`
+        # lookup. Host-specific — do not sync across machines if the binary
+        # lives at different paths. The post-load block remains a final
+        # defense if a future assignment path bypasses this parser.
         [[ -z "${_omc_env_claude_bin}" && "${value}" =~ ^/ ]] && OMC_CLAUDE_BIN="${value}" || true ;;
       resume_request_per_cwd_cap)
         # v1.31.0 Wave 1: max resume_request.json artifacts per cwd before
@@ -1068,9 +1442,9 @@ _parse_conf_file() {
       model_tier)
         [[ -z "${_omc_env_model_tier}" && "${value}" =~ ^(quality|balanced|economy)$ ]] && OMC_MODEL_TIER="${value}" || true ;;
       model_overrides)
-        # Validation is intentionally per-pair inside
-        # omc_model_override_for_agent. Keeping the raw string here lets one
-        # typo fail soft without discarding the user's other valid pins.
+        # The pre-assignment filter retained only enforceable pairs. A typo
+        # therefore fails soft without discarding sibling valid pins, and no
+        # rejected pair leaks into the runtime resolver string.
         [[ -z "${_omc_env_model_overrides}" ]] && OMC_MODEL_OVERRIDES="${value}" || true ;;
       self_audit_nudge)
         # v1.48-pre: SessionStart nudge when CONTRIBUTING.md's quarterly
@@ -1131,24 +1505,17 @@ load_conf
 OMC_MODEL_OVERRIDES="$(_omc_filter_model_overrides \
   "${OMC_MODEL_OVERRIDES:-}")"
 
-# v1.32.16 (4-attacker security review, A1-MED-2): post-load validation
-# of OMC_CLAUDE_BIN. The conf-parser arm at line 382 only verifies the
-# value is an absolute path, AND only validates the conf-source code
-# path (env-set values bypass the conf parser entirely via the
-# `_omc_env_*` short-circuit). This validation runs AFTER both sources
-# have settled, so it catches:
-#   - Env override `OMC_CLAUDE_BIN=/tmp/evil-claude` (A1 attacker
-#     who can set env vars before claude launches).
-#   - Conf-set value `claude_bin=/tmp/evil-claude` (A1 attacker who
-#     plants a project-walk `.claude/oh-my-claude.conf` the user
-#     happens to cwd into).
+# v1.32.16 (4-attacker security review, A1-MED-2): defense-in-depth
+# post-load validation of OMC_CLAUDE_BIN. Current environment and conf paths
+# pass the same executable/path-prefix normalizer before assignment. Keeping a
+# final check after both precedence layers settle protects future assignment
+# paths from accidentally bypassing that admission contract.
 #
-# Validation is conservative — pin invalid → fall back to live
-# `command -v claude` lookup (legacy behavior). Print a one-line
-# warning to stderr so the user sees the rejection. The actual exec
-# of claude_bin happens via the watchdog's `--version` validation;
-# even an invalid pin would be probed there, but rejecting at conf-
-# load time is the cheaper signal.
+# Validation is conservative. An invalid environment candidate warns and
+# falls through to valid saved config (or live lookup); an invalid settled
+# candidate from any future bypass path is cleared to the legacy live
+# `command -v claude` lookup. The actual exec happens via the watchdog's
+# `--version` validation, but rejecting at conf-load time is the cheaper signal.
 #
 # Path-prefix denylist: `/tmp/`, `/private/tmp/` (macOS resolves
 # /tmp via /private/tmp), `/var/tmp/`, `/Users/Shared/`, `/dev/shm/`
@@ -1160,19 +1527,37 @@ OMC_MODEL_OVERRIDES="$(_omc_filter_model_overrides \
 # same-uid attack — A1 attacker IS the user — so we do NOT assert
 # uid-match. We DO assert the binary is executable; a non-executable
 # pin is a config bug, not a security boundary.
+if [[ -n "${_omc_rejected_env_claude_bin}" ]]; then
+  _claude_bin_invalid="not an absolute executable or missing"
+  case "${_omc_rejected_env_claude_bin}" in
+    /tmp/*|/private/tmp/*|/var/tmp/*|/Users/Shared/*|/dev/shm/*)
+      _claude_bin_invalid="path under world-writable / shared location"
+      ;;
+  esac
+  printf 'oh-my-claude: rejecting OMC_CLAUDE_BIN=%s (%s); falling back to saved config or live command -v claude lookup\n' \
+    "$(_omc_diagnostic_preview "${_omc_rejected_env_claude_bin}")" \
+    "${_claude_bin_invalid}" >&2
+  unset _omc_rejected_env_claude_bin _claude_bin_invalid
+fi
+unset _omc_rejected_env_claude_bin
 if [[ -n "${OMC_CLAUDE_BIN:-}" ]]; then
   _claude_bin_invalid=""
+  if [[ "${OMC_CLAUDE_BIN}" != /* ]]; then
+    _claude_bin_invalid="not an absolute path"
+  fi
   case "${OMC_CLAUDE_BIN}" in
     /tmp/*|/private/tmp/*|/var/tmp/*|/Users/Shared/*|/dev/shm/*)
       _claude_bin_invalid="path under world-writable / shared location"
       ;;
   esac
-  if [[ -z "${_claude_bin_invalid}" && ! -x "${OMC_CLAUDE_BIN}" ]]; then
-    _claude_bin_invalid="not executable or missing"
+  if [[ -z "${_claude_bin_invalid}" ]] \
+      && { [[ ! -f "${OMC_CLAUDE_BIN}" ]] || [[ ! -x "${OMC_CLAUDE_BIN}" ]]; }; then
+    _claude_bin_invalid="not a regular executable file or missing"
   fi
   if [[ -n "${_claude_bin_invalid}" ]]; then
     printf 'oh-my-claude: rejecting OMC_CLAUDE_BIN=%s (%s); falling back to live command -v claude lookup\n' \
-      "${OMC_CLAUDE_BIN}" "${_claude_bin_invalid}" >&2
+      "$(_omc_diagnostic_preview "${OMC_CLAUDE_BIN}")" \
+      "${_claude_bin_invalid}" >&2
     OMC_CLAUDE_BIN=""
   fi
   unset _claude_bin_invalid
@@ -1569,10 +1954,10 @@ is_resume_watchdog_enabled() {
 }
 
 # Returns 0 (true) when time-tracking is enabled, 1 (false) when
-# disabled. PreToolUse / PostToolUse / Stop hooks check this for an
-# early fast-path exit so opt-out is essentially free of overhead.
-# Default on; opt out on shared machines where workflow data should
-# not accrue to disk.
+# disabled. Timing handlers check this before capture so no timing-ledger I/O
+# occurs while disabled. The standalone PreTool hook can additionally avoid
+# shared-library loading when the environment variable is already `off`;
+# conf-only and dispatcher paths necessarily load configuration first.
 is_time_tracking_enabled() {
   [[ "${OMC_TIME_TRACKING:-on}" != "off" ]]
 }
@@ -1843,10 +2228,12 @@ find_claimable_resume_requests() {
     # at a victim file (e.g. ~/.ssh/config) wouldn't pass jq -e but
     # leaks read attempts via stat-style side effects elsewhere.
     [[ -L "${artifact}" ]] && continue
-    jq -e . "${artifact}" >/dev/null 2>&1 || continue
-
+    # Resume timing/count fields decide whether this artifact may claim a live
+    # session. jq can normalize a literal NUL embedded in a numeric token, so
+    # reject the exact bounded source before any coercion or path projection.
     local row
-    row="$(jq -c \
+    row="$(_omc_project_shell_safe_json_object \
+      "${artifact}" 1048576 -c \
       --argjson now "${now_ts}" \
       --argjson cutoff "${cutoff_ts}" \
       --arg path "${artifact}" \
@@ -1877,7 +2264,7 @@ find_claimable_resume_requests() {
           resume_attempts: $attempts,
           project_key: (.project_key // null)
         }
-      ' "${artifact}" 2>/dev/null || true)"
+      ' 2>/dev/null || true)"
     [[ -z "${row}" ]] && continue
     raw_rows+="${row}"$'\n'
   done
@@ -1908,34 +2295,63 @@ find_claimable_resume_requests() {
 # All git/file operations are best-effort and fail closed (returns "").
 # A 2s timeout matches statusline.py's behavior on flaky filesystems.
 omc_check_install_drift() {
-  local installed_version installed_sha repo_path
+  local installed_version="" installed_sha="" repo_path=""
   local conf="${HOME}/.claude/oh-my-claude.conf"
   [[ -f "${conf}" ]] || return 0
 
-  # Conf reads use grep|head|cut pipelines that exit non-zero when the
-  # key is missing. Under set -e + pipefail (the harness's standard) a
-  # naked assignment from a failing pipe trips errexit; the `|| true`
-  # tail forces a clean rc on missing-key reads, which is the expected
-  # branch for new-install conf files that do not yet declare the flag.
-  local check_flag="${OMC_INSTALLATION_DRIFT_CHECK:-}"
-  if [[ -z "${check_flag}" ]]; then
-    check_flag="$(grep -E '^installation_drift_check=' "${conf}" 2>/dev/null \
-      | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
+  # This Python/statusline-owned flag is user-conf-only. A valid environment
+  # alias wins; an invalid/empty environment value falls through. Within the
+  # conf, the last valid trimmed row wins and malformed later duplicates do
+  # not erase it.
+  local check_flag="" raw_check_flag="" line value normalized
+  local check_flag_from_env=0
+  raw_check_flag="${OMC_INSTALLATION_DRIFT_CHECK:-}"
+  raw_check_flag="${raw_check_flag#"${raw_check_flag%%[![:space:]]*}"}"
+  raw_check_flag="${raw_check_flag%"${raw_check_flag##*[![:space:]]}"}"
+  if [[ -n "${raw_check_flag}" ]] \
+    && normalized="$(_omc_normalize_compat_toggle \
+        "${raw_check_flag}" true false)"; then
+    check_flag="${normalized}"
+    check_flag_from_env=1
   fi
-  # Bash 3.2 (macOS default) does not support ${var,,} expansion; use
-  # tr for the lowercase normalization.
-  local check_flag_lc
-  check_flag_lc="$(printf '%s' "${check_flag}" | tr '[:upper:]' '[:lower:]')"
-  case "${check_flag_lc}" in
-    false|0|no|off) return 0 ;;
-  esac
+  # Parse metadata in the same exact-key, last-write order as statusline.py.
+  # Trim only value edges: repo paths routinely contain internal spaces (and
+  # the canonical checkout path used by this project does). For the toggle,
+  # malformed later duplicates do not erase the last valid choice.
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      installation_drift_check=*)
+        [[ "${check_flag_from_env}" -eq 0 ]] || continue
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        if normalized="$(_omc_normalize_compat_toggle \
+            "${value}" true false)"; then
+          check_flag="${normalized}"
+        fi
+        ;;
+      installed_version=*)
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        installed_version="${value%"${value##*[![:space:]]}"}"
+        ;;
+      installed_sha=*)
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        installed_sha="${value%"${value##*[![:space:]]}"}"
+        ;;
+      repo_path=*)
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        repo_path="${value%"${value##*[![:space:]]}"}"
+        ;;
+    esac
+  done < "${conf}"
+  [[ -n "${check_flag}" ]] || check_flag="true"
+  [[ "${check_flag}" == "false" ]] && return 0
 
-  installed_version="$(grep -E '^installed_version=' "${conf}" 2>/dev/null \
-    | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
   [[ -z "${installed_version}" ]] && return 0
 
-  repo_path="$(grep -E '^repo_path=' "${conf}" 2>/dev/null \
-    | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
   [[ -z "${repo_path}" ]] && return 0
   [[ -d "${repo_path}" ]] || return 0
   [[ -f "${repo_path}/VERSION" ]] || return 0
@@ -1965,8 +2381,6 @@ omc_check_install_drift() {
   fi
 
   # Commits-ahead branch — same version but repo HEAD may be ahead.
-  installed_sha="$(grep -E '^installed_sha=' "${conf}" 2>/dev/null \
-    | head -1 | cut -d'=' -f2- | tr -d '[:space:]' || true)"
   [[ -z "${installed_sha}" ]] && return 0
 
   local commits
@@ -2051,10 +2465,24 @@ is_hook_debug() {
   if [[ "${_hook_debug_checked}" -eq 0 ]]; then
     _hook_debug_checked=1
     local conf="${HOME}/.claude/oh-my-claude.conf"
+    local line="" value="" selected=""
     if [[ "${HOOK_DEBUG:-}" == "1" ]]; then
       _hook_debug_enabled=1
     elif [[ -f "${conf}" ]]; then
-      _hook_debug_enabled="$(grep -E '^hook_debug=true$' "${conf}" >/dev/null 2>&1 && echo 1 || echo "")"
+      # Keep this legacy direct reader aligned with the public conf contract:
+      # exact key, edge-trimmed value, and last valid duplicate wins. The old
+      # grep enabled debug forever when an earlier `true` preceded a later
+      # `false`, and rejected otherwise-valid padded rows.
+      while IFS= read -r line || [[ -n "${line}" ]]; do
+        [[ "${line}" == "hook_debug="* ]] || continue
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        case "${value}" in
+          true|false) selected="${value}" ;;
+        esac
+      done < "${conf}"
+      [[ "${selected}" == "true" ]] && _hook_debug_enabled=1
     fi
   fi
   [[ -n "${_hook_debug_enabled}" ]]
@@ -2224,7 +2652,16 @@ emit_stop_block() {
 
 json_get() {
   local query="$1"
-  jq -r "${query} // empty" <<<"${HOOK_JSON}"
+  # Bash variables cannot represent NUL. Reject the complete hook envelope if
+  # ANY decoded string contains one instead of letting separate json_get calls
+  # see a partially normalized event (for example: a clean session ID plus a
+  # NUL-tailed verdict). This makes every json_get-based hook fail closed at
+  # its first required field and prevents fallback identities from laundering
+  # a malformed optional field. Non-string results otherwise preserve the
+  # historical jq -r behavior.
+  jq -r "select(all(.. | strings; index(\"\\u0000\") == null))
+    | (${query} // empty)" \
+    <<<"${HOOK_JSON}"
 }
 
 omc_hook_tool_failed() {
@@ -2311,6 +2748,391 @@ validate_session_id() {
   return 0
 }
 
+# jq accepts some literal NUL placements outside JSON strings and may parse
+# the resulting byte stream as a different scalar (for example, a numeric
+# token with an injected zero byte). Every session-state reader is ultimately
+# Bash-backed, so raw NUL is structural corruption regardless of whether jq
+# can recover a value from it. Keep this predicate byte-level and bounded.
+_omc_regular_file_has_no_raw_nul() {
+  local path="${1:-}" max_bytes="${2:-16777216}" byte_count=""
+  [[ -f "${path}" && ! -L "${path}" \
+      && "${max_bytes}" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+  byte_count="$(LC_ALL=C wc -c <"${path}" 2>/dev/null)" || return 1
+  byte_count="${byte_count//[[:space:]]/}"
+  [[ "${byte_count}" =~ ^[0-9]+$ \
+      && $((10#${byte_count})) -le $((10#${max_bytes})) ]] || return 1
+  LC_ALL=C tr -d '\000' <"${path}" \
+    | cmp -s - "${path}" 2>/dev/null
+}
+
+# Return the device/inode identity of a regular pathname. Keep this adjacent to
+# the descriptor variant below: pathname `-ef` is portable, but comparing a
+# pathname with /dev/fd/N is not. On macOS, stat(2) through /dev/fd reports the
+# descriptor's target while `test -ef` compares against the devfs node and
+# therefore returns false for every ordinary file.
+_omc_regular_file_identity() {
+  local path="${1:-}" identity=""
+  [[ -f "${path}" && ! -L "${path}" ]] || return 1
+  identity="$(stat -c '%d:%i' "${path}" 2>/dev/null || true)"
+  if [[ ! "${identity}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    identity="$(stat -f '%d:%i' "${path}" 2>/dev/null || true)"
+  fi
+  [[ "${identity}" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  printf '%s\n' "${identity}"
+}
+
+# Return the underlying regular file's device/inode identity for one already
+# open descriptor. BSD stat with no pathname calls fstat(2) on stdin, so
+# redirect the selected descriptor there instead of naming /dev/fd. GNU stat
+# needs an inherited descriptor path; /proc/self/fd is preferred and /dev/fd
+# is the portable fallback. The file-type suffix prevents a raced FIFO/device
+# from being admitted merely because it has a numeric identity.
+_omc_regular_fd_identity() {
+  local fd="${1:-}" value="" descriptor_path=""
+  [[ "${fd}" =~ ^[0-9]{1,3}$ && $((10#${fd})) -le 255 ]] || return 1
+  value="$(stat -f '%d:%i:%HT' <&"${fd}" 2>/dev/null || true)"
+  if [[ "${value}" =~ ^([0-9]+:[0-9]+):Regular[[:space:]]File$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  for descriptor_path in "/proc/self/fd/${fd}" "/dev/fd/${fd}"; do
+    value="$(stat -Lc '%d:%i:%F' "${descriptor_path}" 2>/dev/null || true)"
+    if [[ "${value}" =~ ^([0-9]+:[0-9]+):regular[[:space:]]file$ ]]; then
+      printf '%s\n' "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Copy one authority file through a single already-open descriptor, then prove
+# that the public path still names the same bytes.  Validation followed by a
+# fresh jq open is otherwise a check/use race: an append or atomic rename can
+# replace the bytes between those operations.  Callers parse only `snapshot`
+# and use _omc_regular_file_snapshot_is_current once more immediately before
+# publishing an allow/no-work result.
+_omc_capture_regular_file_snapshot() {
+  local source="${1:-}" snapshot="${2:-}" max_bytes="${3:-}"
+  local byte_limit="" corroboration="" pin_dir="" pin=""
+  local pin_identity="" fd8_identity="" fd9_identity=""
+  [[ -n "${source}" && -n "${snapshot}" && "${source}" != "${snapshot}" \
+      && "${max_bytes}" =~ ^[1-9][0-9]{0,8}$ \
+      && -f "${source}" && ! -L "${source}" \
+      && -f "${snapshot}" && ! -L "${snapshot}" ]] || return 1
+  byte_limit=$((10#${max_bytes} + 1))
+  (
+    # Keep the immutable hard-link pin beside the caller-owned snapshot, not
+    # necessarily beside the public source. Discovery snapshots live at the
+    # state-root level so validating a candidate does not update that session
+    # directory's mtime and thereby change the selection being computed.
+    # Ordinary callers already allocate snapshots beside their source, so
+    # their same-filesystem behavior is unchanged.
+    pin_dir="$(mktemp -d "${snapshot}.read-pin.XXXXXX" 2>/dev/null)" \
+      || exit 1
+    # EXIT traps may be inherited by a nested command-substitution after the
+    # function locals have gone out of scope.  Guard each expansion so nounset
+    # cannot turn best-effort private-snapshot cleanup into a caller failure.
+    trap '[[ -z "${corroboration:-}" ]] || rm -f "${corroboration}" 2>/dev/null || true; [[ -z "${pin:-}" ]] || rm -f "${pin}" 2>/dev/null || true; [[ -z "${pin_dir:-}" ]] || rmdir "${pin_dir}" 2>/dev/null || true' EXIT
+    chmod 700 "${pin_dir}" 2>/dev/null || exit 1
+    pin="${pin_dir}/source"
+    corroboration="$(mktemp "${snapshot}.verify.XXXXXX" 2>/dev/null)" \
+      || exit 1
+    # Hard-linking is nonblocking even if `source` is raced to a FIFO. The
+    # private link is opened only after its inode is proven regular and still
+    # identical to a non-symlink public path.
+    ln "${source}" "${pin}" 2>/dev/null || exit 1
+    [[ -f "${pin}" && ! -L "${pin}" && ! -L "${source}" \
+        && "${pin}" -ef "${source}" ]] || exit 1
+    pin_identity="$(_omc_regular_file_identity "${pin}")" || exit 1
+    exec 9<"${pin}" || exit 1
+    fd9_identity="$(_omc_regular_fd_identity 9)" || exit 1
+    [[ "${fd9_identity}" == "${pin_identity}" \
+        && "$(_omc_regular_file_identity "${pin}" 2>/dev/null || true)" \
+          == "${pin_identity}" ]] || exit 1
+    LC_ALL=C head -c "${byte_limit}" <&9 >"${snapshot}" 2>/dev/null \
+      || exit 1
+    # A second descriptor must still name the same regular inode and produce
+    # the same complete bytes. This catches both atomic replacement and an
+    # in-place append/rewrite during the first copy. Descriptor identities use
+    # fstat semantics rather than the non-portable /dev/fd `-ef` comparison.
+    exec 8<"${pin}" || exit 1
+    fd8_identity="$(_omc_regular_fd_identity 8)" || exit 1
+    [[ "${fd8_identity}" == "${fd9_identity}" \
+        && "${fd8_identity}" == "${pin_identity}" \
+        && "$(_omc_regular_file_identity "${pin}" 2>/dev/null || true)" \
+          == "${pin_identity}" ]] || exit 1
+    LC_ALL=C head -c "${byte_limit}" <&8 >"${corroboration}" 2>/dev/null \
+      || exit 1
+    [[ ! -L "${source}" && "${pin}" -ef "${source}" \
+        && "$(_omc_regular_fd_identity 8 2>/dev/null || true)" \
+          == "${pin_identity}" \
+        && "$(_omc_regular_fd_identity 9 2>/dev/null || true)" \
+          == "${pin_identity}" \
+        && "$(_omc_regular_file_identity "${pin}" 2>/dev/null || true)" \
+          == "${pin_identity}" ]] \
+      || exit 1
+    exec 8<&- 9<&-
+    chmod 600 "${snapshot}" 2>/dev/null || exit 1
+    chmod 600 "${corroboration}" 2>/dev/null || exit 1
+    _omc_regular_file_has_no_raw_nul "${snapshot}" "${max_bytes}" \
+      || exit 1
+    _omc_regular_file_has_no_raw_nul "${corroboration}" "${max_bytes}" \
+      || exit 1
+    cmp -s "${snapshot}" "${corroboration}" 2>/dev/null
+  )
+}
+
+# Re-attest a parsed snapshot against two stable observations of its public
+# path.  Byte-identical atomic replacement is harmless for content authority;
+# every other rename, append, truncation, or in-place rewrite fails closed.
+_omc_regular_file_snapshot_is_current() {
+  local source="${1:-}" snapshot="${2:-}" max_bytes="${3:-}"
+  local observed=""
+  [[ -n "${source}" && -n "${snapshot}" && "${source}" != "${snapshot}" \
+      && "${max_bytes}" =~ ^[1-9][0-9]{0,8}$ \
+      && -f "${source}" && ! -L "${source}" \
+      && -f "${snapshot}" && ! -L "${snapshot}" ]] || return 1
+  _omc_regular_file_has_no_raw_nul "${snapshot}" "${max_bytes}" || return 1
+  observed="$(mktemp "${snapshot}.current.XXXXXX" 2>/dev/null)" || return 1
+  if ! _omc_capture_regular_file_snapshot \
+      "${source}" "${observed}" "${max_bytes}"; then
+    rm -f "${observed}" 2>/dev/null || true
+    return 1
+  fi
+  if ! cmp -s "${snapshot}" "${observed}" 2>/dev/null; then
+    rm -f "${observed}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "${observed}" 2>/dev/null || return 1
+}
+
+# Validate the physical envelope shared by strict append-only JSONL ledgers
+# before jq slurps them into one in-memory authority object. A missing terminal
+# newline is a torn append, while an excessive byte/row count is not safe to
+# normalize merely because jq can still parse it.
+_omc_strict_jsonl_file_is_bounded() {
+  local path="${1:-}" max_bytes="${2:-}" max_rows="${3:-}" row_count=""
+  [[ "${max_bytes}" =~ ^[1-9][0-9]{0,8}$ \
+      && "${max_rows}" =~ ^[1-9][0-9]{0,8}$ ]] || return 1
+  _omc_regular_file_has_no_raw_nul "${path}" "${max_bytes}" || return 1
+  row_count="$(LC_ALL=C wc -l <"${path}" 2>/dev/null)" || return 1
+  row_count="${row_count//[[:space:]]/}"
+  [[ "${row_count}" =~ ^[0-9]+$ \
+      && $((10#${row_count})) -le $((10#${max_rows})) ]] || return 1
+  [[ ! -s "${path}" ]] \
+    || cmp -s <(tail -c 1 "${path}" 2>/dev/null) <(printf '\n')
+}
+
+# Parse a strict append ledger from one stable snapshot and return its rows as
+# a JSON array. Malformed JSON is preserved as null so the caller's complete
+# schema can decide whether that is tolerable; raw or decoded NUL never crosses
+# the jq-to-Bash boundary.
+_omc_strict_jsonl_array_unlocked() (
+  local ledger="${1:-}" max_bytes="${2:-}" max_rows="${3:-}"
+  local snapshot="" parsed=""
+  [[ ! -L "${ledger}" ]] \
+    && { [[ ! -e "${ledger}" ]] || [[ -f "${ledger}" ]]; } \
+    || return 1
+  if [[ ! -e "${ledger}" ]]; then
+    [[ ! -e "${ledger}" && ! -L "${ledger}" ]] || return 1
+    printf '[]\n'
+    return 0
+  fi
+  snapshot="$(mktemp "${ledger}.parse.XXXXXX" 2>/dev/null)" || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_regular_file_snapshot \
+    "${ledger}" "${snapshot}" "${max_bytes}" || return 1
+  _omc_strict_jsonl_file_is_bounded \
+    "${snapshot}" "${max_bytes}" "${max_rows}" || return 1
+  parsed="$(jq -Rsc '
+    if index("\u0000") != null then error("raw NUL in strict JSONL")
+    else [split("\n")[] | select(length > 0)
+      | (try fromjson catch null)] end
+    | if all(.[] | .. | strings; index("\u0000") == null)
+        and all(.[] | .. | objects | keys[]; index("\u0000") == null)
+      then . else error("decoded NUL in strict JSONL") end
+  ' "${snapshot}" 2>/dev/null)" || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${ledger}" "${snapshot}" "${max_bytes}" || return 1
+  printf '%s\n' "${parsed}"
+)
+
+# Read one session-ID field without letting raw-output normalization create
+# authority. Bash command substitution discards embedded NUL bytes, so a
+# caller that validates only after `jq -r` can turn `"target\u0000"` into the
+# valid ID `target`. Apply the complete grammar while the value is still a jq
+# string; only then may raw bytes cross into the shell.
+_omc_read_valid_session_id_field() {
+  local state_file="${1:-}" key="${2:-}" snapshot="" value=""
+  [[ -n "${state_file}" && -n "${key}" \
+      && -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  snapshot="$(_omc_allocate_discovery_snapshot "${state_file}")" || return 1
+  if ! _omc_capture_shell_safe_json_object \
+      "${state_file}" "${snapshot}" 16777216; then
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  fi
+  value="$(jq -er --arg key "${key}" '
+    select(type == "object" and has($key))
+    | .[$key]
+    | select(type == "string"
+        and length >= 1 and length <= 128
+        and test("^[a-zA-Z0-9_.-]+$")
+        and (contains("..") | not)
+        and (test("^\\.+$") | not))
+  ' "${snapshot}" 2>/dev/null)" || {
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  }
+  if ! _omc_regular_file_snapshot_is_current \
+      "${state_file}" "${snapshot}" 16777216; then
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "${snapshot}" 2>/dev/null || return 1
+  printf '%s\n' "${value}"
+}
+
+# Candidate discovery runs outside a selected session and therefore cannot use
+# read_state. Validate the complete persisted object before projecting one
+# string so an impossible JSON NUL cannot be normalized into a matching cwd or
+# other routing coordinate by command substitution.
+_omc_capture_shell_safe_json_object() {
+  local state_file="${1:-}" snapshot="${2:-}"
+  local max_bytes="${3:-16777216}"
+  _omc_canonical_uint_in_range "${max_bytes}" 1 99999999 || return 1
+  [[ -n "${state_file}" && -n "${snapshot}" \
+      && "${state_file}" != "${snapshot}" \
+      && -f "${state_file}" && ! -L "${state_file}" \
+      && -f "${snapshot}" && ! -L "${snapshot}" ]] || return 1
+  _omc_capture_regular_file_snapshot \
+    "${state_file}" "${snapshot}" "${max_bytes}" || return 1
+  jq -e '
+    type == "object"
+    and all(.. | strings; index("\u0000") == null)
+    and all(.. | objects | keys[]; index("\u0000") == null)
+  ' "${snapshot}" >/dev/null 2>&1
+}
+
+# Candidate discovery must not manufacture session activity. Allocate its
+# bounded snapshots one directory above the state file's session directory;
+# the hard-link pin helper above follows the snapshot onto the same filesystem.
+# The random files are private, hidden, and synchronously removed by callers.
+_omc_allocate_discovery_snapshot() {
+  local state_file="${1:-}" state_dir="" snapshot_parent="" snapshot=""
+  [[ -n "${state_file}" ]] || return 1
+  state_dir="${state_file%/*}"
+  # Discovery callers conventionally retain a trailing slash on candidate
+  # directories, producing `session//session_state.json`. Normalize that one
+  # lexical separator before walking to the state root; otherwise the first
+  # `%/*` merely removes the empty component and stages inside the session.
+  state_dir="${state_dir%/}"
+  snapshot_parent="${state_dir%/*}"
+  [[ "${state_dir}" != "${state_file}" \
+      && "${snapshot_parent}" != "${state_dir}" \
+      && -d "${snapshot_parent}" ]] || return 1
+  snapshot="$(umask 077; \
+    mktemp "${snapshot_parent}/.omc-state-read.XXXXXX" 2>/dev/null)" \
+    || return 1
+  [[ -f "${snapshot}" && ! -L "${snapshot}" ]] || {
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  }
+  chmod 600 "${snapshot}" 2>/dev/null || {
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  }
+  printf '%s\n' "${snapshot}"
+}
+
+# Run a jq projection against one pinned, bounded object generation and buffer
+# its output until the public source has been re-attested. The input envelope
+# has no raw or decoded NUL anywhere, so `-r` projections cannot cross a
+# NUL-normalized value into Bash. jq options and the filter are passed as
+# ordinary argv after the first two fixed arguments.
+_omc_project_shell_safe_json_object() (
+  local state_file="${1:-}" max_bytes="${2:-16777216}"
+  local snapshot="" output=""
+  shift 2 || return 1
+  [[ "$#" -gt 0 ]] || return 1
+  snapshot="$(mktemp "${state_file}.project-source.XXXXXX" 2>/dev/null)" \
+    || return 1
+  output="$(mktemp "${state_file}.project-output.XXXXXX" 2>/dev/null)" \
+    || { rm -f "${snapshot}" 2>/dev/null || true; return 1; }
+  trap 'rm -f "${snapshot}" "${output}" 2>/dev/null || true' EXIT
+  _omc_capture_shell_safe_json_object \
+    "${state_file}" "${snapshot}" "${max_bytes}" || return 1
+  jq "$@" "${snapshot}" >"${output}" 2>/dev/null || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${state_file}" "${snapshot}" "${max_bytes}" || return 1
+  cat "${output}"
+)
+
+# Render a replacement object from one pinned source generation. The caller
+# owns `output` and performs the final same-directory rename only after this
+# helper succeeds. Re-attestation happens after rendering, so an ABA pathname
+# swap cannot feed unvalidated bytes into an otherwise valid replacement.
+_omc_transform_shell_safe_json_object() (
+  local state_file="${1:-}" max_bytes="${2:-16777216}"
+  local output="${3:-}" snapshot=""
+  shift 3 || return 1
+  [[ "$#" -gt 0 && -f "${output}" && ! -L "${output}" \
+      && "${state_file}" != "${output}" ]] || return 1
+  snapshot="$(mktemp "${state_file}.transform-source.XXXXXX" 2>/dev/null)" \
+    || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_shell_safe_json_object \
+    "${state_file}" "${snapshot}" "${max_bytes}" || return 1
+  jq "$@" "${snapshot}" >"${output}" 2>/dev/null || return 1
+  _omc_regular_file_has_no_raw_nul "${output}" "${max_bytes}" || return 1
+  jq -e '
+    type == "object"
+    and all(.. | strings; index("\u0000") == null)
+    and all(.. | objects | keys[]; index("\u0000") == null)
+  ' "${output}" >/dev/null 2>&1 || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${state_file}" "${snapshot}" "${max_bytes}"
+)
+
+_omc_state_envelope_is_shell_safe() (
+  local state_file="${1:-}" max_bytes="${2:-16777216}" snapshot=""
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  snapshot="$(_omc_allocate_discovery_snapshot "${state_file}")" \
+    || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_shell_safe_json_object \
+    "${state_file}" "${snapshot}" "${max_bytes}" || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${state_file}" "${snapshot}" "${max_bytes}"
+)
+
+_omc_read_nul_free_string_field() {
+  local state_file="${1:-}" key="${2:-}" snapshot="" value=""
+  [[ -n "${key}" && -f "${state_file}" && ! -L "${state_file}" ]] \
+    || return 1
+  snapshot="$(_omc_allocate_discovery_snapshot "${state_file}")" || return 1
+  if ! _omc_capture_shell_safe_json_object \
+      "${state_file}" "${snapshot}" 16777216; then
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  fi
+  value="$(jq -er --arg key "${key}" '
+    select(has($key))
+    | .[$key]
+    | select(type == "string" and index("\u0000") == null)
+  ' "${snapshot}" 2>/dev/null)" || {
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  }
+  if ! _omc_regular_file_snapshot_is_current \
+      "${state_file}" "${snapshot}" 16777216; then
+    rm -f "${snapshot}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "${snapshot}" 2>/dev/null || return 1
+  printf '%s\n' "${value}"
+}
+
 # state-io.sh provides ensure_session_dir, session_file, read_state,
 # write_state, write_state_batch, append_state, append_limited_state,
 # with_state_lock, and with_state_lock_batch. Sourced after
@@ -2341,8 +3163,37 @@ _omc_resolve_path() {
 }
 _omc_self="$(_omc_resolve_path "${BASH_SOURCE[0]}")"
 _omc_self_dir="$(cd "$(dirname "${_omc_self}")" && pwd -P)"
-source "${_omc_self_dir}/lib/state-io.sh"
-source "${_omc_self_dir}/lib/verification.sh"
+# Recovery subprocesses must interpret fixed publication journals with the
+# same hook bundle that loaded this common library.  Falling back to a separate
+# ~/.claude installation is unsafe for repo-local tests and can also mix
+# transaction schemas during an in-place update or a custom/symlinked install.
+# Keep the canonical resolved sibling directory after the bootstrap locals are
+# released at EOF.
+_OMC_AUTOWORK_SCRIPTS_DIR="${_omc_self_dir}"
+. "${_omc_self_dir}/lib/state-io.sh"
+if ! . "${_omc_self_dir}/lib/verification.sh"; then
+  # Do not leave the idempotence marker advertising a partially initialized
+  # common library. A caller that catches a transient load failure must not
+  # short-circuit a later diagnostic or retry through the fast path.
+  unset _OMC_COMMON_SOURCED
+  return 1
+fi
+
+# Spend any unused one-turn Quality Constitution authority at a lifecycle
+# boundary. Callers must hold the addressed session lock: prompt rotation,
+# compact/resume handoff, and accepted Stop may otherwise race a newly issued
+# grant. Removing a symlink is safe (rm unlinks the node without following it),
+# while directories or other non-removable shapes fail closed. The explicit
+# absence check keeps a mocked/partial rm from turning an authorization-clear
+# failure into success.
+omc_clear_quality_constitution_authorization_unlocked() {
+  local path
+  path="$(session_file "quality_constitution_authorization.json")"
+  if [[ -e "${path}" || -L "${path}" ]]; then
+    rm -f -- "${path}" 2>/dev/null || return 1
+  fi
+  [[ ! -e "${path}" && ! -L "${path}" ]]
+}
 
 # v1.27.0 (F-020 / F-021): lazy-loadable libs.
 #
@@ -2422,6 +3273,14 @@ unset -f _omc_resolve_path
 # delivers on its claim across all installs — not just Linux.
 _omc_read_hook_stdin() {
   local _t="${OMC_HOOK_STDIN_TIMEOUT_S:-5}"
+  local _max="${OMC_HOOK_STDIN_MAX_BYTES:-4194304}"
+  local _force_fallback="${OMC_TEST_FORCE_HOOK_STDIN_FALLBACK:-0}"
+  local _limit _tmp _bytes _reader_pid _watchdog_pid _read_rc=0 _emit_rc=0
+  [[ "${_t}" =~ ^[1-9][0-9]{0,2}$ \
+      && "${_max}" =~ ^[1-9][0-9]{0,7}$ \
+      && $((10#${_max})) -le 16777216 \
+      && "${_force_fallback}" =~ ^[01]$ ]] || return 1
+  _limit=$((10#${_max} + 1))
   # The hook caller's PATH is untrusted input: a repo-local `cat` can shadow
   # the reader just as it can shadow any command being classified. GNU
   # `timeout` resolves its child through the inherited PATH, so keep both the
@@ -2429,27 +3288,82 @@ _omc_read_hook_stdin() {
   # snapshots. `_OMC_OBSERVER_SAFE_PATH` is initialized by the time any hook
   # invokes this function; the fallback keeps direct early calls portable.
   local PATH="${_OMC_OBSERVER_SAFE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin}"
-  if command -v timeout >/dev/null 2>&1; then
-    timeout "${_t}" cat 2>/dev/null || true
-    return 0
+  _tmp="$(command mktemp /tmp/omc-hook-stdin.XXXXXX 2>/dev/null)" \
+    || return 1
+  command chmod 600 "${_tmp}" 2>/dev/null \
+    || { command rm -f "${_tmp}" 2>/dev/null || true; return 1; }
+  if [[ "${_force_fallback}" -ne 1 ]] \
+      && command -v timeout >/dev/null 2>&1; then
+    command timeout "${_t}" head -c "${_limit}" \
+      >"${_tmp}" 2>/dev/null || _read_rc=$?
+  elif [[ "${_force_fallback}" -ne 1 ]] \
+      && command -v gtimeout >/dev/null 2>&1; then
+    command gtimeout "${_t}" head -c "${_limit}" \
+      >"${_tmp}" 2>/dev/null || _read_rc=$?
+  else
+    # Preserve the caller's stdin explicitly for the asynchronous reader;
+    # non-interactive Bash otherwise redirects an unqualified background
+    # command from /dev/null. The watchdog treats timeout as failure and never
+    # publishes the partial prefix.
+    exec 9<&0 \
+      || { command rm -f "${_tmp}" 2>/dev/null || true; return 1; }
+    command head -c "${_limit}" <&9 >"${_tmp}" 2>/dev/null &
+    _reader_pid=$!
+    (
+      # Killing a shell that is synchronously waiting for `sleep` is not a
+      # prompt cancellation on stock macOS Bash 3.2: the shell can retain its
+      # foreground child and `wait $watchdog` then pays the entire timeout on
+      # every successful hook read. Own the timer as an asynchronous child and
+      # reap it from the TERM trap so the normal fast path returns immediately.
+      # Reaping also prevents a detached timer from later signalling a reused
+      # reader PID.
+      local _timer_pid=""
+      trap '
+        if [[ -n "${_timer_pid}" ]]; then
+          command kill -TERM "${_timer_pid}" 2>/dev/null || true
+          wait "${_timer_pid}" 2>/dev/null || true
+        fi
+        exit 0
+      ' TERM
+      command sleep "${_t}" &
+      _timer_pid=$!
+      wait "${_timer_pid}" 2>/dev/null || exit 0
+      command kill -TERM "${_reader_pid}" 2>/dev/null || true
+    ) &
+    _watchdog_pid=$!
+    wait "${_reader_pid}" || _read_rc=$?
+    command kill -TERM "${_watchdog_pid}" 2>/dev/null || true
+    wait "${_watchdog_pid}" 2>/dev/null || true
+    exec 9<&-
   fi
-  if command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "${_t}" cat 2>/dev/null || true
-    return 0
+  if [[ "${_read_rc}" -ne 0 ]]; then
+    command rm -f "${_tmp}" 2>/dev/null || true
+    return 1
   fi
-  # Bash-native fallback: `read -r -d '' -t` reads to NUL or EOF or
-  # timeout-elapsed. JSON hook payloads have no NUL bytes, so this is
-  # equivalent to "read all stdin within ${_t} seconds, else give up
-  # with whatever arrived so far." Works without coreutils, no
-  # backgrounded subprocesses (avoids the stdin-redirect-on-bg quirk
-  # under bash command substitution).
-  local _buf=""
-  IFS='' read -r -d '' -t "${_t}" _buf 2>/dev/null || true
-  printf '%s' "${_buf}"
+  _bytes="$(LC_ALL=C command wc -c <"${_tmp}" 2>/dev/null)" \
+    || { command rm -f "${_tmp}" 2>/dev/null || true; return 1; }
+  _bytes="${_bytes//[[:space:]]/}"
+  if [[ ! "${_bytes}" =~ ^[0-9]+$ \
+      || $((10#${_bytes})) -gt $((10#${_max})) ]] \
+      || ! LC_ALL=C command tr -d '\000' <"${_tmp}" \
+        | command cmp -s - "${_tmp}" 2>/dev/null; then
+    command rm -f "${_tmp}" 2>/dev/null || true
+    return 1
+  fi
+  command cat "${_tmp}" || _emit_rc=$?
+  command rm -f "${_tmp}" 2>/dev/null || _emit_rc=1
+  return "${_emit_rc}"
 }
 
 now_epoch() {
-  date +%s
+  local value="" PATH="${_OMC_OBSERVER_SAFE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin}"
+  # `now_epoch` feeds jq --argjson and lease arithmetic throughout the hook
+  # graph. Resolve date through the observer path (and bypass an exported shell
+  # function) so a repository-controlled caller PATH cannot turn the shared
+  # clock into code or malformed numeric authority.
+  value="$(command date +%s 2>/dev/null)" || return 1
+  _omc_canonical_uint_in_range "${value}" 1 999999999999999 || return 1
+  printf '%s' "${value}"
 }
 
 # v1.48-pre (2026-07-04 multi-machine correction): machine identity for
@@ -2472,8 +3386,9 @@ omc_host() {
 }
 
 # --- State directory TTL sweep ---
-# Deletes session state dirs older than OMC_STATE_TTL_DAYS (default 7).
-# Runs at most once per day, gated by a marker file timestamp.
+# Transactionally exports and retires session state generations older than
+# OMC_STATE_TTL_DAYS (default 7). Runs at most once per day after recovering
+# any interrupted claim, gated by an atomic canonical marker receipt.
 
 # _cap_cross_session_jsonl <file> <cap> <retain>
 # Caps a cross-session JSONL aggregate. No-op when the file is missing or
@@ -2494,10 +3409,15 @@ omc_host() {
 # regress hot-path latency for negligible additional safety.
 _cap_cross_session_jsonl() {
   local file="$1" cap="$2" retain="$3"
-  [[ -f "${file}" ]] || return 0
+  [[ "${cap}" =~ ^[1-9][0-9]*$ \
+      && "${retain}" =~ ^[1-9][0-9]*$ \
+      && "${retain}" -le "${cap}" ]] || return 1
+  [[ -e "${file}" || -L "${file}" ]] || return 0
+  [[ -f "${file}" && ! -L "${file}" ]] || return 1
   local lines
   lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
   lines="${lines##* }"
+  [[ "${lines}" =~ ^[0-9]+$ ]] || return 1
   [[ "${lines}" -le "${cap}" ]] && return 0
   with_cross_session_log_lock "${file}" _do_cap_cross_session_jsonl "${file}" "${cap}" "${retain}"
 }
@@ -2509,49 +3429,1455 @@ _cap_cross_session_jsonl() {
 # trims, the rest see lines<=cap and return without doing the work.
 _do_cap_cross_session_jsonl() {
   local file="$1" cap="$2" retain="$3"
-  [[ -f "${file}" ]] || return 0
+  [[ "${cap}" =~ ^[1-9][0-9]*$ \
+      && "${retain}" =~ ^[1-9][0-9]*$ \
+      && "${retain}" -le "${cap}" ]] || return 1
+  [[ -e "${file}" || -L "${file}" ]] || return 0
+  [[ -f "${file}" && ! -L "${file}" ]] || return 1
   local lines temp
   lines="$(wc -l < "${file}" 2>/dev/null || echo 0)"
   lines="${lines##* }"
+  [[ "${lines}" =~ ^[0-9]+$ ]] || return 1
   [[ "${lines}" -le "${cap}" ]] && return 0
-  temp="$(mktemp "${file}.XXXXXX")" || return 0
-  if tail -n "${retain}" "${file}" > "${temp}" 2>/dev/null; then
-    mv "${temp}" "${file}"
-  else
-    rm -f "${temp}"
+  temp="$(mktemp "${file}.XXXXXX")" || return 1
+  if ! tail -n "${retain}" "${file}" >"${temp}" 2>/dev/null \
+      || ! mv -f -- "${temp}" "${file}"; then
+    rm -f -- "${temp}" 2>/dev/null || true
+    return 1
   fi
 }
 
-# v1.31.0 Wave 2 (sre-lens F-2): locked bodies for cross-session
-# aggregation append-paths. Extracted from sweep_stale_sessions so
-# with_cross_session_log_lock can wrap the read-pipe-jq-append
-# pipeline atomically. Each function reads ONE per-session JSONL,
-# tags rows with the source session_id, and appends to the
-# cross-session ledger. On error: never abort the sweep, just skip
-# this session's contribution.
+# Filter and cap the shared timing ledger in one file-lock transaction. Every
+# timing summary writer uses this same mutex, so no fresh summary can land
+# between the retention snapshot and atomic rename.
+_sweep_retain_timing_locked() {
+  local file="$1" cutoff="$2" cap="$3" retain="$4"
+  local temp trim lines
+  [[ ! -L "${file}" ]] \
+    && { [[ ! -e "${file}" ]] || [[ -f "${file}" ]]; } || return 1
+  [[ -f "${file}" && -s "${file}" ]] || return 0
+  temp="$(mktemp "${file}.XXXXXX")" || return 1
+  if ! jq -c --argjson cutoff "${cutoff}" \
+      'select((.ts // 0) >= $cutoff)' \
+      "${file}" >"${temp}" 2>/dev/null; then
+    rm -f "${temp}"
+    return 1
+  fi
+  lines="$(wc -l <"${temp}" 2>/dev/null | tr -d '[:space:]')"
+  [[ "${lines}" =~ ^[0-9]+$ ]] || { rm -f "${temp}"; return 1; }
+  if (( lines > cap )); then
+    trim="$(mktemp "${file}.trim.XXXXXX")" \
+      || { rm -f "${temp}"; return 1; }
+    if ! tail -n "${retain}" "${temp}" >"${trim}" 2>/dev/null; then
+      rm -f "${temp}" "${trim}"
+      return 1
+    fi
+    rm -f "${temp}"
+    temp="${trim}"
+  fi
+  if [[ -n "${OMC_TEST_TIMING_TTL_READY_FILE:-}" ]]; then
+    : >"${OMC_TEST_TIMING_TTL_READY_FILE}"
+    while [[ -n "${OMC_TEST_TIMING_TTL_RELEASE_FILE:-}" \
+        && ! -e "${OMC_TEST_TIMING_TTL_RELEASE_FILE}" ]]; do
+      sleep 0.01
+    done
+  fi
+  mv -f "${temp}" "${file}" 2>/dev/null \
+    || { rm -f "${temp}"; return 1; }
+}
+
+# Locked, failure-atomic cross-session aggregation. A stale source directory is
+# deletion-authoritative data: parse, transform, and destination publication
+# must all succeed before the sweep may remove it. Publication uses an exact
+# occurrence-aware merge, so retrying after another ledger's failure neither
+# collapses legitimate duplicate legacy rows nor duplicates a prior success.
+
+_sweep_file_identity() {
+  local path="${1:-}" value=""
+  value="$(stat -f '%d:%i' "${path}" 2>/dev/null || true)"
+  if [[ "${value}" =~ ^[0-9]+:[0-9]+$ ]]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+  value="$(stat -c '%d:%i' "${path}" 2>/dev/null || true)"
+  [[ "${value}" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  printf '%s' "${value}"
+}
+
+_sweep_file_mode() {
+  local path="${1:-}" value=""
+  value="$(stat -f '%Lp' "${path}" 2>/dev/null || true)"
+  if [[ "${value}" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+  value="$(stat -c '%a' "${path}" 2>/dev/null || true)"
+  [[ "${value}" =~ ^[0-7]{3,4}$ ]] || return 1
+  printf '%s' "${value}"
+}
+
+_sweep_file_size() {
+  local path="${1:-}" value=""
+  value="$(stat -f '%z' "${path}" 2>/dev/null || true)"
+  if [[ "${value}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+  value="$(stat -c '%s' "${path}" 2>/dev/null || true)"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "${value}"
+}
+
+_sweep_file_digest() {
+  local path="${1:-}" sum="" size=""
+  local PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  [[ -f "${path}" && ! -L "${path}" ]] || return 1
+  if command -v shasum >/dev/null 2>&1; then
+    sum="$(shasum -a 256 "${path}" 2>/dev/null \
+      | awk '{print $1}')" || return 1
+    [[ "${sum}" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf 'sha256:%s' "${sum}"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sum="$(sha256sum "${path}" 2>/dev/null \
+      | awk '{print $1}')" || return 1
+    [[ "${sum}" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf 'sha256:%s' "${sum}"
+  else
+    read -r sum size _ < <(cksum <"${path}") || return 1
+    [[ "${sum}" =~ ^[0-9]+$ && "${size}" =~ ^[0-9]+$ ]] || return 1
+    printf 'cksum:%s:%s' "${sum}" "${size}"
+  fi
+}
+
+# Return an exact, bounded signature for a real one-level directory whose
+# children are regular files. Session state legitimately contains managed
+# namespaces such as .verification-starts, .closeout-material-generations,
+# and crash WALs; treating every directory as malformed wedges ordinary TTL
+# retention. Nested directories and every symlink/special node still fail
+# closed rather than granting the eventual claim cleanup a recursive traversal
+# capability over an unvalidated tree.
+_sweep_flat_directory_signature() (
+  local directory="${1:-}" scratch="${2:-}"
+  local listing="" rows="" canonical="" observed="" expected="" checks=""
+  local entry="" name="" identity="" digest="" mode="" size=""
+  local directory_id="" directory_mode="" total=0 count=0
+  local observed_count=0 list_size=""
+  _sweep_flat_signature_cleanup() {
+    local temporary=""
+    for temporary in "${listing}" "${rows}" "${canonical}" \
+        "${observed}" "${expected}" "${checks}"; do
+      [[ -n "${temporary}" && "${temporary}" == "${scratch}/.flat-"* \
+          && -f "${temporary}" && ! -L "${temporary}" ]] || continue
+      rm -f -- "${temporary}" 2>/dev/null || true
+    done
+  }
+  trap _sweep_flat_signature_cleanup EXIT
+  [[ -d "${directory}" && ! -L "${directory}" \
+      && -d "${scratch}" && ! -L "${scratch}" \
+      && "${scratch}" != "${directory}" \
+      && "${scratch}" != "${directory}/"* ]] || return 1
+  directory_id="$(_sweep_file_identity "${directory}")" || return 1
+  directory_mode="$(_sweep_file_mode "${directory}")" || return 1
+  listing="$(mktemp "${scratch}/.flat-list.XXXXXX")" || return 1
+  rows="$(mktemp "${scratch}/.flat-rows.XXXXXX")" || {
+    rm -f -- "${listing}" 2>/dev/null || true
+    return 1
+  }
+  canonical="$(mktemp "${scratch}/.flat-canonical.XXXXXX")" || {
+    rm -f -- "${listing}" "${rows}" 2>/dev/null || true
+    return 1
+  }
+  observed="$(mktemp "${scratch}/.flat-observed.XXXXXX")" || {
+    rm -f -- "${listing}" "${rows}" "${canonical}" 2>/dev/null || true
+    return 1
+  }
+  expected="$(mktemp "${scratch}/.flat-expected.XXXXXX")" || {
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      2>/dev/null || true
+    return 1
+  }
+  checks="$(mktemp "${scratch}/.flat-checks.XXXXXX")" || {
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      "${expected}" 2>/dev/null || true
+    return 1
+  }
+  if ! find "${directory}" -mindepth 1 -maxdepth 1 -print0 \
+      >"${listing}" 2>/dev/null; then
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      "${expected}" 2>/dev/null || true
+    return 1
+  fi
+  list_size="$(_sweep_file_size "${listing}")" || {
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      "${expected}" 2>/dev/null || true
+    return 1
+  }
+  if (( list_size > 1048576 )); then
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      "${expected}" 2>/dev/null || true
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    [[ "${name}" =~ ^[A-Za-z0-9._-]{1,160}$ \
+        && -f "${entry}" && ! -L "${entry}" ]] || {
+      rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+        "${expected}" 2>/dev/null || true
+      return 1
+    }
+    count=$((count + 1))
+    (( count <= _SWEEP_MAX_MANAGED_DIR_ENTRIES )) || {
+      rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+        "${expected}" 2>/dev/null || true
+      return 1
+    }
+    size="$(_sweep_file_size "${entry}")" || return 1
+    (( size <= _SWEEP_MAX_INPUT_BYTES )) || return 1
+    total=$((total + size))
+    (( total <= _SWEEP_MAX_INPUT_BYTES )) || return 1
+    identity="$(_sweep_file_identity "${entry}")" || return 1
+    digest="$(_sweep_file_digest "${entry}")" || return 1
+    mode="$(_sweep_file_mode "${entry}")" || return 1
+    jq -nc --arg name "${name}" --arg identity "${identity}" \
+      --arg digest "${digest}" --arg mode "${mode}" \
+      --argjson size "${size}" \
+      '{name:$name,identity:$identity,digest:$digest,mode:$mode,size:$size}' \
+      >>"${rows}" || return 1
+  done <"${listing}"
+  if ! jq -sc 'sort_by(.name)[]' "${rows}" >"${canonical}" \
+      || ! jq -r '.name' "${canonical}" >"${expected}" \
+      || ! find "${directory}" -mindepth 1 -maxdepth 1 -print0 \
+        >"${listing}" 2>/dev/null; then
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      "${expected}" 2>/dev/null || true
+    return 1
+  fi
+  list_size="$(_sweep_file_size "${listing}")" || return 1
+  (( list_size <= 1048576 )) || return 1
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    [[ "${name}" =~ ^[A-Za-z0-9._-]{1,160}$ \
+        && -f "${entry}" && ! -L "${entry}" ]] || {
+      rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+        "${expected}" 2>/dev/null || true
+      return 1
+    }
+    observed_count=$((observed_count + 1))
+    (( observed_count <= _SWEEP_MAX_MANAGED_DIR_ENTRIES )) || return 1
+    printf '%s\n' "${name}" >>"${observed}" || return 1
+  done <"${listing}"
+  LC_ALL=C sort -o "${observed}" "${observed}" || return 1
+  if ! cmp -s "${expected}" "${observed}"; then
+    rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+      "${expected}" 2>/dev/null || true
+    return 1
+  fi
+  jq -r '[.name,.identity,.digest,.mode,(.size|tostring)] | @tsv' \
+    "${canonical}" >"${checks}" || return 1
+  while IFS=$'\t' read -r name identity digest mode size; do
+    _sweep_manifest_row_matches_path "${directory}/${name}" file \
+      "${identity}" "${digest}" "${mode}" "${size}" "${scratch}" \
+      || return 1
+  done <"${checks}"
+  # Re-enumerate after the per-child identity/digest checks. Without this
+  # final comparison, a cooperative writer that created a new child between
+  # the earlier name snapshot and the child checks could be omitted from the
+  # directory digest while the directory inode and mode remained unchanged.
+  : >"${observed}" || return 1
+  find "${directory}" -mindepth 1 -maxdepth 1 -print0 \
+    >"${listing}" 2>/dev/null || return 1
+  list_size="$(_sweep_file_size "${listing}")" || return 1
+  (( list_size <= 1048576 )) || return 1
+  observed_count=0
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    [[ "${name}" =~ ^[A-Za-z0-9._-]{1,160}$ \
+        && -f "${entry}" && ! -L "${entry}" ]] || return 1
+    observed_count=$((observed_count + 1))
+    (( observed_count <= _SWEEP_MAX_MANAGED_DIR_ENTRIES )) || return 1
+    printf '%s\n' "${name}" >>"${observed}" || return 1
+  done <"${listing}"
+  LC_ALL=C sort -o "${observed}" "${observed}" || return 1
+  cmp -s "${expected}" "${observed}" || return 1
+  [[ "$(_sweep_file_identity "${directory}" 2>/dev/null || true)" \
+        == "${directory_id}" \
+      && "$(_sweep_file_mode "${directory}" 2>/dev/null || true)" \
+        == "${directory_mode}" ]] || return 1
+  digest="$(_sweep_file_digest "${canonical}")" || return 1
+  rm -f -- "${listing}" "${rows}" "${canonical}" "${observed}" \
+    "${expected}" "${checks}" || return 1
+  trap - EXIT
+  printf '%s\t%s\t%s\t%s' \
+    "${directory_id}" "${digest}" "${directory_mode}" "${total}"
+)
+
+_sweep_jsonl_is_bounded_objects() {
+  local path="${1:-}" max_bytes="${2:-}" size=""
+  [[ "${max_bytes}" =~ ^[1-9][0-9]*$ \
+      && -f "${path}" && ! -L "${path}" ]] || return 1
+  size="$(_sweep_file_size "${path}")" || return 1
+  (( size <= max_bytes )) || return 1
+  [[ ! -s "${path}" || -z "$(tail -c 1 "${path}" 2>/dev/null)" ]] \
+    || return 1
+  [[ ! -s "${path}" ]] || jq -Rse '
+    index("\u0000") == null
+    and (split("\n") as $lines
+    | ($lines[-1] == "") and
+      all($lines[0:-1][];
+        length > 0
+        and ((try fromjson catch null) as $row
+          | ($row | type) == "object"
+          and all($row | .. | strings; index("\u0000") == null))))
+  ' "${path}" >/dev/null 2>&1
+}
+
+_sweep_merge_jsonl_rows_locked() {
+  local destination="${1:-}" additions="${2:-}" identity_field="${3:-}"
+  local merge_mode="${4:-occurrence}"
+  local parent="" stage=""
+  local destination_exists=0 destination_id="" destination_digest=""
+  local destination_mode="" stage_size="" stage_digest="" input_file="/dev/null"
+  [[ -n "${destination}" ]] || return 1
+  [[ "${merge_mode}" == "occurrence" \
+      || "${merge_mode}" == "gate-event" ]] || return 1
+  [[ "${merge_mode}" != "gate-event" || -z "${identity_field}" ]] \
+    || return 1
+  _sweep_jsonl_is_bounded_objects "${additions}" 8388608 || return 1
+  [[ -s "${additions}" ]] || return 0
+  parent="${destination%/*}"
+  if [[ -e "${destination}" || -L "${destination}" ]]; then
+    _sweep_jsonl_is_bounded_objects "${destination}" 67108864 || return 1
+    destination_exists=1
+    destination_id="$(_sweep_file_identity "${destination}")" || return 1
+    destination_digest="$(_sweep_file_digest "${destination}")" || return 1
+    destination_mode="$(_sweep_file_mode "${destination}")" || return 1
+    input_file="${destination}"
+  fi
+  stage="$(mktemp "${parent}/.$(basename "${destination}").sweep.XXXXXX")" \
+    || return 1
+  if ! jq -sc --slurpfile additions "${additions}" \
+      --arg identity_field "${identity_field}" \
+      --arg merge_mode "${merge_mode}" '
+      def canonical:
+        walk(if type == "object" then
+          to_entries | sort_by(.key) | from_entries
+        else . end) | tojson;
+      def valid_gate_id:
+        type == "string"
+        and ((try capture(
+            "^ge:(?<session>[A-Za-z0-9_.-]{1,128}):[1-9][0-9]{0,14}$"
+          ) catch null) as $parts
+          | ($parts != null)
+          # Keep the embedded producer session under the exact same grammar as
+          # validate_session_id(). Accepting dot-only or `..` components here
+          # would let a merge treat evidence as durable that every live-session
+          # consumer (including the statusline) must reject.
+          and (($parts.session | contains("..")) | not)
+          and (($parts.session | test("^[.]+$")) | not));
+      def gate_producer:
+        del(.session_id,.project_key) | canonical;
+      . as $existing
+      | if $merge_mode == "gate-event" then
+          if all(($existing + $additions)[];
+              type == "object"
+              and ((has("event_id") | not) or (.event_id | valid_gate_id)))
+          then . else error("invalid gate event identity") end
+          | ($existing | reduce .[] as $row ({};
+              if ($row | has("event_id")) then .
+              else ($row | canonical) as $key
+                | .[$key] = ((.[$key] // 0) + 1) end)) as $legacy_have
+          | foreach (
+              ($existing[] | {source:"existing",row:.}),
+              ($additions[] | {source:"addition",row:.})
+            ) as $item
+            ({ids:{},producers:{},legacy_seen:{},emit:null};
+              ($item.row) as $row
+              | if ($row | has("event_id")) then
+                  ($row.event_id) as $id
+                  | ($row | gate_producer) as $producer
+                  | if (.producers[$id]? != null
+                      and .producers[$id] != $producer) then
+                      error("conflicting gate event producer payload")
+                    else
+                      .producers[$id] = $producer
+                      | if (.ids[$id] // false) then .emit = null
+                        else .ids[$id] = true | .emit = $row end
+                    end
+                else
+                  ($row | canonical) as $key
+                  | if $item.source == "existing" then .emit = $row
+                    else
+                      .legacy_seen[$key] = ((.legacy_seen[$key] // 0) + 1)
+                      | if .legacy_seen[$key] > ($legacy_have[$key] // 0)
+                        then .emit = $row else .emit = null end
+                    end
+                end;
+              .emit | select(. != null))
+        elif $identity_field != "" then
+          ($additions | length == 1) as $one_addition
+          | ($additions[0][$identity_field] // null) as $identity
+          | [$existing[] | select(.[$identity_field]? == $identity)] as $matches
+          | if ($one_addition | not) or ($identity | type) != "string"
+              or ($identity | length) == 0 or ($matches | length) > 1
+            then error("invalid or ambiguous identity merge")
+            elif ($matches | length) == 1 then $existing[]
+            else ($existing[], $additions[0]) end
+        else
+          ($existing | reduce .[] as $row ({};
+            ($row | canonical) as $key
+            | .[$key] = ((.[$key] // 0) + 1))) as $have
+          | ($existing[],
+              (foreach $additions[] as $row ({};
+                ($row | canonical) as $key
+                | .[$key] = ((.[$key] // 0) + 1);
+                ($row | canonical) as $key
+                | select(.[$key] > ($have[$key] // 0))
+                | $row)))
+        end
+    ' "${input_file}" \
+      >"${stage}" 2>/dev/null \
+      || ! chmod "$([[ "${destination_exists}" -eq 1 ]] \
+          && printf '%s' "${destination_mode}" || printf '600')" "${stage}" \
+      || ! _sweep_jsonl_is_bounded_objects "${stage}" 67108864; then
+    rm -f -- "${stage}" 2>/dev/null || true
+    return 1
+  fi
+  stage_size="$(_sweep_file_size "${stage}")" || {
+    rm -f -- "${stage}" 2>/dev/null || true
+    return 1
+  }
+  stage_digest="$(_sweep_file_digest "${stage}")" || {
+    rm -f -- "${stage}" 2>/dev/null || true
+    return 1
+  }
+  if [[ "${destination_exists}" -eq 1 ]]; then
+    if [[ "$(_sweep_file_identity "${destination}" 2>/dev/null || true)" \
+          != "${destination_id}" \
+        || "$(_sweep_file_digest "${destination}" 2>/dev/null || true)" \
+          != "${destination_digest}" \
+        || "$(_sweep_file_mode "${destination}" 2>/dev/null || true)" \
+          != "${destination_mode}" ]]; then
+      rm -f -- "${stage}" 2>/dev/null || true
+      return 1
+    fi
+    if [[ "${stage_digest}" == "${destination_digest}" ]]; then
+      rm -f -- "${stage}"
+      return 0
+    fi
+  elif [[ -e "${destination}" || -L "${destination}" ]]; then
+    rm -f -- "${stage}" 2>/dev/null || true
+    return 1
+  fi
+  mv -f -- "${stage}" "${destination}" || {
+    rm -f -- "${stage}" 2>/dev/null || true
+    return 1
+  }
+  [[ "$(_sweep_file_size "${destination}" 2>/dev/null || true)" \
+        == "${stage_size}" \
+      && "$(_sweep_file_digest "${destination}" 2>/dev/null || true)" \
+        == "${stage_digest}" ]]
+}
+
+_sweep_merge_gate_event_rows_locked() {
+  _sweep_merge_jsonl_rows_locked "${1:-}" "${2:-}" "" gate-event
+}
+
+_sweep_merge_jsonl_payload_locked() {
+  local destination="${1:-}" payload="${2:-}" identity_field="${3:-}"
+  local additions=""
+  additions="$(mktemp "${destination}.rows.XXXXXX")" || return 1
+  if ! printf '%s\n' "${payload}" >"${additions}" \
+      || ! chmod 600 "${additions}" \
+      || ! _sweep_merge_jsonl_rows_locked \
+        "${destination}" "${additions}" "${identity_field}"; then
+    rm -f -- "${additions}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f -- "${additions}"
+}
+
+_sweep_stage_tagged_rows() {
+  local source="${1:-}" sid="${2:-}" pkey="${3:-}"
+  local kind="${4:-}" output="${5:-}" source_id="" source_digest=""
+  _sweep_jsonl_is_bounded_objects "${source}" 8388608 || return 1
+  source_id="$(_sweep_file_identity "${source}")" || return 1
+  source_digest="$(_sweep_file_digest "${source}")" || return 1
+  case "${kind}" in
+    misfires)
+      jq -c --arg sid "${sid}" --arg pkey "${pkey}" '
+        select(.misfire == true)
+        | del(.session_id,.project_key)
+        | if $pkey == "" then . + {session_id:$sid}
+          else . + {session_id:$sid,project_key:$pkey} end
+      ' "${source}" >"${output}" 2>/dev/null || return 1
+      ;;
+    gate-events)
+      jq -c --arg sid "${sid}" --arg pkey "${pkey}" '
+        del(.session_id,.project_key)
+        | if $pkey == "" then . + {session_id:$sid}
+        else . + {session_id:$sid,project_key:$pkey} end
+      ' "${source}" >"${output}" 2>/dev/null || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  chmod 600 "${output}" \
+    && _sweep_jsonl_is_bounded_objects "${output}" 8388608 \
+    && [[ "$(_sweep_file_identity "${source}" 2>/dev/null || true)" \
+          == "${source_id}" \
+        && "$(_sweep_file_digest "${source}" 2>/dev/null || true)" \
+          == "${source_digest}" ]]
+}
 
 _sweep_append_misfires() {
   local src_telemetry="$1" sid="$2" dst_misfires="$3" pkey="${4:-}"
-  # v1.31.0 Wave 4 (data-lens F-1): lift project_key onto each row at
-  # sweep time so multi-project users can slice /ulw-report by project.
-  # Pre-Wave-4 rows carry only session_id; cross-session aggregates
-  # without the lift cannot answer "show me ProjectA's misfires".
-  grep '"misfire":true' "${src_telemetry}" 2>/dev/null \
-    | jq -c --arg sid "${sid}" --arg pkey "${pkey}" \
-        'if $pkey == "" then . + {session_id: $sid} else . + {session_id: $sid, project_key: $pkey} end' \
-        2>/dev/null \
-    >> "${dst_misfires}" \
-    || true
+  local rows=""
+  rows="$(mktemp "${dst_misfires}.rows.XXXXXX")" || return 1
+  if ! _sweep_stage_tagged_rows "${src_telemetry}" "${sid}" "${pkey}" \
+      misfires "${rows}" \
+      || ! _sweep_merge_jsonl_rows_locked "${dst_misfires}" "${rows}"; then
+    rm -f -- "${rows}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f -- "${rows}"
 }
 
 _sweep_append_gate_events() {
   local src_gate_events="$1" sid="$2" dst_gate_events="$3" pkey="${4:-}"
-  # v1.31.0 Wave 4 (data-lens F-1): same project_key lift as misfires.
-  jq -c --arg sid "${sid}" --arg pkey "${pkey}" \
-    'if $pkey == "" then . + {session_id: $sid} else . + {session_id: $sid, project_key: $pkey} end' \
-    "${src_gate_events}" 2>/dev/null \
-    >> "${dst_gate_events}" \
-    || true
+  local rows=""
+  rows="$(mktemp "${dst_gate_events}.rows.XXXXXX")" || return 1
+  if ! _sweep_stage_tagged_rows "${src_gate_events}" "${sid}" "${pkey}" \
+      gate-events "${rows}" \
+      || ! _sweep_merge_gate_event_rows_locked \
+        "${dst_gate_events}" "${rows}"; then
+    rm -f -- "${rows}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f -- "${rows}"
+}
+
+# Stale-session deletion is a recoverable transaction. The live directory is
+# first captured as an exact bounded manifest, rechecked while its ordinary
+# state mutex is held, and moved entry-by-entry into a hidden claim. A durable
+# receipt then drives idempotent cross-session publication and retirement.
+# Crash points therefore leave either the live generation, a recoverable claim,
+# or an exported receipt -- never an unowned partially deleted directory.
+
+_SWEEP_MAX_STATE_BYTES=1048576
+_SWEEP_MAX_INPUT_BYTES=8388608
+_SWEEP_MAX_GENERATION_BYTES=67108864
+_SWEEP_MAX_MANIFEST_BYTES=2097152
+_SWEEP_MAX_MANIFEST_ENTRIES=4096
+_SWEEP_MAX_MANAGED_DIR_ENTRIES=1024
+
+_sweep_state_lock_control_name() {
+  case "${1:-}" in
+    .state.lock|.state.lock.owner|.state.lock.owner.claim.*|\
+    timing.jsonl.lock|timing.jsonl.lock.owner|timing.jsonl.lock.owner.claim.*|\
+    findings.json.lock|findings.json.lock.owner|findings.json.lock.owner.claim.*|\
+    .scope.lock|.scope.lock.owner|.scope.lock.owner.claim.*|\
+    exemplifying_scope.json.lock|exemplifying_scope.json.lock.owner|\
+    exemplifying_scope.json.lock.owner.claim.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Freeze every independently locked per-session writer in the established
+# order. State-mutating paths already nest state -> timing; the remaining
+# ledgers do not acquire a reverse pair. The exact adjacent owner/claim files
+# are excluded from generation manifests above.
+_sweep_with_checklist_lock() {
+  local source="$1" tag="$2"
+  shift 2
+  _with_lockdir "${source}/exemplifying_scope.json.lock" \
+    "${tag}:checklist" "$@"
+}
+
+_sweep_with_scope_lock() {
+  local source="$1" tag="$2"
+  shift 2
+  _with_lockdir "${source}/.scope.lock" "${tag}:scope" \
+    _sweep_with_checklist_lock "${source}" "${tag}" "$@"
+}
+
+_sweep_with_findings_lock() {
+  local source="$1" tag="$2"
+  shift 2
+  _with_lockdir "${source}/findings.json.lock" "${tag}:findings" \
+    _sweep_with_scope_lock "${source}" "${tag}" "$@"
+}
+
+_sweep_with_timing_lock() {
+  local source="$1" tag="$2"
+  shift 2
+  _with_lockdir "${source}/timing.jsonl.lock" "${tag}:timing" \
+    _sweep_with_findings_lock "${source}" "${tag}" "$@"
+}
+
+_sweep_with_session_writer_locks() {
+  local source="$1" tag="$2"
+  shift 2
+  _with_lockdir "${source}/.state.lock" "${tag}:state" \
+    _sweep_with_timing_lock "${source}" "${tag}" "$@"
+}
+
+_sweep_atomic_json_object_write() {
+  local target="${1:-}" payload="${2:-}" parent="" temp="" size=""
+  [[ -n "${target}" ]] || return 1
+  parent="${target%/*}"
+  [[ -d "${parent}" && ! -L "${parent}" ]] || return 1
+  if [[ -e "${target}" || -L "${target}" ]]; then
+    [[ -f "${target}" && ! -L "${target}" ]] || return 1
+  fi
+  size="$(printf '%s\n' "${payload}" | wc -c | tr -d '[:space:]')"
+  [[ "${size}" =~ ^[0-9]+$ ]] && (( size <= 16384 )) || return 1
+  jq -e 'type == "object"' <<<"${payload}" >/dev/null 2>&1 || return 1
+  temp="$(mktemp "${parent}/.$(basename "${target}").XXXXXX")" || return 1
+  if ! printf '%s\n' "${payload}" >"${temp}" \
+      || ! chmod 600 "${temp}" \
+      || { [[ -e "${target}" || -L "${target}" ]] \
+        && [[ ! -f "${target}" || -L "${target}" ]]; } \
+      || ! mv -f -- "${temp}" "${target}"; then
+    rm -f -- "${temp}" 2>/dev/null || true
+    return 1
+  fi
+}
+
+_sweep_candidate_session_id_valid() {
+  local sid="${1:-}"
+  validate_session_id "${sid}" 2>/dev/null \
+    && [[ "${sid}" != .* && "${sid}" != "_watchdog" ]]
+}
+
+_sweep_claim_receipt_projection() {
+  local receipt="${1:-}" size="" projection="" sid=""
+  [[ -f "${receipt}" && ! -L "${receipt}" ]] || return 1
+  size="$(_sweep_file_size "${receipt}")" || return 1
+  (( size <= 16384 )) || return 1
+  # jq accepts some literal NUL placements outside JSON strings as numeric
+  # zero. A recovery receipt is path/deletion authority, so reject its exact
+  # bytes before any timestamp or source-mtime field is normalized by jq.
+  _omc_regular_file_has_no_raw_nul "${receipt}" 16384 || return 1
+  projection="$(jq -ser '
+    def bounded_uint($minimum):
+      type == "number" and floor == . and . >= $minimum
+      and . <= 999999999999999;
+    if length == 1 then .[0] as $r
+    | if (
+      ($r | type == "object")
+      and ($r | keys | sort == ["_v","claim_id","created_at","host",
+        "phase","session_id","source_identity","source_mtime","summary_id"])
+      and $r._v == 1
+      and ($r.session_id | type == "string"
+        and test("^[A-Za-z0-9_.-]{1,128}$")
+        and (startswith(".") | not))
+      and ($r.claim_id | type == "string")
+      and (("claim." + $r.session_id + ".") as $claim_prefix
+        | ($r.claim_id | startswith($claim_prefix))
+        and (($r.claim_id | ltrimstr($claim_prefix))
+          | test("^[A-Za-z0-9]{6}$")))
+      and ($r.host | type == "string"
+        and test("^[A-Za-z0-9._-]{1,128}$"))
+      and ($r.source_identity | type == "string"
+        and test("^[0-9]+:[0-9]+$"))
+      and ($r.source_mtime | bounded_uint(0))
+      and ($r.created_at | bounded_uint(1))
+      and ($r.phase == "prepared" or $r.phase == "claimed"
+        or $r.phase == "exported")
+      and ($r.summary_id | type == "string")
+      and (($r.summary_id | split(":")) as $summary
+        | ($summary | length) == 4
+        and $summary[0] == "ss"
+        and $summary[1] == $r.host
+        and $summary[2] == $r.session_id
+        and ($summary[3] | test("^[a-f0-9-]{8,64}$")))
+    ) then
+      [$r.claim_id,$r.session_id,$r.host,$r.summary_id] | @tsv
+    else error("invalid sweep receipt") end
+    else error("invalid sweep receipt cardinality") end
+  ' "${receipt}" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r _ sid _ _ <<<"${projection}"
+  # Apply the exact live-candidate identity contract before this receipt can
+  # construct a path. Recovery must not bypass either hidden namespaces or the
+  # reserved live watchdog directory excluded by the ordinary scan.
+  _sweep_candidate_session_id_valid "${sid}" || return 1
+  printf '%s' "${projection}"
+}
+
+_sweep_claim_receipt_valid() {
+  _sweep_claim_receipt_projection "${1:-}" >/dev/null
+}
+
+_sweep_claim_session_id_for_path() {
+  local receipt="${1:-}" expected_claim_id="${2:-}" projection=""
+  local claim_id="" sid="" ignored_host="" ignored_summary=""
+  [[ -n "${expected_claim_id}" && "${expected_claim_id}" == claim.* ]] \
+    || return 1
+  projection="$(_sweep_claim_receipt_projection "${receipt}")" || return 1
+  IFS=$'\t' read -r claim_id sid ignored_host ignored_summary \
+    <<<"${projection}"
+  [[ "${claim_id}" == "${expected_claim_id}" ]] || return 1
+  # The projection has already applied validate_session_id and excluded hidden
+  # control names. Emit only that basename-safe identity for path construction.
+  printf '%s' "${sid}"
+}
+
+_sweep_claim_manifest_valid() {
+  local manifest="${1:-}" require_complete="${2:-1}" size=""
+  _sweep_jsonl_is_bounded_objects \
+    "${manifest}" "${_SWEEP_MAX_MANIFEST_BYTES}" || return 1
+  size="$(wc -l <"${manifest}" 2>/dev/null | tr -d '[:space:]')"
+  [[ "${size}" =~ ^[0-9]+$ ]] \
+    && (( size <= _SWEEP_MAX_MANIFEST_ENTRIES )) || return 1
+  [[ "${require_complete}" == "0" || "${require_complete}" == "1" ]] \
+    || return 1
+  jq -se --argjson require_complete "${require_complete}" '
+    all(.[];
+      type == "object"
+      and (keys | sort == ["digest","identity","kind","mode","name","size"])
+      and (.name | type == "string"
+        and test("^[A-Za-z0-9._-]{1,160}$"))
+      and (.kind == "file" or .kind == "flat-dir")
+      and (.identity | type == "string" and test("^[0-9]+:[0-9]+$"))
+      and (.digest | type == "string"
+        and test("^(sha256:[a-f0-9]{64}|cksum:[0-9]+:[0-9]+)$"))
+      and (.mode | type == "string" and test("^[0-7]{3,4}$"))
+      and (.size | type == "number" and floor == . and . >= 0
+        and . <= 8388608))
+    and ([.[].name] | length == (unique | length))
+    and (([.[].size] | add // 0) <= 67108864)
+    and (if ($require_complete == 1) then
+      ([.[] | select(.name == "session_state.json" and .kind == "file")]
+        | length == 1)
+      else true end)
+  ' "${manifest}" >/dev/null 2>&1
+}
+
+_sweep_optional_regular_bounded() {
+  local path="${1:-}" max_bytes="${2:-}" size=""
+  [[ -e "${path}" || -L "${path}" ]] || return 0
+  [[ -f "${path}" && ! -L "${path}" ]] || return 1
+  size="$(_sweep_file_size "${path}")" || return 1
+  [[ "${max_bytes}" =~ ^[1-9][0-9]*$ ]] && (( size <= max_bytes ))
+}
+
+_sweep_text_file_valid() {
+  local path="${1:-}" max_bytes="${2:-}"
+  _sweep_optional_regular_bounded "${path}" "${max_bytes}" || return 1
+  [[ -e "${path}" ]] || return 0
+  [[ ! -s "${path}" || -z "$(tail -c 1 "${path}" 2>/dev/null)" ]]
+}
+
+_sweep_edited_files_valid() {
+  local path="${1:-}"
+  _sweep_text_file_valid "${path}" 4194304 || return 1
+  [[ -e "${path}" ]] || return 0
+  [[ ! -s "${path}" ]] || jq -Rse '
+    split("\n") as $lines
+    | ($lines[-1] == "")
+      and all($lines[0:-1][];
+        length >= 1 and length <= 4096
+        and (test("[\u0000-\u001f\u007f]") | not))
+  ' "${path}" >/dev/null 2>&1
+}
+
+_sweep_validate_generation_inputs() {
+  local source="${1:-}"
+  local state="${source}/session_state.json"
+  local edited="${source}/edited_files.log"
+  local findings="${source}/findings.json"
+  local frontier="${source}/quality_frontier_history.jsonl"
+  local telemetry="${source}/classifier_telemetry.jsonl"
+  local gates="${source}/gate_events.jsonl"
+  _sweep_optional_regular_bounded \
+    "${state}" "${_SWEEP_MAX_STATE_BYTES}" || return 1
+  [[ -s "${state}" ]] || return 1
+  _omc_project_shell_safe_json_object \
+    "${state}" "${_SWEEP_MAX_STATE_BYTES}" -se '
+    def uintish:
+      . == null
+      or (type == "number" and floor == . and . >= 0
+        and . <= 999999999999999)
+      or (type == "string" and test("^(0|[1-9][0-9]{0,14})$"));
+    length == 1 and (.[0] | type == "object")
+    and all([.[0].code_edit_count?, .[0].doc_edit_count?,
+      .[0].last_verify_confidence?, .[0].stop_guard_blocks?,
+      .[0].dimension_guard_blocks?, .[0].subagent_dispatch_count?,
+      .[0].skip_count?, .[0].serendipity_count?][]; uintish)
+  ' >/dev/null 2>&1 || return 1
+  _sweep_edited_files_valid "${edited}" || return 1
+  if [[ -e "${findings}" || -L "${findings}" ]]; then
+    _sweep_optional_regular_bounded "${findings}" 4194304 || return 1
+    _omc_project_shell_safe_json_object \
+      "${findings}" 4194304 -se '
+      length == 1 and (.[0] | type == "object")
+      and ((.[0].findings? // []) | type == "array")
+      and ((.[0].waves? // []) | type == "array")
+      and all((.[0].findings? // [])[]; type == "object")
+      and all((.[0].waves? // [])[]; type == "object")
+    ' >/dev/null 2>&1 || return 1
+  fi
+  if [[ -e "${frontier}" || -L "${frontier}" ]]; then
+    _sweep_jsonl_is_bounded_objects \
+      "${frontier}" "${_SWEEP_MAX_INPUT_BYTES}" || return 1
+    local parsed_frontier=""
+    parsed_frontier="$(_quality_frontier_history_parse \
+      "${frontier}" 2>/dev/null)" || return 1
+    jq -e '.invalid_rows == 0' <<<"${parsed_frontier}" \
+      >/dev/null 2>&1 || return 1
+  fi
+  if [[ -e "${telemetry}" || -L "${telemetry}" ]]; then
+    _sweep_jsonl_is_bounded_objects \
+      "${telemetry}" "${_SWEEP_MAX_INPUT_BYTES}" || return 1
+  fi
+  if [[ -e "${gates}" || -L "${gates}" ]]; then
+    _sweep_jsonl_is_bounded_objects \
+      "${gates}" "${_SWEEP_MAX_INPUT_BYTES}" || return 1
+  fi
+}
+
+_sweep_capture_source_manifest() {
+  local source="${1:-}" output="${2:-}" require_complete="${3:-1}"
+  local entries="" entry="" name="" kind="" signature=""
+  local identity="" digest="" mode="" size="" total=0 count=0 list_size=""
+  [[ -d "${source}" && ! -L "${source}" ]] || return 1
+  entries="$(mktemp "${output}.entries.XXXXXX")" || return 1
+  : >"${output}" || { rm -f -- "${entries}"; return 1; }
+  if ! find "${source}" -mindepth 1 -maxdepth 1 -print0 \
+      >"${entries}" 2>/dev/null; then
+    rm -f -- "${entries}" "${output}" 2>/dev/null || true
+    return 1
+  fi
+  list_size="$(_sweep_file_size "${entries}")" || {
+    rm -f -- "${entries}" "${output}" 2>/dev/null || true
+    return 1
+  }
+  if (( list_size > 1048576 )); then
+    rm -f -- "${entries}" "${output}" 2>/dev/null || true
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    name="${entry##*/}"
+    _sweep_state_lock_control_name "${name}" && continue
+    [[ "${name}" =~ ^[A-Za-z0-9._-]{1,160}$ \
+        && ! -L "${entry}" ]] || {
+      rm -f -- "${entries}" "${output}" 2>/dev/null || true
+      return 1
+    }
+    count=$((count + 1))
+    (( count <= _SWEEP_MAX_MANIFEST_ENTRIES )) || {
+      rm -f -- "${entries}" "${output}" 2>/dev/null || true
+      return 1
+    }
+    if [[ -f "${entry}" ]]; then
+      kind="file"
+      size="$(_sweep_file_size "${entry}")" || {
+        rm -f -- "${entries}" "${output}" 2>/dev/null || true
+        return 1
+      }
+      identity="$(_sweep_file_identity "${entry}")" || {
+        rm -f -- "${entries}" "${output}" 2>/dev/null || true
+        return 1
+      }
+      digest="$(_sweep_file_digest "${entry}")" || {
+        rm -f -- "${entries}" "${output}" 2>/dev/null || true
+        return 1
+      }
+      mode="$(_sweep_file_mode "${entry}")" || {
+        rm -f -- "${entries}" "${output}" 2>/dev/null || true
+        return 1
+      }
+    elif [[ -d "${entry}" ]]; then
+      kind="flat-dir"
+      signature="$(_sweep_flat_directory_signature \
+        "${entry}" "${output%/*}")" || {
+        rm -f -- "${entries}" "${output}" 2>/dev/null || true
+        return 1
+      }
+      IFS=$'\t' read -r identity digest mode size <<<"${signature}"
+      [[ -n "${identity}" && -n "${digest}" \
+          && -n "${mode}" && "${size}" =~ ^[0-9]+$ ]] || {
+        rm -f -- "${entries}" "${output}" 2>/dev/null || true
+        return 1
+      }
+    else
+      rm -f -- "${entries}" "${output}" 2>/dev/null || true
+      return 1
+    fi
+    (( size <= _SWEEP_MAX_INPUT_BYTES )) || {
+      rm -f -- "${entries}" "${output}" 2>/dev/null || true
+      return 1
+    }
+    total=$((total + size))
+    (( total <= _SWEEP_MAX_GENERATION_BYTES )) || {
+      rm -f -- "${entries}" "${output}" 2>/dev/null || true
+      return 1
+    }
+    jq -nc --arg name "${name}" --arg identity "${identity}" \
+      --arg kind "${kind}" --arg digest "${digest}" --arg mode "${mode}" \
+      --argjson size "${size}" \
+      '{name:$name,kind:$kind,identity:$identity,digest:$digest,
+        mode:$mode,size:$size}' >>"${output}" || {
+      rm -f -- "${entries}" "${output}" 2>/dev/null || true
+      return 1
+    }
+  done <"${entries}"
+  rm -f -- "${entries}" || return 1
+  chmod 600 "${output}" \
+    && _sweep_claim_manifest_valid "${output}" "${require_complete}"
+}
+
+_sweep_manifests_equal() {
+  local expected="${1:-}" observed="${2:-}" require_complete="${3:-1}"
+  _sweep_claim_manifest_valid "${expected}" "${require_complete}" \
+    && _sweep_claim_manifest_valid "${observed}" "${require_complete}" \
+    && jq -se --slurpfile observed "${observed}" \
+      'sort_by(.name) == ($observed | sort_by(.name))' \
+      "${expected}" >/dev/null 2>&1
+}
+
+_sweep_manifest_row_matches_path() {
+  local path="${1:-}" kind="${2:-}" identity="${3:-}"
+  local digest="${4:-}" mode="${5:-}" size="${6:-}"
+  local scratch="${7:-}" signature="" observed_identity=""
+  local observed_digest="" observed_mode="" observed_size=""
+  case "${kind}" in
+    file)
+      [[ -f "${path}" && ! -L "${path}" ]] \
+        && [[ "$(_sweep_file_identity "${path}" 2>/dev/null || true)" \
+          == "${identity}" ]] \
+        && [[ "$(_sweep_file_digest "${path}" 2>/dev/null || true)" \
+          == "${digest}" ]] \
+        && [[ "$(_sweep_file_mode "${path}" 2>/dev/null || true)" \
+          == "${mode}" ]] \
+        && [[ "$(_sweep_file_size "${path}" 2>/dev/null || true)" \
+          == "${size}" ]]
+      ;;
+    flat-dir)
+      [[ -n "${scratch}" ]] || return 1
+      signature="$(_sweep_flat_directory_signature \
+        "${path}" "${scratch}")" || return 1
+      IFS=$'\t' read -r observed_identity observed_digest observed_mode \
+        observed_size <<<"${signature}"
+      [[ "${observed_identity}" == "${identity}" \
+          && "${observed_digest}" == "${digest}" \
+          && "${observed_mode}" == "${mode}" \
+          && "${observed_size}" == "${size}" ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_sweep_payload_matches_manifest() {
+  local claim="${1:-}" observed=""
+  observed="$(mktemp "${claim}/.payload-manifest.XXXXXX")" || return 1
+  if ! _sweep_capture_source_manifest "${claim}/payload" "${observed}" 1 \
+      || ! _sweep_manifests_equal "${claim}/manifest.jsonl" "${observed}"; then
+    rm -f -- "${observed}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f -- "${observed}"
+}
+
+_sweep_partial_claim_matches_manifest() {
+  local source="${1:-}" claim="${2:-}" source_manifest="" payload_manifest=""
+  source_manifest="$(mktemp "${claim}/.source-partial.XXXXXX")" || return 1
+  payload_manifest="$(mktemp "${claim}/.payload-partial.XXXXXX")" || {
+    rm -f -- "${source_manifest}" 2>/dev/null || true
+    return 1
+  }
+  if ! _sweep_capture_source_manifest "${source}" "${source_manifest}" 0 \
+      || ! _sweep_capture_source_manifest \
+        "${claim}/payload" "${payload_manifest}" 0 \
+      || ! jq -se --slurpfile source "${source_manifest}" \
+        --slurpfile payload "${payload_manifest}" '
+          (sort_by(.name)) as $expected
+          | (($source + $payload) | sort_by(.name)) == $expected
+        ' "${claim}/manifest.jsonl" >/dev/null 2>&1; then
+    rm -f -- "${source_manifest}" "${payload_manifest}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f -- "${source_manifest}" "${payload_manifest}"
+}
+
+_sweep_set_claim_phase() {
+  local claim="${1:-}" expected="${2:-}" next="${3:-}" receipt="" updated=""
+  receipt="${claim}/receipt.json"
+  _sweep_claim_receipt_valid "${receipt}" || return 1
+  [[ "$(jq -r '.phase' "${receipt}" 2>/dev/null || true)" \
+      == "${expected}" ]] || return 1
+  updated="$(jq -c --arg phase "${next}" '.phase=$phase' \
+    "${receipt}" 2>/dev/null)" || return 1
+  _sweep_atomic_json_object_write "${receipt}" "${updated}"
+}
+
+_sweep_build_claim_stage() {
+  local source="${1:-}" sid="${2:-}" cutoff="${3:-}" stage="${4:-}"
+  local claim_id="${5:-}" source_id="" source_mtime="" now="" host=""
+  local receipt="" manifest_digest="" generation_token=""
+  _sweep_candidate_session_id_valid "${sid}" || return 1
+  [[ -d "${source}" && ! -L "${source}" \
+      && -d "${stage}" && ! -L "${stage}" ]] || return 1
+  source_id="$(_sweep_file_identity "${source}")" || return 1
+  source_mtime="$(_lock_mtime "${source}")"
+  _omc_canonical_uint_in_range \
+    "${source_mtime}" 1 999999999999999 || return 1
+  _omc_canonical_uint_in_range \
+    "${cutoff}" 0 999999999999999 || return 1
+  (( source_mtime <= cutoff )) || return 1
+  _sweep_validate_generation_inputs "${source}" || return 1
+  mkdir "${stage}/payload" || return 1
+  chmod 700 "${stage}" "${stage}/payload" 2>/dev/null || return 1
+  _sweep_capture_source_manifest \
+    "${source}" "${stage}/manifest.jsonl" || return 1
+  manifest_digest="$(_sweep_file_digest "${stage}/manifest.jsonl")" \
+    || return 1
+  now="$(now_epoch)"
+  _omc_canonical_uint_in_range "${now}" 1 999999999999999 || return 1
+  host="$(omc_host)"
+  generation_token="$(_omc_token_digest \
+    "${host}|${sid}|${source_id}|${claim_id}|${manifest_digest}|${now}")" \
+    || return 1
+  [[ "${generation_token}" =~ ^[a-f0-9-]{8,64}$ ]] || return 1
+  receipt="$(jq -nc --arg claim_id "${claim_id}" --arg sid "${sid}" \
+    --arg host "${host}" --arg source_identity "${source_id}" \
+    --argjson source_mtime "${source_mtime}" --argjson created_at "${now}" \
+    --arg summary_id "ss:${host}:${sid}:${generation_token}" '
+      {_v:1,claim_id:$claim_id,session_id:$sid,host:$host,
+       source_identity:$source_identity,source_mtime:$source_mtime,
+       created_at:$created_at,phase:"prepared",summary_id:$summary_id}
+    ')" || return 1
+  _sweep_atomic_json_object_write "${stage}/receipt.json" "${receipt}" \
+    && _sweep_claim_receipt_valid "${stage}/receipt.json"
+}
+
+_sweep_finish_claim_moves_locked() {
+  local source="${1:-}" claim="${2:-}" expected_source_id="${3:-}"
+  local observed="" phase="" row="" name="" kind="" identity=""
+  local digest="" mode="" size="" source_path="" payload_path=""
+  local moved=0 fail_after="${OMC_TEST_SWEEP_FAIL_AFTER_MOVE_COUNT:-}"
+  [[ -d "${source}" && ! -L "${source}" \
+      && -d "${claim}" && ! -L "${claim}" ]] || return 1
+  [[ "$(_sweep_file_identity "${source}" 2>/dev/null || true)" \
+      == "${expected_source_id}" ]] || return 1
+  _sweep_claim_receipt_valid "${claim}/receipt.json" \
+    && _sweep_claim_manifest_valid "${claim}/manifest.jsonl" || return 1
+  phase="$(jq -r '.phase' "${claim}/receipt.json")"
+  [[ "${phase}" == "prepared" ]] || return 1
+  _sweep_partial_claim_matches_manifest "${source}" "${claim}" || return 1
+  if [[ -n "${fail_after}" ]] \
+      && ! _omc_canonical_uint_in_range \
+        "${fail_after}" 1 "${_SWEEP_MAX_MANIFEST_ENTRIES}"; then
+    return 1
+  fi
+  while IFS=$'\t' read -r name kind identity digest mode size; do
+    [[ "${kind}" == "file" || "${kind}" == "flat-dir" ]] || return 1
+    source_path="${source}/${name}"
+    payload_path="${claim}/payload/${name}"
+    if [[ -e "${payload_path}" || -L "${payload_path}" ]]; then
+      _sweep_manifest_row_matches_path \
+        "${payload_path}" "${kind}" "${identity}" "${digest}" \
+        "${mode}" "${size}" "${claim}" \
+        || return 1
+      [[ ! -e "${source_path}" && ! -L "${source_path}" ]] || return 1
+      continue
+    fi
+    _sweep_manifest_row_matches_path \
+      "${source_path}" "${kind}" "${identity}" "${digest}" \
+      "${mode}" "${size}" "${claim}" \
+      || return 1
+    mv -- "${source_path}" "${payload_path}" || return 1
+    moved=$((moved + 1))
+    if [[ -n "${fail_after}" ]] && (( moved == fail_after )); then
+      return 1
+    fi
+  done < <(jq -r '[.name,.kind,.identity,.digest,.mode,(.size|tostring)]
+    | @tsv' "${claim}/manifest.jsonl")
+  _sweep_payload_matches_manifest "${claim}" \
+    && _sweep_set_claim_phase "${claim}" prepared claimed
+}
+
+_sweep_claim_candidate_locked() {
+  local source="${1:-}" stage="${2:-}" claim="${3:-}" source_id=""
+  local observed=""
+  _sweep_claim_receipt_valid "${stage}/receipt.json" \
+    && _sweep_claim_manifest_valid "${stage}/manifest.jsonl" || return 1
+  source_id="$(jq -r '.source_identity' "${stage}/receipt.json")"
+  [[ ! -e "${claim}" && ! -L "${claim}" ]] || return 1
+  [[ "$(_sweep_file_identity "${source}" 2>/dev/null || true)" \
+      == "${source_id}" ]] || return 1
+  observed="$(mktemp "${stage}/.locked-manifest.XXXXXX")" || return 1
+  if ! _sweep_capture_source_manifest "${source}" "${observed}" 1 \
+      || ! _sweep_manifests_equal "${stage}/manifest.jsonl" "${observed}"; then
+    rm -f -- "${observed}" 2>/dev/null || true
+    return 1
+  fi
+  rm -f -- "${observed}" || return 1
+  mv -- "${stage}" "${claim}" || return 1
+  _sweep_finish_claim_moves_locked "${source}" "${claim}" "${source_id}"
+}
+
+_sweep_claim_candidate() {
+  local source="${1:-}" sid="${2:-}" cutoff="${3:-}" cleanup_root="${4:-}"
+  local stage="" suffix="" claim_id="" claim="" ready="" release="" rc=0
+  stage="$(mktemp -d "${cleanup_root}/.prepare.${sid}.XXXXXX")" || return 1
+  suffix="${stage##*.}"
+  claim_id="claim.${sid}.${suffix}"
+  claim="${cleanup_root}/${claim_id}"
+  if ! _sweep_build_claim_stage \
+      "${source}" "${sid}" "${cutoff}" "${stage}" "${claim_id}"; then
+    rm -rf -- "${stage}" 2>/dev/null || true
+    return 1
+  fi
+  ready="${OMC_TEST_SWEEP_PRECLAIM_READY_FILE:-}"
+  release="${OMC_TEST_SWEEP_PRECLAIM_RELEASE_FILE:-}"
+  if [[ -n "${ready}" || -n "${release}" ]]; then
+    [[ -n "${ready}" && -n "${release}" \
+        && "${ready}" == /* && "${release}" == /* \
+        && ! -L "${ready}" && ! -e "${ready}" ]] || {
+      rm -rf -- "${stage}" 2>/dev/null || true
+      return 1
+    }
+    : >"${ready}" || { rm -rf -- "${stage}" 2>/dev/null || true; return 1; }
+    while [[ ! -e "${release}" ]]; do sleep 0.01; done
+  fi
+  if [[ "${OMC_TEST_SWEEP_CLAIM_LOCK_FAIL_SID:-}" == "${sid}" ]]; then
+    rc=1
+  else
+    _sweep_with_session_writer_locks "${source}" \
+      "sweep_stale_session(${sid})" _sweep_claim_candidate_locked \
+      "${source}" "${stage}" "${claim}" || rc=$?
+  fi
+  if [[ -d "${stage}" && ! -L "${stage}" ]]; then
+    rm -rf -- "${stage}" 2>/dev/null || true
+  fi
+  if [[ "${rc}" -eq 0 ]]; then
+    _sweep_process_claim "${claim}"
+    return $?
+  fi
+  return 1
+}
+
+_sweep_build_claim_summary() {
+  local claim="${1:-}"
+  local state="${claim}/payload/session_state.json"
+  local receipt="${claim}/receipt.json" sid="" host="" summary_id=""
+  local edits="${claim}/payload/edited_files.log" ec=0
+  local findings_file="${claim}/payload/findings.json" findings='null'
+  local waves='null' frontier_file="${claim}/payload/quality_frontier_history.jsonl"
+  local frontiers='null' project_key=""
+  _sweep_claim_receipt_valid "${receipt}" || return 1
+  # Recovered claims are durable publication authority. Revalidate the frozen
+  # payload instead of assuming the originating process reached this check.
+  _sweep_validate_generation_inputs "${claim}/payload" || return 1
+  sid="$(jq -r '.session_id' "${receipt}")"
+  host="$(jq -r '.host' "${receipt}")"
+  summary_id="$(jq -r '.summary_id' "${receipt}")"
+  if [[ -e "${edits}" ]]; then
+    ec="$(LC_ALL=C sort -u "${edits}" 2>/dev/null \
+      | wc -l | tr -d '[:space:]')" || return 1
+    [[ "${ec}" =~ ^[0-9]+$ ]] || return 1
+  fi
+  if [[ -e "${findings_file}" ]]; then
+    findings="$(jq -c '
+      (.findings // []) | {
+        total: length,
+        shipped:     ([.[] | select(.status=="shipped")]     | length),
+        deferred:    ([.[] | select(.status=="deferred")]    | length),
+        rejected:    ([.[] | select(.status=="rejected")]    | length),
+        in_progress: ([.[] | select(.status=="in_progress")] | length),
+        pending:     ([.[] | select(.status=="pending")]     | length)
+      }
+    ' "${findings_file}" 2>/dev/null)" || return 1
+    waves="$(jq -c '
+      (.waves // []) | {
+        total: length,
+        completed: ([.[] | select(.status=="completed")] | length)
+      }
+    ' "${findings_file}" 2>/dev/null)" || return 1
+  fi
+  if [[ -e "${frontier_file}" ]]; then
+    frontiers="$(quality_frontier_history_summary \
+      "${frontier_file}" 2>/dev/null)" || return 1
+  fi
+  project_key="$(jq -r '
+    (.project_key // "")
+    | select(type == "string" and test("^[a-f0-9]{12}$"))
+  ' "${state}" 2>/dev/null || true)"
+  jq -c --arg sid "${sid}" --arg host "${host}" \
+    --arg summary_id "${summary_id}" --arg pkey "${project_key}" \
+    --argjson ec "${ec}" --argjson findings "${findings}" \
+    --argjson waves "${waves}" --argjson quality_frontiers "${frontiers}" '
+    def has_code_edits:
+      (((.code_edit_count // "0") | tonumber) > 0)
+      or ((.bash_unknown_edit_scope // "") == "1");
+    {
+      _v: 1,
+      _sweep_id: $summary_id,
+      session_id: $sid,
+      host: $host,
+      project_key: (if $pkey == "" then null else $pkey end),
+      start_ts: (.session_start_ts // .last_user_prompt_ts // null),
+      end_ts: (
+        if   ((.last_edit_ts // "")        != "") then .last_edit_ts
+        elif ((.last_review_ts // "")      != "") then .last_review_ts
+        elif ((.last_user_prompt_ts // "") != "") then .last_user_prompt_ts
+        else null end
+      ),
+      end_ts_source: (
+        if   ((.last_edit_ts // "")        != "") then "edit"
+        elif ((.last_review_ts // "")      != "") then "review"
+        elif ((.last_user_prompt_ts // "") != "") then "prompt"
+        else null end
+      ),
+      domain: (.task_domain // "unknown"),
+      intent: (.task_intent // "unknown"),
+      edit_count: $ec,
+      code_edits: ((.code_edit_count // "0") | tonumber),
+      bash_unknown_edit_scope: ((.bash_unknown_edit_scope // "") == "1"),
+      doc_edits: ((.doc_edit_count // "0") | tonumber),
+      verified: ((.last_verify_ts // "") != ""),
+      verify_outcome: (.last_verify_outcome // null),
+      verify_confidence: ((.last_verify_confidence // "0") | tonumber),
+      reviewed: ((.last_review_ts // "") != ""),
+      guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
+      dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
+      exhausted: ((.guard_exhausted // "") != ""),
+      dispatches: ((.subagent_dispatch_count // "0") | tonumber),
+      outcome: (
+        if (.session_outcome // "") != "" then .session_outcome
+        elif ((.last_review_ts // "") != "")
+          and ((.last_verify_ts // "") != "") and has_code_edits
+          then "completed_inferred"
+        elif has_code_edits and (((.last_review_ts // "") != "")
+          or ((.last_verify_ts // "") != ""))
+          then "completed_inferred_partial"
+        elif has_code_edits then "edited_no_quality"
+        elif (has_code_edits | not) and ((.last_review_ts // "") == "")
+          and ((.last_verify_ts // "") == "") then "idle"
+        else "unclassified_by_sweep" end
+      ),
+      skip_count: ((.skip_count // "0") | tonumber),
+      serendipity_count: ((.serendipity_count // "0") | tonumber),
+      findings: $findings,
+      waves: $waves,
+      quality_frontiers: $quality_frontiers
+    }
+  ' "${state}" 2>/dev/null
+}
+
+_sweep_export_claim() {
+  local claim="${1:-}"
+  local receipt="${claim}/receipt.json" phase="" sid=""
+  local pkey="" transferred="" summary_row="" fail_after=""
+  local qp_root="${HOME}/.claude/quality-pack"
+  local summary_file="${qp_root}/session_summary.jsonl"
+  local misfires_file="${qp_root}/classifier_misfires.jsonl"
+  local gates_file="${qp_root}/gate_events.jsonl"
+  local state="${claim}/payload/session_state.json"
+  _sweep_claim_receipt_valid "${receipt}" \
+    && _sweep_payload_matches_manifest "${claim}" || return 1
+  _sweep_validate_generation_inputs "${claim}/payload" || return 1
+  phase="$(jq -r '.phase' "${receipt}")"
+  [[ "${phase}" == "claimed" ]] || return 1
+  sid="$(jq -r '.session_id' "${receipt}")"
+  pkey="$(jq -r '
+    (.project_key // "")
+    | select(type == "string" and test("^[a-f0-9]{12}$"))
+  ' "${state}" 2>/dev/null || true)"
+  transferred="$(_omc_read_valid_session_id_field \
+    "${state}" "resume_transferred_to" 2>/dev/null || true)"
+  fail_after="${OMC_TEST_SWEEP_FAIL_AFTER_EXPORT:-}"
+  case "${fail_after}" in ''|summary|misfires|gates) ;; *) return 1 ;; esac
+
+  if [[ -z "${transferred}" ]]; then
+    summary_row="$(_sweep_build_claim_summary "${claim}")" || return 1
+    [[ -n "${summary_row}" ]] || return 1
+    with_cross_session_log_lock "${summary_file}" \
+      _sweep_merge_jsonl_payload_locked \
+        "${summary_file}" "${summary_row}" _sweep_id || return 1
+    [[ "${fail_after}" != "summary" ]] || return 1
+  fi
+
+  if [[ -e "${claim}/payload/classifier_telemetry.jsonl" ]]; then
+    with_cross_session_log_lock "${misfires_file}" \
+      _sweep_append_misfires \
+        "${claim}/payload/classifier_telemetry.jsonl" \
+        "${sid}" "${misfires_file}" "${pkey}" || return 1
+  fi
+  [[ "${fail_after}" != "misfires" ]] || return 1
+
+  if [[ -z "${transferred}" \
+      && -e "${claim}/payload/gate_events.jsonl" ]]; then
+    with_cross_session_log_lock "${gates_file}" \
+      _sweep_append_gate_events "${claim}/payload/gate_events.jsonl" \
+        "${sid}" "${gates_file}" "${pkey}" || return 1
+  fi
+  [[ "${fail_after}" != "gates" ]] || return 1
+  _sweep_set_claim_phase "${claim}" claimed exported
+}
+
+_sweep_retire_claim() {
+  local claim="${1:-}"
+  local parent="${claim%/*}" base="${claim##*/}" retired=""
+  [[ "${base}" == claim.* && -d "${claim}" && ! -L "${claim}" ]] || return 1
+  retired="${parent}/.retired.${base}.$$.$RANDOM"
+  [[ ! -e "${retired}" && ! -L "${retired}" ]] || return 1
+  mv -- "${claim}" "${retired}" || return 1
+  if [[ "${OMC_TEST_SWEEP_FAIL_AFTER_RETIRE_RENAME:-}" == "1" ]]; then
+    return 1
+  fi
+  rm -rf -- "${retired}" 2>/dev/null
+}
+
+_sweep_cleanup_exported_claim() {
+  local claim="${1:-}"
+  local receipt="${claim}/receipt.json" sid="" source=""
+  local _SWEEP_CLEANUP_REVIVED=0
+  sid="$(_sweep_claim_session_id_for_path \
+    "${receipt}" "${claim##*/}")" || return 1
+  [[ "$(jq -r '.phase' "${receipt}")" == "exported" ]] || return 1
+  _sweep_payload_matches_manifest "${claim}" || return 1
+  _sweep_validate_generation_inputs "${claim}/payload" || return 1
+  source="${STATE_ROOT}/${sid}"
+  if [[ ! -e "${source}" && ! -L "${source}" ]]; then
+    _sweep_retire_claim "${claim}"
+    return $?
+  fi
+  [[ -d "${source}" && ! -L "${source}" ]] || return 1
+
+  # Reap prior owners and serialize every independent producer while checking
+  # for revival. Once these in-directory locks unwind, rmdir itself is the
+  # final atomic claim: a newly acquiring writer creates a lock artifact first,
+  # making rmdir fail; a writer that starts after rmdir recreates a distinct
+  # generation and therefore cannot lose data.
+  _sweep_with_session_writer_locks "${source}" \
+    "sweep_cleanup_session(${sid})" _sweep_check_revival_locked \
+      "${source}" "${claim}" || return 1
+  if [[ "${_SWEEP_CLEANUP_REVIVED}" -eq 1 ]]; then
+    _sweep_retire_claim "${claim}"
+    return $?
+  fi
+  [[ "${OMC_TEST_SWEEP_FAIL_BEFORE_SOURCE_RMDIR:-}" != "1" ]] || return 1
+  rmdir "${source}" 2>/dev/null || return 1
+  _sweep_retire_claim "${claim}"
+}
+
+_sweep_check_revival_locked() {
+  local source="${1:-}" claim="${2:-}" observed=""
+  observed="$(mktemp "${claim}/.revival-manifest.XXXXXX")" || return 1
+  if ! _sweep_capture_source_manifest "${source}" "${observed}" 0; then
+    rm -f -- "${observed}" 2>/dev/null || true
+    return 1
+  fi
+  if [[ -s "${observed}" ]]; then
+    # A writer revived this session ID after the old generation was claimed.
+    # Its new files are a distinct generation and must remain untouched.
+    rm -f -- "${observed}" || return 1
+    _SWEEP_CLEANUP_REVIVED=1
+    return 0
+  fi
+  rm -f -- "${observed}" || return 1
+  _SWEEP_CLEANUP_REVIVED=0
+}
+
+_sweep_process_claim() {
+  local claim="${1:-}"
+  local receipt="${claim}/receipt.json" phase="" sid=""
+  local source="" source_id=""
+  [[ -d "${claim}" && ! -L "${claim}" \
+      && "${claim##*/}" == claim.* ]] || return 1
+  sid="$(_sweep_claim_session_id_for_path \
+    "${receipt}" "${claim##*/}")" || return 1
+  _sweep_claim_manifest_valid "${claim}/manifest.jsonl" || return 1
+  phase="$(jq -r '.phase' "${receipt}")"
+  if [[ "${phase}" == "prepared" ]]; then
+    source_id="$(jq -r '.source_identity' "${receipt}")"
+    source="${STATE_ROOT}/${sid}"
+    [[ -d "${source}" && ! -L "${source}" ]] || return 1
+    _sweep_with_session_writer_locks "${source}" \
+      "sweep_recover_session(${sid})" _sweep_finish_claim_moves_locked \
+      "${source}" "${claim}" "${source_id}" || return 1
+    phase="claimed"
+  fi
+  if [[ "${phase}" == "claimed" ]]; then
+    _sweep_export_claim "${claim}" || return 1
+    phase="exported"
+  fi
+  [[ "${phase}" == "exported" ]] || return 1
+
+  if [[ -n "${OMC_TEST_SWEEP_EXPORTED_READY_FILE:-}" ]]; then
+    [[ -n "${OMC_TEST_SWEEP_EXPORTED_RELEASE_FILE:-}" \
+        && "${OMC_TEST_SWEEP_EXPORTED_READY_FILE}" == /* \
+        && "${OMC_TEST_SWEEP_EXPORTED_RELEASE_FILE}" == /* \
+        && ! -L "${OMC_TEST_SWEEP_EXPORTED_READY_FILE}" \
+        && ! -e "${OMC_TEST_SWEEP_EXPORTED_READY_FILE}" ]] || return 1
+    : >"${OMC_TEST_SWEEP_EXPORTED_READY_FILE}" || return 1
+    while [[ ! -e "${OMC_TEST_SWEEP_EXPORTED_RELEASE_FILE}" ]]; do
+      sleep 0.01
+    done
+  fi
+  _sweep_cleanup_exported_claim "${claim}"
+}
+
+_sweep_prepare_cleanup_root() {
+  local cleanup_root="${STATE_ROOT}/.sweep-cleanup"
+  if [[ -e "${cleanup_root}" || -L "${cleanup_root}" ]]; then
+    [[ -d "${cleanup_root}" && ! -L "${cleanup_root}" ]] || return 1
+  else
+    mkdir "${cleanup_root}" || return 1
+  fi
+  chmod 700 "${cleanup_root}" 2>/dev/null || return 1
+}
+
+_sweep_recover_claims() {
+  local cleanup_root="${STATE_ROOT}/.sweep-cleanup" listing="" size=""
+  local entry="" base="" count=0 failed=0
+  _sweep_prepare_cleanup_root || return 1
+  listing="$(mktemp "${cleanup_root}/.scan.XXXXXX")" || return 1
+  if ! find "${cleanup_root}" -mindepth 1 -maxdepth 1 -print0 \
+      >"${listing}" 2>/dev/null; then
+    rm -f -- "${listing}" 2>/dev/null || true
+    return 1
+  fi
+  size="$(_sweep_file_size "${listing}")" || {
+    rm -f -- "${listing}" 2>/dev/null || true
+    return 1
+  }
+  (( size <= 1048576 )) || {
+    rm -f -- "${listing}" 2>/dev/null || true
+    return 1
+  }
+  while IFS= read -r -d '' entry; do
+    [[ "${entry}" == "${listing}" ]] && continue
+    base="${entry##*/}"
+    count=$((count + 1))
+    if (( count > _SWEEP_MAX_MANIFEST_ENTRIES )); then
+      failed=1
+      break
+    fi
+    case "${base}" in
+      .scan.*)
+        if [[ -f "${entry}" && ! -L "${entry}" ]]; then
+          rm -f -- "${entry}" 2>/dev/null || failed=1
+        else
+          failed=1
+        fi
+        ;;
+      .prepare.*|.retired.*)
+        if [[ -d "${entry}" && ! -L "${entry}" ]]; then
+          rm -rf -- "${entry}" 2>/dev/null || failed=1
+        else
+          failed=1
+        fi
+        ;;
+      claim.*)
+        _sweep_process_claim "${entry}" || failed=1
+        ;;
+      *) failed=1 ;;
+    esac
+  done <"${listing}"
+  rm -f -- "${listing}" 2>/dev/null || failed=1
+  [[ "${failed}" -eq 0 ]]
 }
 
 # Reduce the bounded, append-only Definition frontier history into honest
@@ -2567,14 +4893,26 @@ _sweep_append_gate_events() {
 # This helper is shared by the daily sweep and /ulw-report --sweep. Keeping one
 # reducer prevents the live and cross-session surfaces from disagreeing about
 # the discovery/remediation denominator.
-_quality_frontier_history_parse() {
-  local history_file="${1:-}"
+_quality_frontier_history_parse() (
+  local history_file="${1:-}" snapshot="" parsed=""
   [[ -n "${history_file}" && -f "${history_file}" \
       && ! -L "${history_file}" ]] || return 1
-  jq -Rn '
+  # This parser is also called directly by last-status/report readers, outside
+  # the sweep and publication appendability wrappers. Enforce the writer's own
+  # 2 MiB / 64-row envelope here so a torn or oversized history never becomes
+  # authority merely because the caller omitted incidental prior validation.
+  snapshot="$(mktemp "${history_file}.read.XXXXXX" 2>/dev/null)" || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_regular_file_snapshot \
+    "${history_file}" "${snapshot}" 2097152 || return 1
+  _omc_strict_jsonl_file_is_bounded "${snapshot}" 2097152 64 || return 1
+  parsed="$(jq -Rn '
     def text($min;$max):
       type == "string" and length >= $min and length <= $max
       and (test("[\u0000-\u001f]") | not);
+    def bounded_uint($minimum):
+      type == "number" and floor == . and . >= $minimum
+      and . <= 999999999999999;
     def authoritative_frontier:
       type == "object"
       and (keys | sort == ["_v","alternatives_searched","contract_id",
@@ -2584,10 +4922,10 @@ _quality_frontier_history_parse() {
         "review_cycle_id","reviewed_at","reviewer","status","title","why"])
       and ._v == 1
       and (.contract_id | type == "string" and test("^qc-[A-Za-z0-9._:-]{8,80}$"))
-      and (.contract_revision | type == "number" and floor == . and . >= 1)
-      and (.review_cycle_id | type == "number" and floor == . and . >= 1)
-      and (.edit_revision | type == "number" and floor == . and . >= 0)
-      and (.plan_revision | type == "number" and floor == . and . >= 1)
+      and (.contract_revision | bounded_uint(1))
+      and (.review_cycle_id | bounded_uint(1))
+      and (.edit_revision | bounded_uint(0))
+      and (.plan_revision | bounded_uint(1))
       and (.status == "open" or .status == "clear")
       and (.materiality == "none" or .materiality == "medium" or .materiality == "high")
       and (.dominates_current | type == "boolean")
@@ -2611,23 +4949,32 @@ _quality_frontier_history_parse() {
       and (.limits | type == "array" and length >= 1 and length <= 10
         and length == (unique | length) and all(.[]; text(4;500)))
       and (.experiment | text(4;1500))
-      and (.reviewed_at | type == "number" and floor == . and . >= 1)
+      and (.reviewed_at | bounded_uint(1))
       and (.reviewer | type == "string" and test("^[A-Za-z0-9_.:-]{1,128}$"))
       and (.native_agent_id | type == "string" and test("^[A-Za-z0-9._:-]{1,128}$"))
       and (.lifecycle_dispatch_id | type == "string"
         and test("^dispatch-[A-Za-z0-9._:-]{8,120}$"));
-    [inputs | select(length > 0)] as $lines
-    | [$lines[] | fromjson? | select(authoritative_frontier)] as $rows
-    | {rows:$rows,invalid_rows:(($lines|length)-($rows|length))}
-  ' "${history_file}" 2>/dev/null
-}
+    [inputs] as $input_lines
+    | if any($input_lines[]; index("\u0000") != null) then
+        error("raw NUL in frontier history authority")
+      else
+        [$input_lines[] | select(length > 0)] as $lines
+        | [$lines[] | fromjson? | select(authoritative_frontier)] as $rows
+        | {rows:$rows,invalid_rows:(($lines|length)-($rows|length))}
+      end
+  ' "${snapshot}" 2>/dev/null)" || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${history_file}" "${snapshot}" 2097152 || return 1
+  printf '%s\n' "${parsed}"
+)
 
 # Return the last authoritative frontier status for one stable objective cycle.
 # Recorder transition events and report aggregation consume the same parser so
 # a malformed same-cycle row cannot seed telemetry that the report later drops.
 quality_frontier_history_last_status_for_cycle() {
   local history_file="${1:-}" cycle="${2:-}" parsed
-  [[ "${cycle}" =~ ^[1-9][0-9]*$ ]] || return 1
+  _omc_canonical_uint_in_range \
+    "${cycle}" 1 999999999999999 || return 1
   parsed="$(_quality_frontier_history_parse "${history_file}")" || return 1
   jq -r --argjson cycle "${cycle}" '
     [.rows[] | select(.review_cycle_id == $cycle)]
@@ -2677,11 +5024,23 @@ quality_frontier_history_summary() {
 # daily sweep-marker short circuit because quarantine is rare/small and must
 # not silently outlive OMC_STATE_TTL_DAYS merely because a normal sweep ran
 # shortly before the failure.
+_sweep_state_root_is_safe() {
+  [[ -n "${STATE_ROOT:-}" && "${STATE_ROOT}" == /* \
+      && "${STATE_ROOT}" != *[[:cntrl:]]* \
+      && -d "${STATE_ROOT}" && ! -L "${STATE_ROOT}" ]] \
+    && _sweep_file_identity "${STATE_ROOT}" >/dev/null 2>&1
+}
+
 _prune_resume_quarantine() {
   local now="$1" quarantine_root="${STATE_ROOT}/.resume-quarantine"
   local cutoff slot slot_mtime
   [[ "${now}" =~ ^[0-9]+$ ]] || return 0
-  [[ -d "${quarantine_root}" ]] || return 0
+  _sweep_state_root_is_safe || return 0
+  if [[ -e "${quarantine_root}" || -L "${quarantine_root}" ]]; then
+    [[ -d "${quarantine_root}" && ! -L "${quarantine_root}" ]] || return 0
+  else
+    return 0
+  fi
   cutoff=$(( now - OMC_STATE_TTL_DAYS * 86400 ))
 
   local quarantine_slots=()
@@ -2693,379 +5052,186 @@ _prune_resume_quarantine() {
     return 0
   fi
   for slot in "${quarantine_slots[@]}"; do
-    [[ -d "${slot}" || -L "${slot}" ]] || continue
+    [[ -d "${slot}" && ! -L "${slot}" ]] || continue
     slot_mtime="$(_lock_mtime "${slot}")"
     [[ "${slot_mtime}" =~ ^[0-9]+$ ]] || continue
     if (( slot_mtime > 0 && slot_mtime <= cutoff )); then
-      chmod -R u+rwX "${slot}" 2>/dev/null || true
       rm -rf "${slot}" 2>/dev/null || true
     fi
   done
   rmdir "${quarantine_root}" 2>/dev/null || true
 }
 
-_sweep_stale_sessions_locked() {
-  local marker="${STATE_ROOT}/.last_sweep"
-  local now
-  now="$(date +%s)"
-
-  _prune_resume_quarantine "${now}"
-
-  # Skip if swept within the last 24 hours. v1.30.0 sre-lens F-3 fix:
-  # validate the marker is a positive integer before the arithmetic. A
-  # corrupt marker (zero-byte file from a crashed prior sweep, garbage
-  # chars from a manual mis-edit, partial write from disk-full) would
-  # otherwise either crash here under `set -euo pipefail` (empty/non-
-  # numeric in `$(( now - last_sweep ))` errors) or evaluate the
-  # arithmetic with `last_sweep=0` causing the sweep to re-run on every
-  # common.sh source — a CPU storm where every hook invocation walks
-  # STATE_ROOT with `find -mtime`. On corrupt input: stamp a fresh
-  # epoch and skip THIS round; the next call in 24h proceeds normally.
-  if [[ -f "${marker}" ]]; then
-    local last_sweep
-    last_sweep="$(cat "${marker}" 2>/dev/null || echo "")"
-    if [[ ! "${last_sweep}" =~ ^[0-9]+$ ]]; then
-      printf '%s\n' "${now}" > "${marker}" 2>/dev/null || true
-      log_anomaly "sweep_stale_sessions" "non-numeric marker reset to ${now}"
-      return
-    fi
-    if [[ $(( now - last_sweep )) -lt 86400 ]]; then
-      return
-    fi
-  fi
-
-  # Pre-sweep aggregation: capture a summary line per session before deletion.
-  # This preserves longitudinal data for quality analysis.
-  # Runs under STATE_ROOT/.sweep.lock. The daily marker is a freshness
-  # check, not an atomic claim; without this outer lock, multiple hooks
-  # that cross the 24h boundary together can all pass the marker check
-  # and duplicate summary rows / deletions.
-  #
-  # end_ts cascade rationale (v1.41 W1, post-telemetry-audit):
-  # Pre-v1.41 the writer used `(.last_edit_ts // .last_review_ts // null)`,
-  # which left `end_ts: null` for every advisory / exploratory / "what is X?"
-  # session that ran no edits and no review. An audit at ship time found
-  # a majority of historical rows carried null end_ts — making the
-  # cross-session ledger structurally blind to advisory-work duration.
-  # The third fallback to .last_user_prompt_ts gives those sessions an
-  # honest end_ts; the new end_ts_source field ("edit"/"review"/"prompt"
-  # /null) lets downstream readers filter by signal strength when they
-  # want edit-or-review-grade duration only (e.g. /ulw-report computing
-  # "real coding-session duration" by filtering end_ts_source in
-  # {"edit","review"}). The if/elif form is required because bare jq `//`
-  # treats "" as truthy — `last_edit_ts:""` would leak through to
-  # `end_ts:""` and the source label would disagree.
-  local summary_file="${HOME}/.claude/quality-pack/session_summary.jsonl"
-  local misfires_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
-
-  if [[ -d "${STATE_ROOT}" ]]; then
-    # v1.31.0 Wave 2 (sre-lens F-9): replace `find -mtime +N` with
-    # explicit epoch math via a marker file. BSD `find -mtime +N`
-    # rounds DOWN (a 7-day-old dir tests false at exactly day 7) and
-    # GNU `find -mtime +N` rounds UP — so on Linux a session edited
-    # 7d 1m ago is swept, on macOS it is preserved. The boundary
-    # divergence is invisible most of the time but produces "where
-    # did my resume_request.json go?" surprises. Marker-based math
-    # is exact-second-accurate on both platforms.
-    local _sweep_cutoff_epoch=$(( now - OMC_STATE_TTL_DAYS * 86400 ))
-    local _sweep_cutoff_ts="" _sweep_marker=""
-    # BSD `date -r EPOCH` ; GNU `date -d @EPOCH` — try in order.
-    _sweep_cutoff_ts="$(date -r "${_sweep_cutoff_epoch}" '+%Y%m%d%H%M.%S' 2>/dev/null \
-      || date -d "@${_sweep_cutoff_epoch}" '+%Y%m%d%H%M.%S' 2>/dev/null \
-      || printf '')"
-    if [[ -n "${_sweep_cutoff_ts}" ]]; then
-      _sweep_marker="$(mktemp 2>/dev/null || true)"
-      if [[ -n "${_sweep_marker}" ]]; then
-        touch -t "${_sweep_cutoff_ts}" "${_sweep_marker}" 2>/dev/null || _sweep_marker=""
-      fi
-    fi
-    # v1.32.0 Wave D follow-up (Serendipity Rule fix): refactored from
-    # `eval "${_sweep_find_cmd}"` to array-form `find`. The eval form
-    # was not exploitable under any current threat model (STATE_ROOT
-    # and OMC_STATE_TTL_DAYS are env/conf-controlled, not user-input),
-    # but the array form removes the surface entirely. Same code path
-    # as the v1.32.0 release-process post-mortem; bounded one-spot fix.
-    local _sweep_find_args
-    if [[ -n "${_sweep_marker}" ]] && [[ -f "${_sweep_marker}" ]]; then
-      # `! -newer marker` = target mtime ≤ marker mtime = older-than-cutoff.
-      _sweep_find_args=(
-        "${STATE_ROOT}" -maxdepth 1 -type d
-        ! -newer "${_sweep_marker}"
-        ! -name '.' ! -name '..' ! -name '.*'
-        ! -path "${STATE_ROOT}"
-        -print
-      )
-    else
-      # Fallback when date-format detection fails (exotic libcs, sandboxed env).
-      # The legacy -mtime path keeps the BSD/GNU boundary divergence but at
-      # least the sweep still functions.
-      log_anomaly "sweep_stale_sessions" "marker creation failed; falling back to -mtime"
-      _sweep_find_args=(
-        "${STATE_ROOT}" -maxdepth 1 -type d
-        -mtime "+${OMC_STATE_TTL_DAYS}"
-        ! -name '.' ! -name '..' ! -name '.*'
-        ! -path "${STATE_ROOT}"
-        -print
-      )
-    fi
-    # v1.31.0 Wave 4 (data-lens F-7): cap the synthetic _watchdog
-    # session's gate_events.jsonl. The watchdog daemon writes here
-    # continuously (every ~2 minutes), so its mtime never ages and
-    # the TTL sweep would never include it. Without a cap, the
-    # per-session file grows unbounded — a year of watchdog ticks
-    # is ~250k rows. The file is per-session not cross-session so
-    # we cap it via append_limited_state-shaped logic directly here
-    # rather than rotating into the global aggregate (which would
-    # double-count once we eventually start sweeping the dir).
-    local _watchdog_dir="${STATE_ROOT}/_watchdog"
-    if [[ -d "${_watchdog_dir}" ]]; then
-      local _watchdog_gate_events="${_watchdog_dir}/gate_events.jsonl"
-      if [[ -f "${_watchdog_gate_events}" ]] && [[ -s "${_watchdog_gate_events}" ]]; then
-        local _watchdog_lines
-        _watchdog_lines="$(wc -l < "${_watchdog_gate_events}" 2>/dev/null || echo 0)"
-        _watchdog_lines="${_watchdog_lines##* }"
-        # 5000-row cap: ~6 weeks of 2-minute ticks at one row/tick.
-        if [[ "${_watchdog_lines}" -gt 5000 ]]; then
-          local _watchdog_tmp
-          _watchdog_tmp="$(mktemp "${_watchdog_gate_events}.XXXXXX" 2>/dev/null)" || _watchdog_tmp=""
-          if [[ -n "${_watchdog_tmp}" ]]; then
-            tail -n 4000 "${_watchdog_gate_events}" > "${_watchdog_tmp}" 2>/dev/null \
-              && mv "${_watchdog_tmp}" "${_watchdog_gate_events}" 2>/dev/null \
-              || rm -f "${_watchdog_tmp}"
-          fi
-        fi
-      fi
-    fi
-
-    find "${_sweep_find_args[@]}" 2>/dev/null | while IFS= read -r _sweep_dir; do
-      # v1.31.0 Wave 4 (data-lens F-7): explicitly skip _watchdog —
-      # the synthetic daemon session aggregates locally (capped
-      # above) and is NOT a candidate for the per-session sweep
-      # path that wraps in cross-session ledgers + rm -rf.
-      [[ "$(basename "${_sweep_dir}")" == "_watchdog" ]] && continue
-        local _sweep_state="${_sweep_dir}/session_state.json"
-        if [[ -f "${_sweep_state}" ]]; then
-          local _sweep_sid _sweep_ec=0
-          _sweep_sid="$(basename "${_sweep_dir}")"
-          local _sweep_transferred_to=""
-          _sweep_transferred_to="$(jq -r '
-            (.resume_transferred_to // "")
-            | if type == "string" then . else "" end
-          ' "${_sweep_state}" 2>/dev/null || true)"
-          if [[ -n "${_sweep_transferred_to}" ]] \
-              && ! validate_session_id "${_sweep_transferred_to}" 2>/dev/null; then
-            # A malformed/manual marker must fail open.  Only the handoff
-            # hook's validated target ID may suppress source-owned rollups.
-            _sweep_transferred_to=""
-          fi
-
-          # Native --resume transfers the logical session's summary,
-          # findings, and gate-event ownership to the initialized target.
-          # Do not export the dormant source's copied counters/ledgers a
-          # second time.  Classifier telemetry is intentionally handled
-          # outside this branch below: it is not copied by the handoff and
-          # would otherwise be lost when the stale source directory is
-          # removed.
-          if [[ -z "${_sweep_transferred_to}" ]]; then
-            local _sweep_edits="${_sweep_dir}/edited_files.log"
-            [[ -f "${_sweep_edits}" ]] && _sweep_ec="$(sort -u "${_sweep_edits}" | wc -l | tr -d '[:space:]')"
-
-            # Outcome attribution (added in v1.13.0): joins session-state counters
-            # with the per-session findings.json so /ulw-report can answer
-            # "did the gates that fired actually lead to fixes?" without
-            # walking individual session dirs (already deleted by the sweep).
-            local _sweep_findings_file="${_sweep_dir}/findings.json"
-            local _sweep_findings_block='null'
-            local _sweep_waves_block='null'
-            local _sweep_quality_frontier_history="${_sweep_dir}/quality_frontier_history.jsonl"
-            local _sweep_quality_frontiers='null'
-            if [[ -f "${_sweep_findings_file}" ]]; then
-              _sweep_findings_block="$(jq -c '
-              (.findings // []) | {
-                total: length,
-                shipped:     ([.[] | select(.status=="shipped")]     | length),
-                deferred:    ([.[] | select(.status=="deferred")]    | length),
-                rejected:    ([.[] | select(.status=="rejected")]    | length),
-                in_progress: ([.[] | select(.status=="in_progress")] | length),
-                pending:     ([.[] | select(.status=="pending")]     | length)
-              }
-              ' "${_sweep_findings_file}" 2>/dev/null || echo 'null')"
-              _sweep_waves_block="$(jq -c '
-              (.waves // []) | {
-                total:     length,
-                completed: ([.[] | select(.status=="completed")] | length)
-              }
-              ' "${_sweep_findings_file}" 2>/dev/null || echo 'null')"
-            fi
-            if [[ -f "${_sweep_quality_frontier_history}" \
-                && ! -L "${_sweep_quality_frontier_history}" ]]; then
-              _sweep_quality_frontiers="$(quality_frontier_history_summary \
-                "${_sweep_quality_frontier_history}" 2>/dev/null || printf 'null')"
-            fi
-            jq -c --arg sid "${_sweep_sid}" --argjson ec "${_sweep_ec:-0}" \
-              --arg host "$(omc_host)" \
-              --argjson findings "${_sweep_findings_block}" \
-              --argjson waves "${_sweep_waves_block}" \
-              --argjson quality_frontiers "${_sweep_quality_frontiers}" '
-            def has_code_edits:
-              (((.code_edit_count // "0") | tonumber) > 0)
-              or ((.bash_unknown_edit_scope // "") == "1");
-            {
-              _v: 1,
-              session_id: $sid,
-              host: $host,
-              project_key: (.project_key // null),
-              start_ts: (.session_start_ts // .last_user_prompt_ts // null),
-              end_ts: (
-                if   ((.last_edit_ts // "")        != "") then .last_edit_ts
-                elif ((.last_review_ts // "")      != "") then .last_review_ts
-                elif ((.last_user_prompt_ts // "") != "") then .last_user_prompt_ts
-                else null
-                end
-              ),
-              end_ts_source: (
-                if   ((.last_edit_ts // "")        != "") then "edit"
-                elif ((.last_review_ts // "")      != "") then "review"
-                elif ((.last_user_prompt_ts // "") != "") then "prompt"
-                else null
-                end
-              ),
-              domain: (.task_domain // "unknown"),
-              intent: (.task_intent // "unknown"),
-              edit_count: $ec,
-              code_edits: ((.code_edit_count // "0") | tonumber),
-              bash_unknown_edit_scope: ((.bash_unknown_edit_scope // "") == "1"),
-              doc_edits: ((.doc_edit_count // "0") | tonumber),
-              verified: ((.last_verify_ts // "") != ""),
-              verify_outcome: (.last_verify_outcome // null),
-              verify_confidence: ((.last_verify_confidence // "0") | tonumber),
-              reviewed: ((.last_review_ts // "") != ""),
-              guard_blocks: ((.stop_guard_blocks // "0") | tonumber),
-              dim_blocks: ((.dimension_guard_blocks // "0") | tonumber),
-              exhausted: ((.guard_exhausted // "") != ""),
-              dispatches: ((.subagent_dispatch_count // "0") | tonumber),
-              # v1.43 data-lens F-001 (outcome predicate, three-tier ladder):
-              # Pre-v1.43 the inference required BOTH last_review_ts AND
-              # last_verify_ts AND code_edit_count>0 for completed_inferred.
-              # Real sessions where edits shipped with only ONE of
-              # {review, verify} fell to unclassified_by_sweep and were
-              # excluded from n_shipped in directive-value-attribution.
-              # New ladder:
-              #   completed_inferred         = full loop (review+verify+edits)
-              #   completed_inferred_partial = edits + ONE of {review,verify} -- still shipped
-              #   edited_no_quality          = edits + zero quality steps -- unknown
-              #                                shipping (could ship externally),
-              #                                excluded from both shipped and
-              #                                dropped, surfaced in Patterns.
-              outcome: (
-                if (.session_outcome // "") != "" then .session_outcome
-                elif ((.last_review_ts // "") != "") and ((.last_verify_ts // "") != "") and has_code_edits then "completed_inferred"
-                elif has_code_edits and (((.last_review_ts // "") != "") or ((.last_verify_ts // "") != "")) then "completed_inferred_partial"
-                elif has_code_edits then "edited_no_quality"
-                elif (has_code_edits | not) and ((.last_review_ts // "") == "") and ((.last_verify_ts // "") == "") then "idle"
-                else "unclassified_by_sweep"
-                end
-              ),
-              skip_count: ((.skip_count // "0") | tonumber),
-              serendipity_count: ((.serendipity_count // "0") | tonumber),
-              findings: $findings,
-              waves: $waves,
-              quality_frontiers: $quality_frontiers
-            }
-            ' "${_sweep_state}" >> "${summary_file}" 2>/dev/null || true
-          fi
-
-          # v1.31.0 Wave 2 (sre-lens F-2): aggregation appends to cross-
-          # session JSONL files run UNDER the cross-session log lock. The
-          # daily-marker gate makes concurrent SWEEPS structurally
-          # impossible, but a parallel watchdog tick / record-* helper
-          # writing to the same cross-session JSONL during the sweep
-          # CAN race the appender — their unlocked writes interleave
-          # with the sweep's piped jq output and tear rows when the
-          # combined size crosses PIPE_BUF on Linux. Wrap the appends
-          # under with_cross_session_log_lock for symmetry with the
-          # _cap_cross_session_jsonl rotation path (also under-lock as
-          # of v1.30.0 Wave 3).
-
-          # v1.31.0 Wave 4 (data-lens F-1): read project_key from the
-          # session state once and pass to the cross-session append
-          # helpers so per-row project_key tagging makes /ulw-report
-          # multi-project slicing possible. Falls back to "" when
-          # session_state.json doesn't carry the key (legacy sessions
-          # before project_key tracking landed).
-          local _sweep_project_key=""
-          _sweep_project_key="$(jq -r '.project_key // ""' "${_sweep_state}" 2>/dev/null || echo "")"
-
-          # Classifier telemetry: append this session's misfire rows to the
-          # cross-session ledger. Tagged with session id so post-hoc
-          # analysis can group by session, intent, reason, etc.
-          local _sweep_telemetry="${_sweep_dir}/classifier_telemetry.jsonl"
-          if [[ -f "${_sweep_telemetry}" ]]; then
-            with_cross_session_log_lock "${misfires_file}" \
-              _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}" "${_sweep_project_key}" \
-              || _sweep_append_misfires "${_sweep_telemetry}" "${_sweep_sid}" "${misfires_file}" "${_sweep_project_key}"
-          fi
-
-          # Gate events: append this session's per-event outcome rows to
-          # the cross-session ledger so /ulw-report can answer "did this
-          # gate-fire actually catch a real bug?" at the per-event grain.
-          # Tagged with session id + project_key for grouping.
-          local _sweep_gate_events="${_sweep_dir}/gate_events.jsonl"
-          local _gate_events_file="${HOME}/.claude/quality-pack/gate_events.jsonl"
-          if [[ -z "${_sweep_transferred_to}" ]] \
-              && [[ -f "${_sweep_gate_events}" ]]; then
-            with_cross_session_log_lock "${_gate_events_file}" \
-              _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}" "${_sweep_project_key}" \
-              || _sweep_append_gate_events "${_sweep_gate_events}" "${_sweep_sid}" "${_gate_events_file}" "${_sweep_project_key}"
-          fi
-        fi
-        rm -rf "${_sweep_dir}" 2>/dev/null || true
-      done
-
-    # Cross-session JSONL caps. Each session produces 0-few misfire rows;
-    # session_summary gets one row per swept session; serendipity-log accrues
-    # whenever the Serendipity Rule fires (rare); gate_events accrues at
-    # ~10-50 rows per session so the cap is sized higher. Caps are sized
-    # to the respective row-rate and an O(years) horizon.
-    _cap_cross_session_jsonl "${misfires_file}" 1000 800
-    _cap_cross_session_jsonl "${summary_file}" 500 400
-    _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/serendipity-log.jsonl" 2000 1500
-    _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/gate_events.jsonl" 10000 8000
-    _cap_cross_session_jsonl "${HOME}/.claude/quality-pack/used-archetypes.jsonl" 500 400
-
-    # Time-tracking cross-session log: TTL is governed by the dedicated
-    # OMC_TIME_TRACKING_XS_RETAIN_DAYS flag (default 30) rather than
-    # OMC_STATE_TTL_DAYS — workflow timing data is more sensitive than
-    # gate telemetry, and a tighter window matches the privacy default
-    # for shared machines. Drop rows older than the retention horizon.
-    local _xs_time_log="${HOME}/.claude/quality-pack/timing.jsonl"
-    if [[ -f "${_xs_time_log}" ]] && [[ -s "${_xs_time_log}" ]]; then
-      local _xs_time_cutoff=$(( now - OMC_TIME_TRACKING_XS_RETAIN_DAYS * 86400 ))
-      local _xs_time_tmp
-      _xs_time_tmp="$(mktemp "${_xs_time_log}.XXXXXX")"
-      if jq -c --argjson cutoff "${_xs_time_cutoff}" \
-          'select((.ts // 0) >= $cutoff)' \
-          "${_xs_time_log}" > "${_xs_time_tmp}" 2>/dev/null; then
-        mv "${_xs_time_tmp}" "${_xs_time_log}"
-      else
-        rm -f "${_xs_time_tmp}"
-      fi
-      _cap_cross_session_jsonl "${_xs_time_log}" 10000 8000
-    fi
-  fi
-
-  # Soft-failure on marker write — a full disk or read-only mount must
-  # not crash the sweep hook (would propagate a non-zero exit through
-  # every common.sh source). The tradeoff: if the marker write
-  # silently fails, the next call sees the OLD marker and the 24h
-  # gate still works correctly. The loss-of-write only becomes visible
-  # after the next 24h boundary, by which point the underlying disk
-  # condition is independently fixable.
-  printf '%s\n' "${now}" > "${marker}" 2>/dev/null || true
+_sweep_read_marker() {
+  local marker="${1:-}" now="${2:-}" value=""
+  value="$(_omc_read_canonical_metadata_line \
+    "${marker}" 32 2>/dev/null)" || return 1
+  _omc_canonical_uint_in_range "${value}" 1 "${now}" || return 1
+  printf '%s' "${value}"
 }
 
+_sweep_publish_marker() {
+  local marker="${1:-}" now="${2:-}" parent="" temp="" observed=""
+  _omc_canonical_uint_in_range "${now}" 1 999999999999999 || return 1
+  parent="${marker%/*}"
+  [[ -d "${parent}" && ! -L "${parent}" ]] || return 1
+  if [[ -e "${marker}" || -L "${marker}" ]]; then
+    # Portable mv follows a destination symlink when its target is a directory.
+    # Unlink the symlink node explicitly; losing power in this narrow gap leaves
+    # no marker and therefore causes a safe retry. Regular markers take the
+    # ordinary single-rename replacement path.
+    if [[ -L "${marker}" ]]; then
+      rm -f -- "${marker}" || return 1
+      [[ ! -e "${marker}" && ! -L "${marker}" ]] || return 1
+    else
+      [[ -f "${marker}" ]] || return 1
+    fi
+  fi
+  temp="$(mktemp "${parent}/.last_sweep.XXXXXX")" || return 1
+  if ! printf '%s\n' "${now}" >"${temp}" \
+      || ! chmod 600 "${temp}" \
+      || ! mv -f -- "${temp}" "${marker}"; then
+    rm -f -- "${temp}" 2>/dev/null || true
+    return 1
+  fi
+  observed="$(_sweep_read_marker "${marker}" "${now}" 2>/dev/null || true)"
+  [[ "${observed}" == "${now}" ]]
+}
+
+_sweep_cap_watchdog_events() {
+  local watchdog_dir="${STATE_ROOT}/_watchdog"
+  local events="${watchdog_dir}/gate_events.jsonl" lines="" temp=""
+  [[ -d "${watchdog_dir}" && ! -L "${watchdog_dir}" ]] || return 0
+  [[ -e "${events}" || -L "${events}" ]] || return 0
+  _sweep_jsonl_is_bounded_objects \
+    "${events}" "${_SWEEP_MAX_GENERATION_BYTES}" || return 1
+  [[ -s "${events}" ]] || return 0
+  lines="$(wc -l <"${events}" 2>/dev/null | tr -d '[:space:]')"
+  [[ "${lines}" =~ ^[0-9]+$ ]] || return 1
+  (( lines > 5000 )) || return 0
+  temp="$(mktemp "${events}.XXXXXX")" || return 1
+  if ! tail -n 4000 "${events}" >"${temp}" 2>/dev/null \
+      || ! chmod 600 "${temp}" \
+      || ! _sweep_jsonl_is_bounded_objects "${temp}" 8388608 \
+      || ! mv -f -- "${temp}" "${events}"; then
+    rm -f -- "${temp}" 2>/dev/null || true
+    return 1
+  fi
+}
+
+_sweep_stale_sessions_transactional() {
+  local marker="${STATE_ROOT}/.last_sweep" now="" last_sweep="" cutoff=""
+  local cleanup_root="${STATE_ROOT}/.sweep-cleanup" candidates="" size=""
+  local candidate="" sid="" mtime="" count=0 failed=0
+  local summary_file="${HOME}/.claude/quality-pack/session_summary.jsonl"
+  local misfires_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
+  local gates_file="${HOME}/.claude/quality-pack/gate_events.jsonl"
+  now="$(now_epoch)"
+  _omc_canonical_uint_in_range "${now}" 1 999999999999999 || return 0
+  _sweep_state_root_is_safe || return 0
+
+  _prune_resume_quarantine "${now}"
+  # Claims and retired generations are recovered before the daily shortcut;
+  # the previous process may have died after moving live state but before it
+  # could advance the marker.
+  if ! _sweep_recover_claims; then
+    log_anomaly "sweep_stale_sessions" \
+      "stale-session claim recovery incomplete; daily marker not advanced"
+    return 0
+  fi
+
+  if [[ -e "${marker}" || -L "${marker}" ]]; then
+    last_sweep="$(_sweep_read_marker "${marker}" "${now}" 2>/dev/null || true)"
+    if [[ -n "${last_sweep}" ]]; then
+      if (( now - last_sweep < 86400 )); then
+        return 0
+      fi
+    else
+      log_anomaly "sweep_stale_sessions" \
+        "unsafe, non-canonical, oversized, or future daily marker ignored"
+    fi
+  fi
+
+  [[ -d "${STATE_ROOT}" && ! -L "${STATE_ROOT}" ]] || return 0
+  cutoff=$((now - OMC_STATE_TTL_DAYS * 86400))
+  _sweep_cap_watchdog_events || failed=1
+  candidates="$(mktemp "${STATE_ROOT}/.sweep-candidates.XXXXXX")" || return 0
+  if ! find "${STATE_ROOT}" -mindepth 1 -maxdepth 1 -type d \
+      ! -name '.*' -print0 >"${candidates}" 2>/dev/null; then
+    failed=1
+  fi
+  size="$(_sweep_file_size "${candidates}" 2>/dev/null || true)"
+  if [[ ! "${size}" =~ ^[0-9]+$ ]] || (( size > 4194304 )); then
+    failed=1
+  fi
+  if [[ "${failed}" -eq 0 ]]; then
+    while IFS= read -r -d '' candidate; do
+      sid="${candidate##*/}"
+      [[ "${sid}" == "_watchdog" ]] && continue
+      count=$((count + 1))
+      if (( count > _SWEEP_MAX_MANIFEST_ENTRIES )); then
+        failed=1
+        break
+      fi
+      if ! _sweep_candidate_session_id_valid "${sid}" \
+          || [[ ! -d "${candidate}" || -L "${candidate}" ]]; then
+        log_anomaly "sweep_stale_sessions" \
+          "retained stale candidate with unsafe directory identity: ${candidate}"
+        failed=1
+        continue
+      fi
+      mtime="$(_lock_mtime "${candidate}")"
+      if [[ ! "${mtime}" =~ ^[0-9]+$ ]]; then
+        failed=1
+        continue
+      fi
+      (( mtime <= cutoff )) || continue
+      if ! _sweep_claim_candidate \
+          "${candidate}" "${sid}" "${cutoff}" "${cleanup_root}"; then
+        failed=1
+        log_anomaly "sweep_stale_sessions" \
+          "retained ${sid}: claim, export, or cleanup transaction incomplete"
+      fi
+    done <"${candidates}"
+  fi
+  rm -f -- "${candidates}" 2>/dev/null || failed=1
+  [[ "${failed}" -eq 0 ]] || return 0
+
+  # Retention transforms run only after every deletion-authoritative export
+  # settled. Otherwise a failed source retry could be confused with cap loss.
+  _cap_cross_session_jsonl "${misfires_file}" 1000 800 || return 0
+  _cap_cross_session_jsonl "${summary_file}" 500 400 || return 0
+  _cap_cross_session_jsonl \
+    "${HOME}/.claude/quality-pack/serendipity-log.jsonl" 2000 1500 \
+    || return 0
+  _cap_cross_session_jsonl "${gates_file}" 10000 8000 || return 0
+  _cap_cross_session_jsonl \
+    "${HOME}/.claude/quality-pack/used-archetypes.jsonl" 500 400 \
+    || return 0
+
+  local xs_time_log="${HOME}/.claude/quality-pack/timing.jsonl"
+  if [[ -f "${xs_time_log}" && ! -L "${xs_time_log}" \
+      && -s "${xs_time_log}" ]]; then
+    local xs_time_cutoff=$((now - OMC_TIME_TRACKING_XS_RETAIN_DAYS * 86400))
+    with_cross_session_log_lock "${xs_time_log}" \
+      _sweep_retain_timing_locked \
+        "${xs_time_log}" "${xs_time_cutoff}" 10000 8000 || return 0
+  elif [[ -e "${xs_time_log}" || -L "${xs_time_log}" ]]; then
+    [[ -f "${xs_time_log}" && ! -L "${xs_time_log}" ]] || return 0
+  fi
+
+  _sweep_publish_marker "${marker}" "${now}" || {
+    log_anomaly "sweep_stale_sessions" \
+      "daily marker publication failed; completed exports remain retry-safe"
+    return 0
+  }
+}
+
+_sweep_stale_sessions_locked() {
+  _sweep_stale_sessions_transactional
+}
 sweep_stale_sessions() {
-  mkdir -p "${STATE_ROOT}" 2>/dev/null || true
+  _sweep_state_root_is_safe || return 0
   _with_lockdir "${STATE_ROOT}/.sweep.lock" "sweep_stale_sessions" \
     _sweep_stale_sessions_locked || true
 }
@@ -3701,7 +5867,36 @@ goal_arm_objective() {
   return 0
 }
 
+# Return the validated logical owner of a transferred resume source. A
+# malformed, self-referential, absent, symlinked, or non-object marker is not
+# authority and therefore fails open for recovery/reporting compatibility.
+# Callers that enforce lifecycle work use a successful return as a dormant
+# source fence.
+omc_resume_transfer_owner() {
+  local sid="${1:-${SESSION_ID:-}}" state_file="" owner=""
+  validate_session_id "${sid}" 2>/dev/null || return 1
+  state_file="${STATE_ROOT}/${sid}/${STATE_JSON}"
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  # Every managed writer emits object keys literally through jq. Avoid the
+  # comparatively expensive stable-object snapshot on the overwhelmingly
+  # common non-resume state file; the under-lock caller repeats this check, so
+  # a transfer racing the optimistic precheck is still fenced. A manually
+  # escaped/corrupt key is not managed lifecycle authority and already belongs
+  # to this helper's documented fail-open recovery case.
+  LC_ALL=C grep -Fq '"resume_transferred_to"' "${state_file}" \
+    2>/dev/null || return 1
+  owner="$(_omc_read_valid_session_id_field \
+    "${state_file}" "resume_transferred_to" 2>/dev/null || true)"
+  [[ -n "${owner}" ]] || return 1
+  [[ "${owner}" != "${sid}" ]] || return 1
+  printf '%s' "${owner}"
+}
+
 is_ultrawork_mode() {
+  # A successful resume handoff makes this directory a report-only source.
+  # Its copied enforcement generation remains byte-stable for idempotent
+  # replay, but no lifecycle callback may treat it as an active owner.
+  omc_resume_transfer_owner "${SESSION_ID:-}" >/dev/null 2>&1 && return 1
   [[ "$(workflow_mode)" == "ultrawork" ]] || return 1
   local active outcome current_generation
   active="$(read_state "ulw_enforcement_active" 2>/dev/null || true)"
@@ -3745,6 +5940,7 @@ capture_ulw_enforcement_interval() {
 # release/reactivation generation and mutate that new interval.
 omc_enforcement_generation_matches_capture() {
   local current_generation
+  omc_resume_transfer_owner "${SESSION_ID:-}" >/dev/null 2>&1 && return 1
   [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]] || return 0
   current_generation="$(read_state "ulw_enforcement_generation" \
     2>/dev/null || true)"
@@ -5467,12 +7663,11 @@ _omc_bash_command_is_proven_read_only() {
   local cleaned="" first_token="" rc=1 git_config_value=""
   local safe_path="${_OMC_OBSERVER_SAFE_PATH}"
   local trusted_prefix='(/usr/bin/|/bin/|/usr/local/bin/|/opt/homebrew/bin/)?'
-  local eligible_prefix_re="^([[:space:]]*)${trusted_prefix}(pwd|ls|rg|grep|cat|head|tail|wc|stat|file|which|realpath|readlink|dirname|basename|md5|md5sum|shasum|sha256sum|cksum|true|false|echo|printf|jq|diff|comm|uniq|cut|tr|du|df|ps|date|sort|find|sed|git|black|isort|rustfmt|swiftformat)([[:space:]]|$)"
-  local simple_read_re="^([[:space:]]*)${trusted_prefix}(pwd|ls|rg|grep|cat|head|tail|wc|stat|file|which|realpath|readlink|dirname|basename|md5|md5sum|shasum|sha256sum|cksum|true|false|echo|printf|jq|diff|comm|uniq|cut|tr|du|df|ps|date)([[:space:]]|$)"
+  local eligible_prefix_re="^([[:space:]]*)${trusted_prefix}(pwd|ls|rg|grep|cat|head|tail|wc|stat|file|which|realpath|readlink|dirname|basename|md5|md5sum|shasum|sha256sum|cksum|true|false|echo|printf|jq|diff|comm|uniq|cut|tr|du|df|ps|date|sort|git|black|isort|rustfmt|swiftformat)([[:space:]]|$)"
+  local simple_read_re="^([[:space:]]*)${trusted_prefix}(pwd|ls|rg|grep|cat|head|tail|wc|stat|file|which|realpath|readlink|dirname|basename|md5|md5sum|shasum|sha256sum|cksum|true|false|echo|printf|jq|comm|uniq|cut|tr|du|df|ps|date)([[:space:]]|$)"
   local formatter_check_re="^([[:space:]]*)${trusted_prefix}(black[[:space:]][^;&|]*--check|isort[[:space:]][^;&|]*(--check-only|--check)|rustfmt[[:space:]][^;&|]*--check|swiftformat[[:space:]][^;&|]*--lint)([=[:space:]]|$)"
+  local diff_read_re="^([[:space:]]*)${trusted_prefix}diff([[:space:]]|$)"
   local sort_read_re="^([[:space:]]*)${trusted_prefix}sort([[:space:]]|$)"
-  local find_read_re="^([[:space:]]*)${trusted_prefix}find([[:space:]]|$)"
-  local sed_read_re="^([[:space:]]*)${trusted_prefix}sed([[:space:]]|$)"
   local git_read_re="^([[:space:]]*)${trusted_prefix}git[[:space:]]+(status|diff|log|show|blame|grep|ls-files|rev-parse|describe|shortlog)([[:space:]]|$)"
   local git_remote_read_re="^([[:space:]]*)${trusted_prefix}git[[:space:]]+remote[[:space:]]+(get-url|-v|--verbose)([[:space:]]|$)"
   local git_config_read_re="^([[:space:]]*)${trusted_prefix}git[[:space:]]+config[[:space:]]+(--get|--get-all|--get-regexp|--list|-l)([[:space:]]|$)"
@@ -5508,7 +7703,10 @@ _omc_bash_command_is_proven_read_only() {
       || [[ "${cleaned}" =~ ${git_config_read_re} ]]; then
     rc=0
   elif [[ "${cleaned}" =~ ${git_read_re} ]] \
-      && ! grep -Eq '(^|[[:space:]])--output([=[:space:]]|$)' <<<"${cleaned}"; then
+      && ! grep -Eq '(^|[[:space:]])--output([=[:space:]]|$)' <<<"${cleaned}" \
+      && ! { [[ "${cleaned}" =~ ^[[:space:]]*${trusted_prefix}git[[:space:]]+grep([[:space:]]|$) ]] \
+        && grep -Eq '(^|[[:space:]])(--open-files-in-pager([=[:space:]]|$)|-O([^[:space:]]*|$))' \
+          <<<"${cleaned}"; }; then
     # A syntactically read-only Git command can still execute configured
     # programs. Check the addressed repository without running the observed
     # command: custom fsmonitor, external-diff, command, and textconv drivers
@@ -5529,14 +7727,13 @@ _omc_bash_command_is_proven_read_only() {
       return 1
     fi
     rc=0
+  elif [[ "${cleaned}" =~ ${diff_read_re} ]] \
+      && ! grep -Eq '(^|[[:space:]])(--output([=[:space:]]|$)|-[^-[:space:]]*o([^[:space:]]*|$))' \
+        <<<"${cleaned}"; then
+    rc=0
   elif [[ "${cleaned}" =~ ${sort_read_re} ]] \
-      && ! grep -Eq '(^|[[:space:]])(-o|--output)([=[:space:]]|$)' <<<"${cleaned}"; then
-    rc=0
-  elif [[ "${cleaned}" =~ ${find_read_re} ]] \
-      && ! grep -Eq '(^|[[:space:]])(-delete|-exec|-execdir|-ok)([[:space:]]|$)' <<<"${cleaned}"; then
-    rc=0
-  elif [[ "${cleaned}" =~ ${sed_read_re} ]] \
-      && ! grep -Eq '(^|[[:space:]])-([^[:space:]]*i|i[^[:space:]]*)([[:space:]]|$)|--in-place' <<<"${cleaned}"; then
+      && ! grep -Eq '(^|[[:space:]])(--output([=[:space:]]|$)|-[^-[:space:]]*o([^[:space:]]*|$))' \
+        <<<"${cleaned}"; then
     rc=0
   fi
   return "${rc}"
@@ -6192,6 +8389,7 @@ bash_worktree_edit_detected() {
   local PATH="${_OMC_OBSERVER_SAFE_PATH}"
   local baseline="" mode="" root="" before="" before_worktree="" comparison="full"
   local snapshot="" after_worktree="" mutation_signature="0"
+  local baseline_json=""
 
   baseline="$(_omc_bash_baseline_path "${tool_use_id}" "${cwd}" "${command}" 2>/dev/null || true)"
 
@@ -6206,12 +8404,25 @@ bash_worktree_edit_detected() {
     if bash_command_has_mutation_signature "${command}"; then return 0; fi
     return 1
   fi
-  mode="$(jq -r '.mode // empty' "${baseline}" 2>/dev/null || true)"
-  root="$(jq -r '.root // empty' "${baseline}" 2>/dev/null || true)"
-  before="$(jq -r '.fingerprint // empty' "${baseline}" 2>/dev/null || true)"
-  before_worktree="$(jq -r '.worktree_fingerprint // empty' "${baseline}" 2>/dev/null || true)"
-  comparison="$(jq -r '.comparison // "full"' "${baseline}" 2>/dev/null || true)"
-  mutation_signature="$(jq -r '.mutation_signature // "0"' "${baseline}" 2>/dev/null || true)"
+  # Every projected field below influences whether a successful Bash call is
+  # recorded as an edit. Treat a tampered, oversized, or NUL-bearing baseline
+  # as an observed mutation; jq -r followed by command substitution must not be
+  # allowed to normalize corrupt pre-tool authority into a no-edit result.
+  baseline_json="$(_omc_project_shell_safe_json_object \
+    "${baseline}" 65536 -c '.' 2>/dev/null || true)"
+  if [[ -z "${baseline_json}" ]]; then
+    rm -f "${baseline}" 2>/dev/null || true
+    return 0
+  fi
+  mode="$(jq -r '.mode // empty' <<<"${baseline_json}" 2>/dev/null || true)"
+  root="$(jq -r '.root // empty' <<<"${baseline_json}" 2>/dev/null || true)"
+  before="$(jq -r '.fingerprint // empty' <<<"${baseline_json}" 2>/dev/null || true)"
+  before_worktree="$(jq -r '.worktree_fingerprint // empty' \
+    <<<"${baseline_json}" 2>/dev/null || true)"
+  comparison="$(jq -r '.comparison // "full"' \
+    <<<"${baseline_json}" 2>/dev/null || true)"
+  mutation_signature="$(jq -r '.mutation_signature // "0"' \
+    <<<"${baseline_json}" 2>/dev/null || true)"
   rm -f "${baseline}" 2>/dev/null || true
 
   [[ "${mode}" == "syntactic" ]] && return 0
@@ -7708,14 +9919,16 @@ _dim_revision_key() {
 
 # review_cycle_edit_snapshot — describe mutations made for the current
 # execution objective. Output is six newline-delimited integers:
-#   code_count, doc_count, ui_count, unique_count, unknown_bash, surface_count
+#   code_count, doc_count, ui_count, unique_count, unknown_path, surface_count
 #
 # Fresh router state uses an edited_files.log line offset instead of the
 # cumulative counters. The log records every path-bearing mutation, so editing
 # a file that an earlier objective already touched is still visible here. A
-# monotonic event baseline scopes unknown-path Bash writes, which deliberately
-# do not invent file paths. Resumed pre-route sessions fall back to cumulative
-# counters, the full log, and legacy timestamps for migration safety.
+# monotonic event baseline scopes unknown-path Bash writes. Separate monotonic
+# connector baselines retain the known remote surface without pretending a
+# pathless mutation proves a unique local artifact. Resumed pre-route sessions
+# fall back to cumulative counters, the full log, and legacy timestamps for
+# migration safety.
 _review_cycle_file_signature() {
   local file="$1"
   if [[ ! -f "${file}" ]]; then
@@ -7728,6 +9941,152 @@ _review_cycle_file_signature() {
   local signature
   signature="$(cksum <"${file}" 2>/dev/null | awk '{print $1 ":" $2}' || true)"
   printf '%s\n' "${signature:-unreadable}"
+}
+
+# Emit current-objective connector mutations as:
+#   doc, ui, native, unknown, total
+#
+# New cycles always have the five route-time baselines. The timestamp/scope
+# fallback is intentionally coarse and exists only for sessions routed before
+# those counters were introduced. If a partially migrated/corrupt portfolio
+# has more total events than categorized events, preserve the unexplained
+# delta as unknown so adaptive review fails conservative.
+_review_cycle_external_edit_snapshot() {
+  local scoped="${1:-0}" prompt_ts last_ts last_scope
+  local current_total current_doc current_ui current_native current_unknown
+  local base_total base_doc base_ui base_native base_unknown
+  local delta_total=0 delta_doc=0 delta_ui=0 delta_native=0 delta_unknown=0
+  local known_delta=0
+
+  prompt_ts="$(read_state "review_cycle_prompt_ts")"
+  current_total="$(read_state "external_edit_event_count")"
+  current_doc="$(read_state "external_doc_edit_event_count")"
+  current_ui="$(read_state "external_ui_edit_event_count")"
+  current_native="$(read_state "external_native_edit_event_count")"
+  current_unknown="$(read_state "external_unknown_edit_event_count")"
+
+  if [[ "${scoped}" -eq 1 ]]; then
+    base_total="$(read_state "review_cycle_external_event_base")"
+    base_doc="$(read_state "review_cycle_external_doc_event_base")"
+    base_ui="$(read_state "review_cycle_external_ui_event_base")"
+    base_native="$(read_state "review_cycle_external_native_event_base")"
+    base_unknown="$(read_state "review_cycle_external_unknown_event_base")"
+    if _omc_canonical_uint_in_range "${current_total}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${current_doc}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${current_ui}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${current_native}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${current_unknown}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${base_total}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${base_doc}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${base_ui}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${base_native}" 0 999999999999999 \
+        && _omc_canonical_uint_in_range "${base_unknown}" 0 999999999999999; then
+      (( current_total > base_total )) && delta_total=$((current_total - base_total))
+      (( current_doc > base_doc )) && delta_doc=$((current_doc - base_doc))
+      (( current_ui > base_ui )) && delta_ui=$((current_ui - base_ui))
+      (( current_native > base_native )) && delta_native=$((current_native - base_native))
+      (( current_unknown > base_unknown )) && delta_unknown=$((current_unknown - base_unknown))
+    elif [[ -z "${current_total}${current_doc}${current_ui}${current_native}${current_unknown}" ]] \
+        && [[ "${base_total}" == "0" && "${base_doc}" == "0" \
+          && "${base_ui}" == "0" && "${base_native}" == "0" \
+          && "${base_unknown}" == "0" ]]; then
+      # A newly routed session can legitimately predate the cumulative
+      # connector counters.  The router still publishes canonical zero
+      # baselines so the cycle is scoped, but absence on both sides means
+      # "no event yet", not an unknown current mutation.  Preserve the
+      # timestamp fallback for an older connector hook that records an event
+      # after this route without incrementing the newer counters.
+      last_ts="$(read_state "last_external_edit_ts")"
+      last_scope="$(read_state "external_edit_scope")"
+      if _omc_canonical_uint_in_range "${last_ts}" 0 999999999999999 \
+          && _omc_canonical_uint_in_range "${prompt_ts}" 0 999999999999999 \
+          && (( last_ts >= prompt_ts )); then
+        delta_total=1
+        case "${last_scope}" in
+          doc) delta_doc=1 ;;
+          ui) delta_ui=1 ;;
+          native) delta_native=1 ;;
+          *) delta_unknown=1 ;;
+        esac
+      elif ! _omc_canonical_uint_in_range \
+          "${prompt_ts}" 0 999999999999999 \
+          || { [[ -n "${last_ts}" ]] \
+            && ! _omc_canonical_uint_in_range \
+              "${last_ts}" 0 999999999999999; }; then
+        delta_total=1
+        delta_unknown=1
+      fi
+    elif [[ -n "${current_total}${current_doc}${current_ui}${current_native}${current_unknown}${base_total}${base_doc}${base_ui}${base_native}${base_unknown}" ]]; then
+      # A partially populated or non-canonical portfolio is not evidence of
+      # zero edits. Fail conservatively to the unknown surface instead of
+      # allowing leading-zero/octal parsing or signed-integer wrap to erase a
+      # real connector mutation.
+      delta_total=1
+      delta_unknown=1
+    else
+      last_ts="$(read_state "last_external_edit_ts")"
+      last_scope="$(read_state "external_edit_scope")"
+      if _omc_canonical_uint_in_range "${last_ts}" 0 999999999999999 \
+          && _omc_canonical_uint_in_range "${prompt_ts}" 0 999999999999999 \
+          && (( last_ts >= prompt_ts )); then
+        delta_total=1
+        case "${last_scope}" in
+          doc) delta_doc=1 ;;
+          ui) delta_ui=1 ;;
+          native) delta_native=1 ;;
+          *) delta_unknown=1 ;;
+        esac
+      elif ! _omc_canonical_uint_in_range \
+          "${prompt_ts}" 0 999999999999999 \
+          || { [[ -n "${last_ts}" ]] \
+            && ! _omc_canonical_uint_in_range \
+              "${last_ts}" 0 999999999999999; }; then
+        # No legacy timestamp is the normal "no connector edits" state. Only
+        # a present malformed timestamp (or malformed route clock) is
+        # conservative unknown authority; treating absence as corruption made
+        # every newly routed local-only objective require completeness.
+        delta_total=1
+        delta_unknown=1
+      fi
+    fi
+  elif _omc_canonical_uint_in_range "${current_total}" 0 999999999999999 \
+      && _omc_canonical_uint_in_range "${current_doc}" 0 999999999999999 \
+      && _omc_canonical_uint_in_range "${current_ui}" 0 999999999999999 \
+      && _omc_canonical_uint_in_range "${current_native}" 0 999999999999999 \
+      && _omc_canonical_uint_in_range "${current_unknown}" 0 999999999999999; then
+    delta_total="${current_total}"
+    delta_doc="${current_doc}"
+    delta_ui="${current_ui}"
+    delta_native="${current_native}"
+    delta_unknown="${current_unknown}"
+  elif [[ -n "${current_total}${current_doc}${current_ui}${current_native}${current_unknown}" ]]; then
+    delta_total=1
+    delta_unknown=1
+  else
+    last_ts="$(read_state "last_external_edit_ts")"
+    last_scope="$(read_state "external_edit_scope")"
+    if _omc_canonical_uint_in_range "${last_ts}" 0 999999999999999; then
+      delta_total=1
+      case "${last_scope}" in
+        doc) delta_doc=1 ;;
+        ui) delta_ui=1 ;;
+        native) delta_native=1 ;;
+        *) delta_unknown=1 ;;
+      esac
+    elif [[ -n "${last_ts}" ]]; then
+      delta_total=1
+      delta_unknown=1
+    fi
+  fi
+
+  known_delta=$((delta_doc + delta_ui + delta_native + delta_unknown))
+  if (( delta_total > known_delta )); then
+    delta_unknown=$((delta_unknown + delta_total - known_delta))
+  elif (( known_delta > delta_total )); then
+    delta_total="${known_delta}"
+  fi
+  printf '%s\n%s\n%s\n%s\n%s\n' \
+    "${delta_doc}" "${delta_ui}" "${delta_native}" "${delta_unknown}" "${delta_total}"
 }
 
 review_cycle_edit_snapshot() {
@@ -7832,16 +10191,43 @@ review_cycle_edit_snapshot() {
     fi
   fi
 
-  local unknown_bash=0
-  if review_cycle_unknown_bash_current; then
-    unknown_bash=1
+  local external_doc=0 external_ui=0 external_native=0 external_unknown=0 _external_total=0
+  {
+    IFS= read -r external_doc
+    IFS= read -r external_ui
+    IFS= read -r external_native
+    IFS= read -r external_unknown
+    IFS= read -r _external_total
+  } < <(_review_cycle_external_edit_snapshot "${scoped}")
+
+  # A remote event proves a changed surface, not a distinct local path. Keep
+  # unique_count exact while ensuring the corresponding specialist reviews
+  # are selected for the current objective.
+  if (( external_doc > 0 || external_native > 0 )); then
+    (( doc_count > 0 )) || doc_count=1
+    saw_docs=1
+  fi
+  if (( external_ui > 0 || external_native > 0 )); then
+    (( code_count > 0 )) || code_count=1
+    (( ui_count > 0 )) || ui_count=1
+    saw_ui=1
+  fi
+  if (( external_unknown > 0 )); then
+    (( code_count > 0 )) || code_count=1
     saw_code=1
   fi
+
+  local unknown_path=0
+  if review_cycle_unknown_bash_current; then
+    unknown_path=1
+    saw_code=1
+  fi
+  (( external_unknown == 0 )) || unknown_path=1
 
   local surface_count=0
   surface_count=$((saw_docs + saw_ui + saw_tests + saw_config + saw_release + saw_migration + saw_code))
   printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
-    "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${unknown_bash}" "${surface_count}"
+    "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${unknown_path}" "${surface_count}"
 }
 
 review_cycle_unknown_bash_current() {
@@ -7891,7 +10277,16 @@ review_cycle_has_active_wave_plan() {
   local findings_file updated_ts route_ts now_ts age max_age baseline_signature current_signature
   findings_file="$(session_file "findings.json")"
   [[ -f "${findings_file}" ]] || return 1
-  updated_ts="$(jq -r '.updated_ts // 0' "${findings_file}" 2>/dev/null || printf '0')"
+  # updated_ts crosses into shell arithmetic and wave status grants direct
+  # breadth authority. Validate the complete bounded object before either
+  # projection so raw or JSON-escaped NUL cannot be erased at that boundary.
+  updated_ts="$(_omc_project_shell_safe_json_object \
+    "${findings_file}" 4194304 -er '
+      (.updated_ts // 0)
+      | select(type == "number" and floor == .
+          and . >= 0 and . <= 999999999999999)
+      | tostring
+    ' 2>/dev/null || true)"
   [[ "${updated_ts}" =~ ^[0-9]+$ ]] || return 1
   route_ts="$(read_state "review_cycle_prompt_ts")"
   baseline_signature="$(read_state "review_cycle_findings_signature_base")"
@@ -7914,26 +10309,26 @@ review_cycle_has_active_wave_plan() {
 }
 
 review_cycle_requires_completeness() {
-  local code_count doc_count ui_count unique_count unknown_bash surface_count
+  local code_count doc_count ui_count unique_count unknown_path surface_count
   if [[ "$#" -eq 6 ]]; then
     code_count="$1"; doc_count="$2"; ui_count="$3"
-    unique_count="$4"; unknown_bash="$5"; surface_count="$6"
+    unique_count="$4"; unknown_path="$5"; surface_count="$6"
   else
     {
       IFS= read -r code_count
       IFS= read -r doc_count
       IFS= read -r ui_count
       IFS= read -r unique_count
-      IFS= read -r unknown_bash
+      IFS= read -r unknown_path
       IFS= read -r surface_count
     } < <(review_cycle_edit_snapshot)
   fi
 
-  (( unique_count > 0 || unknown_bash == 1 )) || return 1
+  (( code_count > 0 || doc_count > 0 || ui_count > 0 || unique_count > 0 || unknown_path == 1 )) || return 1
   [[ "$(read_state "review_cycle_broad_scope")" == "1" ]] && return 0
   review_cycle_has_current_complex_plan && return 0
   review_cycle_has_active_wave_plan && return 0
-  (( unknown_bash == 1 )) && return 0
+  (( unknown_path == 1 )) && return 0
 
   local threshold="${OMC_DIMENSION_GATE_FILE_COUNT:-3}"
   local excellence_threshold="${OMC_EXCELLENCE_FILE_COUNT:-3}"
@@ -7944,17 +10339,17 @@ review_cycle_requires_completeness() {
 }
 
 review_cycle_requires_traceability() {
-  local code_count doc_count ui_count unique_count unknown_bash surface_count
+  local code_count doc_count ui_count unique_count unknown_path surface_count
   if [[ "$#" -eq 6 ]]; then
     code_count="$1"; doc_count="$2"; ui_count="$3"
-    unique_count="$4"; unknown_bash="$5"; surface_count="$6"
+    unique_count="$4"; unknown_path="$5"; surface_count="$6"
   else
     {
       IFS= read -r code_count
       IFS= read -r doc_count
       IFS= read -r ui_count
       IFS= read -r unique_count
-      IFS= read -r unknown_bash
+      IFS= read -r unknown_path
       IFS= read -r surface_count
     } < <(review_cycle_edit_snapshot)
   fi
@@ -7976,14 +10371,14 @@ review_cycle_requires_traceability() {
 # makes a UI edit part of a larger assessed change. Migrated sessions without
 # a route-time semantic marker retain the conservative legacy behavior.
 review_cycle_requires_design() {
-  local ui_count="${1:-0}" unknown_bash="${2:-0}" semantic opt_out
+  local ui_count="${1:-0}" unknown_path="${2:-0}" semantic opt_out
   [[ "${ui_count}" =~ ^[0-9]+$ ]] || ui_count=0
-  [[ "${unknown_bash}" =~ ^[0-9]+$ ]] || unknown_bash=0
+  [[ "${unknown_path}" =~ ^[0-9]+$ ]] || unknown_path=0
 
   opt_out="$(read_state "review_cycle_design_opt_out")"
   [[ "${opt_out}" == "1" ]] && return 1
   semantic="$(read_state "review_cycle_ui_semantic")"
-  (( ui_count > 0 || (unknown_bash == 1 && semantic == 1) )) || return 1
+  (( ui_count > 0 || (unknown_path == 1 && semantic == 1) )) || return 1
   [[ "${semantic}" == "1" ]] && return 0
   [[ "$(read_state "review_cycle_broad_scope")" == "1" ]] && return 0
   review_cycle_has_current_complex_plan && return 0
@@ -8250,39 +10645,39 @@ describe_dimension() {
 # other callers intentionally use the zero-argument state-backed form.
 # shellcheck disable=SC2120
 get_required_dimensions() {
-  local code_count doc_count ui_count unique_count bash_unknown surface_count
+  local code_count doc_count ui_count unique_count unknown_path surface_count
   if [[ "$#" -eq 6 ]]; then
     code_count="$1"; doc_count="$2"; ui_count="$3"
-    unique_count="$4"; bash_unknown="$5"; surface_count="$6"
+    unique_count="$4"; unknown_path="$5"; surface_count="$6"
   else
     {
       IFS= read -r code_count
       IFS= read -r doc_count
       IFS= read -r ui_count
       IFS= read -r unique_count
-      IFS= read -r bash_unknown
+      IFS= read -r unknown_path
       IFS= read -r surface_count
     } < <(review_cycle_edit_snapshot)
   fi
 
   local dims=""
-  if (( code_count > 0 || bash_unknown == 1 )); then
+  if (( code_count > 0 || unknown_path == 1 )); then
     dims="bug_hunt,code_quality"
   fi
   if (( doc_count > 0 )) \
-      || { (( bash_unknown == 1 )) \
+      || { (( unknown_path == 1 )) \
            && [[ "$(read_state "review_cycle_prose_semantic")" == "1" ]]; }; then
     dims="${dims:+${dims},}prose"
   fi
-  if review_cycle_requires_design "${ui_count}" "${bash_unknown}"; then
+  if review_cycle_requires_design "${ui_count}" "${unknown_path}"; then
     dims="${dims:+${dims},}design_quality"
   fi
   if review_cycle_requires_completeness \
-      "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${bash_unknown}" "${surface_count}"; then
+      "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${unknown_path}" "${surface_count}"; then
     dims="${dims:+${dims},}completeness"
   fi
   if review_cycle_requires_traceability \
-      "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${bash_unknown}" "${surface_count}"; then
+      "${code_count}" "${doc_count}" "${ui_count}" "${unique_count}" "${unknown_path}" "${surface_count}"; then
     dims="${dims:+${dims},}traceability"
   fi
 
@@ -8910,15 +11305,165 @@ omc_enforced_terminal_contract_hint() {
   esac
 }
 
+# Return the dedicated publication channel for roles that actually have a
+# second lifecycle hook in settings.patch.json.  This is deliberately narrower
+# than omc_enforced_terminal_contract_kind(): abstraction-critic and
+# rigor-reviewer have reviewer-shaped terminal contracts, but their universal
+# SubagentStop callback is the only publisher.  Conversely, namespaced
+# third-party code-reviewers do have record-reviewer.sh hooks even though their
+# native prose contract is not forced into OMC's terminal vocabulary.
+omc_dedicated_publication_kind() {
+  case "$1" in
+    quality-planner|prometheus)
+      printf 'planner'
+      ;;
+    quality-reviewer|superpowers:code-reviewer|feature-dev:code-reviewer|editor-critic|excellence-reviewer|release-reviewer|metis|briefing-analyst|design-reviewer)
+      printf 'reviewer'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Parent-side foreground/background recovery applies to both sides of the
+# publication split: roles with an enforced terminal contract (including
+# universal-only advisory reviewers) and roles with an actual dedicated hook
+# (including third-party code reviewers whose native prose vocabulary is not
+# forced into OMC's terminal contract). Callers that need only one of those
+# narrower semantics must continue using the underlying helper directly.
+omc_completion_recovery_kind() {
+  omc_dedicated_publication_kind "$1" 2>/dev/null \
+    || omc_enforced_terminal_contract_kind "$1" 2>/dev/null
+}
+
+# Validate tolerant dispatch JSONL before any Bash `read` loop sees it. Bash
+# cannot preserve raw NUL and command substitution cannot preserve decoded NUL,
+# so authority-bearing rows must prove their field types and grammars while the
+# complete ledger is still inside jq. Unrelated non-JSON migration noise stays
+# tolerated; raw NUL anywhere is not tolerable because `read` could turn that
+# noise into a valid-looking JSON authority row.
+omc_dispatch_authority_ledger_shell_safe() (
+  local ledger="${1:-}" max_bytes="${2:-33554432}"
+  local max_rows="${3:-4096}" snapshot=""
+  [[ ! -L "${ledger}" ]] \
+    && { [[ ! -e "${ledger}" ]] || [[ -f "${ledger}" ]]; } \
+    || return 1
+  [[ -e "${ledger}" ]] || return 0
+  snapshot="$(mktemp "${ledger}.read.XXXXXX" 2>/dev/null)" || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_regular_file_snapshot \
+    "${ledger}" "${snapshot}" "${max_bytes}" || return 1
+  _omc_strict_jsonl_file_is_bounded \
+    "${snapshot}" "${max_bytes}" "${max_rows}" || return 1
+  jq -Rse '
+    def authority_row:
+      has("agent_type") or has("lifecycle_dispatch_id")
+      or has("review_dispatch_id") or has("native_agent_id")
+      or has("completion_claim_id") or has("completion_claim_ts")
+      or has("completion_claim_effects_complete")
+      or has("review_dispatch_abandoned");
+    def opt_string($key; $pattern; $max):
+      (has($key) | not) or (.[$key] | type == "string"
+        and length <= $max and test($pattern));
+    def opt_uint($key):
+      (has($key) | not) or (.[$key] | type == "number"
+        and floor == . and . >= 0 and . <= 999999999999999);
+    def opt_bool($key):
+      (has($key) | not) or (.[$key] | type == "boolean");
+    index("\u0000") == null
+    and all(split("\n")[] | select(length > 0);
+      (try fromjson catch null) as $row
+      | if (($row | type) == "object" and ($row | authority_row)) then
+          all($row | .. | strings; index("\u0000") == null)
+          and ($row | opt_string("agent_type";
+            "^[A-Za-z0-9_.:-]{1,128}$"; 128))
+          and ($row | opt_string("lifecycle_dispatch_id";
+            "^dispatch-[A-Za-z0-9._:-]{8,120}$"; 129))
+          and ($row | opt_string("review_dispatch_id";
+            "^$|^[A-Za-z0-9._:-]{1,160}$"; 160))
+          and ($row | opt_string("native_agent_id";
+            "^$|^[A-Za-z0-9._:-]{1,128}$"; 128))
+          and ($row | opt_string("completion_claim_id";
+            "^[A-Za-z0-9._:-]{1,160}$"; 160))
+          and ($row | opt_string("completion_claim_digest";
+            "^[A-Fa-f0-9]{16,128}$"; 128))
+          and ((($row | has("completion_claim_message")) | not)
+            or ($row.completion_claim_message | type == "string"
+              and length >= 1 and length <= 131072
+              and index("\u0000") == null))
+          and ($row | opt_string("ulw_enforcement_generation";
+            "^(migration|0|[1-9][0-9]{0,17})$"; 18))
+          and ($row | opt_bool("review_dispatch_abandoned"))
+          and ($row | opt_bool("completion_claim_effects_complete"))
+          and ($row | opt_uint("completion_claim_ts"))
+          and ($row | opt_uint("ts"))
+          and ($row | opt_uint("objective_cycle_id"))
+          and ($row | opt_uint("objective_prompt_ts"))
+          and ($row | opt_uint("objective_prompt_revision"))
+          and ($row | opt_uint("edit_revision"))
+          and ($row | opt_uint("code_revision"))
+          and ($row | opt_uint("doc_revision"))
+          and ($row | opt_uint("bash_revision"))
+          and ($row | opt_uint("ui_revision"))
+          and ($row | opt_uint("plan_revision"))
+          and ($row | opt_uint("review_revision"))
+          and ($row | opt_uint("review_dispatch_abandoned_ts"))
+          and ($row | opt_uint("review_dispatch_causality_version"))
+          and ($row | opt_uint("quality_contract_revision"))
+          and ($row | opt_uint("council_objective_prompt_ts"))
+          and ($row | opt_uint("council_objective_prompt_revision"))
+          and ($row | opt_uint("council_ledger_generation"))
+        else true end)
+  ' "${snapshot}" >/dev/null 2>&1 || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${ledger}" "${snapshot}" "${max_bytes}"
+)
+
+# Return the tolerant dispatch ledger's object rows from the exact bytes that
+# passed the authority schema.  The public path is never reopened for parsing,
+# and a concurrent writer invalidates the result before it crosses into Bash.
+omc_dispatch_authority_ledger_json_unlocked() (
+  local ledger="${1:-}" max_bytes="${2:-33554432}"
+  local max_rows="${3:-4096}" snapshot="" parsed=""
+  [[ ! -L "${ledger}" ]] \
+    && { [[ ! -e "${ledger}" ]] || [[ -f "${ledger}" ]]; } \
+    || return 1
+  if [[ ! -e "${ledger}" ]]; then
+    [[ ! -e "${ledger}" && ! -L "${ledger}" ]] || return 1
+    printf '[]\n'
+    return 0
+  fi
+  snapshot="$(mktemp "${ledger}.parse.XXXXXX" 2>/dev/null)" || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_regular_file_snapshot \
+    "${ledger}" "${snapshot}" "${max_bytes}" || return 1
+  omc_dispatch_authority_ledger_shell_safe \
+    "${snapshot}" "${max_bytes}" "${max_rows}" || return 1
+  parsed="$(jq -Rsc '
+    if index("\u0000") != null then
+      error("raw NUL in dispatch authority")
+    else [split("\n")[] | select(length > 0)
+      | (try fromjson catch null) | select(type == "object")] end
+  ' "${snapshot}" 2>/dev/null)" || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${ledger}" "${snapshot}" "${max_bytes}" || return 1
+  printf '%s\n' "${parsed}"
+)
+
 # Return success when a current state-changing pending row still targets the
 # generation it inspected. Non-stateful/custom rows are outside this helper's
 # contract and pass through unchanged.
 omc_row_enforcement_generation_current() {
   local row="$1" row_generation
   if [[ -n "${_OMC_ULW_CAPTURED_GENERATION+x}" ]]; then
-    row_generation="$(jq -r \
-      '.ulw_enforcement_generation // "migration"' \
-      <<<"${row}" 2>/dev/null || true)"
+    row_generation="$(jq -er '
+      select(type == "object"
+        and all(.. | strings; index("\u0000") == null))
+      | (.ulw_enforcement_generation // "migration")
+      | select(type == "string"
+          and test("^(migration|0|[1-9][0-9]{0,17})$"))
+    ' <<<"${row}" 2>/dev/null)" || return 1
     [[ "${row_generation}" == "${_OMC_ULW_CAPTURED_GENERATION}" ]] \
       || return 1
   fi
@@ -8928,7 +11473,13 @@ omc_row_enforcement_generation_current() {
 omc_pending_stateful_generation_current() {
   local row="$1" agent_type start_revision current_revision
   omc_row_enforcement_generation_current "${row}" || return 1
-  agent_type="$(jq -r '.agent_type // empty' <<<"${row}" 2>/dev/null || true)"
+  agent_type="$(jq -er '
+    select(type == "object"
+      and all(.. | strings; index("\u0000") == null))
+    | .agent_type
+    | select(type == "string"
+        and test("^[A-Za-z0-9_.:-]{1,128}$"))
+  ' <<<"${row}" 2>/dev/null)" || return 1
   case "${agent_type}" in
     quality-reviewer|superpowers:code-reviewer|feature-dev:code-reviewer)
       current_revision="$(dimension_freshness_revision "code_quality")" ;;
@@ -8949,11 +11500,535 @@ omc_pending_stateful_generation_current() {
     *)
       return 0 ;;
   esac
-  start_revision="$(jq -r '.review_revision // empty' \
-    <<<"${row}" 2>/dev/null || true)"
-  [[ "${start_revision}" =~ ^[0-9]+$ ]] || return 1
-  [[ "${current_revision}" =~ ^[0-9]+$ ]] || current_revision=0
+  start_revision="$(jq -er '
+    .review_revision
+    | select(type == "number" and floor == .
+        and . >= 0 and . <= 999999999999999)
+    | tostring
+  ' <<<"${row}" 2>/dev/null)" || return 1
+  _omc_canonical_uint_in_range \
+    "${start_revision}" 0 999999999999999 || return 1
+  if [[ -z "${current_revision}" ]]; then
+    current_revision=0
+  else
+    _omc_canonical_uint_in_range \
+      "${current_revision}" 0 999999999999999 || return 1
+  fi
   (( start_revision == current_revision ))
+}
+
+# Parse one dedicated summary-waiter ledger using the complete publisher
+# contract. A lifecycle is one-shot authority: duplicate rows are corruption,
+# even when their bytes are identical. Prints a canonical JSON array.
+omc_summary_waiter_ledger_json_unlocked() (
+  local kind="$1" waiter_file="$2" parsed row message digest actual_digest
+  local snapshot=""
+  [[ "${kind}" == "plan" || "${kind}" == "reviewer" ]] || return 1
+  [[ ! -L "${waiter_file}" ]] \
+    && { [[ ! -e "${waiter_file}" ]] || [[ -f "${waiter_file}" ]]; } \
+    || return 1
+  if [[ ! -e "${waiter_file}" ]]; then
+    [[ ! -e "${waiter_file}" && ! -L "${waiter_file}" ]] || return 1
+    printf '[]\n'
+    return 0
+  fi
+  snapshot="$(mktemp "${waiter_file}.read.XXXXXX" 2>/dev/null)" || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_regular_file_snapshot \
+    "${waiter_file}" "${snapshot}" 33554432 || return 1
+  _omc_strict_jsonl_file_is_bounded \
+    "${snapshot}" 33554432 128 || return 1
+  parsed="$(jq -Rsc --arg kind "${kind}" '
+    (if index("\u0000") != null then
+      error("raw NUL in summary waiter authority")
+    else [split("\n")[] | select(length > 0)
+      | (try fromjson catch null)] end) as $rows
+    | def waiter_valid:
+        type == "object" and .schema_version == 1
+        and all(.. | strings; index("\u0000") == null)
+        and (.created_at | type == "number" and . >= 0
+          and . <= 999999999999999 and floor == .)
+        and (.lifecycle_dispatch_id | type == "string"
+          and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+        and (.agent_type | type == "string" and length > 0
+          and length <= 128)
+        and (.native_agent_id | type == "string" and length <= 128
+          and if $kind == "plan"
+            then test("^[A-Za-z0-9._:-]{1,128}$")
+            else test("^[A-Za-z0-9._:-]*$") end)
+        and (.completion_digest | type == "string"
+          and test("^[A-Fa-f0-9]{16,128}$"))
+        and (.message | type == "string" and length > 0
+          and length <= 131072);
+      if all($rows[]; waiter_valid)
+          and (([$rows[].lifecycle_dispatch_id] | unique | length)
+            == ($rows | length))
+      then $rows
+      else error("invalid or duplicate summary waiter authority") end
+  ' "${snapshot}" 2>/dev/null)" || return 1
+
+  # The digest is the waiter's content binding, not merely an identifier with
+  # a plausible shape. Validate it before any caller projects the durable
+  # message into Bash or turns the row into replay authority.
+  while IFS= read -r row; do
+    [[ -n "${row}" ]] || continue
+    message="$(jq -er '.message' <<<"${row}" 2>/dev/null)" || return 1
+    digest="$(jq -er '.completion_digest' \
+      <<<"${row}" 2>/dev/null)" || return 1
+    actual_digest="$(_omc_token_digest "${message}" 2>/dev/null || true)"
+    [[ -n "${actual_digest}" && "${actual_digest}" == "${digest}" ]] \
+      || return 1
+  done < <(jq -c '.[]' <<<"${parsed}" 2>/dev/null)
+  _omc_regular_file_snapshot_is_current \
+    "${waiter_file}" "${snapshot}" 33554432 || return 1
+  printf '%s\n' "${parsed}"
+)
+
+# Return only producer-shaped causal completion outcomes from the shared
+# completion ledger. Notification receipts deliberately project many of the
+# same fields at top level, so consumers must not identify causal outcomes by a
+# handful of matching coordinates. Every non-notification row is validated
+# against the complete producer schema before any waiter/claim cleanup can use
+# it. A notification receipt contributes its nested outcome only when the
+# receipt has the exact producer key set and a faithful top-level projection;
+# malformed receipt-shaped history is inert here and remains fail-closed for
+# its dedicated delivery consumer. Prints a canonical JSON array.
+omc_causal_completion_outcomes_json_unlocked() (
+  local outcomes_file="${1:-}" parsed=""
+  [[ -n "${outcomes_file}" && ! -L "${outcomes_file}" ]] \
+    && { [[ ! -e "${outcomes_file}" ]] || [[ -f "${outcomes_file}" ]]; } \
+    || return 1
+  if [[ ! -e "${outcomes_file}" ]]; then
+    printf '[]\n'
+    return 0
+  fi
+  parsed="$(_omc_strict_jsonl_array_unlocked \
+    "${outcomes_file}" 67108864 16384)" || return 1
+  jq -ce '
+    def causal_outcome_keys:
+      ["ts","agent_type","status","reason","verdict",
+       "findings_count","finding_ids","objective_cycle_id",
+       "objective_prompt_ts","review_revision",
+       "ulw_enforcement_generation","review_dispatch_id",
+       "native_agent_id","lifecycle_dispatch_id","completion_digest",
+       "cleanup_journal_version","cleanup_pending_fingerprint",
+       "cleanup_lifecycle_dispatch_id","cleanup_start_fingerprint"];
+    def bounded_uint:
+      type == "number" and . >= 0 and . <= 999999999999999
+      and floor == .;
+    def causal_outcome:
+      type == "object"
+      and ((keys - causal_outcome_keys) | length == 0)
+      and (.ts | bounded_uint)
+      and (.agent_type | type == "string"
+        and test("^[A-Za-z0-9._:-]{1,128}$"))
+      and (.status | type == "string" and IN("accepted","ignored"))
+      and (.reason | type == "string" and length <= 120)
+      and (.verdict | type == "string"
+        and (IN("UNREPORTED","CLEAN","SHIP","PLAN_READY",
+                "NEEDS_CLARIFICATION","BLOCKED","REPORT_READY",
+                "INSUFFICIENT_SOURCES","RESOLVED","HYPOTHESIS",
+                "NEEDS_EVIDENCE","NEEDS_PROBLEM_STATEMENT",
+                "INSUFFICIENT_OPTIONS","DELIVERED","NEEDS_INPUT",
+                "NEEDS_RESEARCH","INCOMPLETE")
+          or test("^(FINDINGS|BLOCK)\\s*\\(\\s*[0-9]+\\s*\\)$")
+          or test("^FRAMINGS_READY\\s*\\(\\s*[3-5]\\s*\\)$")))
+      and (.findings_count | bounded_uint)
+      and (.finding_ids | type == "string"
+        and test("^(none|unstructured|[a-f0-9]{12}(,[a-f0-9]{12}){0,4})$"))
+      and (.objective_cycle_id | bounded_uint)
+      and (.objective_prompt_ts | bounded_uint)
+      and (.review_revision | bounded_uint)
+      and (.ulw_enforcement_generation | type == "string"
+        and test("^[A-Za-z0-9._:-]{1,128}$"))
+      and ((has("review_dispatch_id") | not)
+        or (.review_dispatch_id | type == "string"
+          and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+      and ((has("native_agent_id") | not)
+        or (.native_agent_id | type == "string"
+          and test("^[A-Za-z0-9._:-]{1,128}$")))
+      and ((has("lifecycle_dispatch_id") | not)
+        or (.lifecycle_dispatch_id | type == "string"
+          and test("^dispatch-[A-Za-z0-9._:-]{8,80}$")))
+      and ((has("completion_digest") | not)
+        or (.completion_digest | type == "string"
+          and test("^[A-Fa-f0-9]{16,128}$")))
+      and (if .status == "accepted" then
+          .reason == "" and (has("cleanup_journal_version") | not)
+        else
+          (.reason | length) > 0 and .verdict == "UNREPORTED"
+          and .findings_count == 0 and .finding_ids == "none"
+          and (has("completion_digest") | not)
+        end)
+      and (if has("cleanup_journal_version") then
+          .status == "ignored"
+          and (.cleanup_journal_version | IN(1,2))
+          and (.cleanup_pending_fingerprint | type == "string"
+            and test("^[A-Za-z0-9._:-]{8,80}$"))
+          and ((has("cleanup_start_fingerprint") | not)
+            or (.cleanup_start_fingerprint | type == "string"
+              and test("^[A-Za-z0-9._:-]{8,80}$")))
+          and (if .cleanup_journal_version == 2 then
+              (.cleanup_lifecycle_dispatch_id | type == "string"
+                and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+              and .lifecycle_dispatch_id == .cleanup_lifecycle_dispatch_id
+            else
+              (has("cleanup_lifecycle_dispatch_id") | not)
+              and (has("lifecycle_dispatch_id") | not)
+            end)
+        else
+          (has("cleanup_pending_fingerprint") | not)
+          and (has("cleanup_lifecycle_dispatch_id") | not)
+          and (has("cleanup_start_fingerprint") | not)
+        end);
+    def outcome_projection:
+      . as $receipt
+      | if .completion_outcome == null then
+          ([causal_outcome_keys[] as $field
+            | select($field != "ts")
+            | select($receipt.notification_kind != "task-notification"
+                or $field != "native_agent_id")
+            | select($receipt | has($field))] | length) == 0
+        else
+          .completion_outcome as $outcome
+          | ($outcome | causal_outcome)
+          and ([causal_outcome_keys[] as $field
+                | select($field != "ts")
+                | select(
+                    (($receipt | has($field)) != ($outcome | has($field)))
+                    or (($outcome | has($field))
+                      and $receipt[$field] != $outcome[$field]))]
+              | length) == 0
+          and (if $receipt.notification_kind == "task-notification"
+            then $outcome.agent_type == $receipt.notification_agent_type
+              and $outcome.native_agent_id == $receipt.native_agent_id
+            elif $receipt.notification_native_agent_id != ""
+            then ($outcome.native_agent_id // "")
+              == $receipt.notification_native_agent_id
+            else true end)
+        end;
+    def agent_receipt_keys:
+      causal_outcome_keys +
+      ["notification_receipt","notification_kind","notification_key",
+       "notification_agent_type","notification_native_agent_id",
+       "notification_review_dispatch_id","completion_outcome"];
+    def task_receipt_keys:
+      causal_outcome_keys +
+      ["notification_receipt","notification_kind","notification_key",
+       "notification_agent_type","notification_status",
+       "notification_rejected_reason","notification_rebind_id",
+       "notification_retry_exhausted",
+       "notification_current_pending_preserved","completion_outcome"];
+    def base_receipt:
+      type == "object" and .notification_receipt == true
+      and (.notification_kind | type == "string")
+      and (.notification_key | type == "string"
+        and length > 0 and length <= 768)
+      and (.notification_agent_type | type == "string"
+        and test("^[A-Za-z0-9._:-]{1,128}$"))
+      and (.ts | bounded_uint)
+      and has("completion_outcome")
+      and ((.completion_outcome == null)
+        or (.completion_outcome | type == "object"))
+      and outcome_projection;
+    def agent_receipt:
+      base_receipt
+      and ((keys - agent_receipt_keys) | length == 0)
+      and .notification_kind == "agent-posttool"
+      and (.notification_native_agent_id | type == "string"
+        and test("^[A-Za-z0-9._:-]{0,128}$"))
+      and (.notification_review_dispatch_id | type == "string"
+        and test("^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"));
+    def task_receipt:
+      base_receipt
+      and ((keys - task_receipt_keys) | length == 0)
+      and .notification_kind == "task-notification"
+      and (.native_agent_id | type == "string"
+        and test("^[A-Za-z0-9._:-]{1,128}$"))
+      and (.notification_status | type == "string"
+        and IN("completed","failed","stopped","cancelled","canceled"))
+      and (.notification_rejected_reason | type == "string"
+        and length <= 256)
+      and (.notification_rebind_id | type == "string"
+        and test("^$|^task-end-[A-Fa-f0-9]{16}$"))
+      and (.notification_retry_exhausted | type == "boolean")
+      and (.notification_current_pending_preserved | type == "boolean");
+    def notification_receipt:
+      if .notification_kind? == "agent-posttool" then agent_receipt
+      elif .notification_kind? == "task-notification" then task_receipt
+      else false end;
+    if all(.[];
+        if .notification_receipt? == true then true
+        else causal_outcome end)
+    then [.[]
+      | if .notification_receipt? == true then
+          if notification_receipt then .completion_outcome else empty end
+        else . end
+      | select(. != null)]
+    else error("invalid causal completion outcome") end
+  ' <<<"${parsed}"
+)
+
+# Validate the global one-shot claim for one foreground/background delivery
+# key. Every object naming the key counts, including malformed receipt-shaped
+# rows; exactly one complete receipt with the expected coordinates, exact
+# per-kind key set, producer-shaped nested outcome, and faithful top-level
+# projection is replay authority. Raw causal rows use that same producer
+# schema before either callback may select them. Prints {claimed,receipt} or
+# fails closed.
+omc_notification_receipt_claim_unlocked() (
+  local outcomes_file="$1" key="$2" kind="$3" agent="$4"
+  local native_id="$5" dispatch_id="${6:-}" notification_status="${7:-}"
+  local snapshot="" parsed=""
+  [[ "${kind}" == "agent-posttool" \
+      || "${kind}" == "task-notification" ]] || return 1
+  [[ -n "${key}" && ${#key} -le 768 ]] || return 1
+  [[ ! -L "${outcomes_file}" ]] \
+    && { [[ ! -e "${outcomes_file}" ]] || [[ -f "${outcomes_file}" ]]; } \
+    || return 1
+  if [[ ! -e "${outcomes_file}" ]]; then
+    [[ ! -e "${outcomes_file}" && ! -L "${outcomes_file}" ]] || return 1
+    printf '{"claimed":false,"receipt":null}\n'
+    return 0
+  fi
+  snapshot="$(mktemp "${outcomes_file}.read.XXXXXX" 2>/dev/null)" || return 1
+  trap 'rm -f "${snapshot}" 2>/dev/null || true' EXIT
+  _omc_capture_regular_file_snapshot \
+    "${outcomes_file}" "${snapshot}" 67108864 || return 1
+  _omc_strict_jsonl_file_is_bounded \
+    "${snapshot}" 67108864 16384 || return 1
+  parsed="$(jq -Rsc --arg key "${key}" --arg kind "${kind}" \
+    --arg agent "${agent}" --arg native "${native_id}" \
+    --arg dispatch "${dispatch_id}" --arg status "${notification_status}" '
+      (if index("\u0000") != null then
+        error("raw NUL in completion outcome authority")
+      else [split("\n")[] | select(length > 0)
+        | (try fromjson catch null)] end) as $rows
+      | def causal_outcome_keys:
+          ["ts","agent_type","status","reason","verdict",
+           "findings_count","finding_ids","objective_cycle_id",
+           "objective_prompt_ts","review_revision",
+           "ulw_enforcement_generation","review_dispatch_id",
+           "native_agent_id","lifecycle_dispatch_id","completion_digest",
+           "cleanup_journal_version","cleanup_pending_fingerprint",
+           "cleanup_lifecycle_dispatch_id","cleanup_start_fingerprint"];
+        def notification_shaped:
+          type == "object"
+          and (has("notification_receipt")
+            or has("notification_kind")
+            or has("notification_key")
+            or has("completion_outcome"));
+        # This is the complete object emitted by
+        # record-subagent-summary.sh::_record_completion_outcome. Do not let a
+        # plausible status/native fragment enter the foreground/background
+        # causal FIFO: once projected on a receipt, those fields also become
+        # publication-recovery authority.
+        def causal_outcome:
+          type == "object"
+          and ((keys - causal_outcome_keys) | length == 0)
+          and (.ts | type == "number" and . >= 0 and floor == .)
+          and (.agent_type | type == "string"
+            and test("^[A-Za-z0-9._:-]{1,128}$"))
+          and (.status | type == "string" and IN("accepted","ignored"))
+          and (.reason | type == "string" and length <= 120)
+          and (.verdict | type == "string"
+            and (IN("UNREPORTED","CLEAN","SHIP","PLAN_READY",
+                    "NEEDS_CLARIFICATION","BLOCKED","REPORT_READY",
+                    "INSUFFICIENT_SOURCES","RESOLVED","HYPOTHESIS",
+                    "NEEDS_EVIDENCE","NEEDS_PROBLEM_STATEMENT",
+                    "INSUFFICIENT_OPTIONS","DELIVERED","NEEDS_INPUT",
+                    "NEEDS_RESEARCH","INCOMPLETE")
+              or test("^(FINDINGS|BLOCK)\\s*\\(\\s*[0-9]+\\s*\\)$")
+              or test("^FRAMINGS_READY\\s*\\(\\s*[3-5]\\s*\\)$")))
+          and (.findings_count | type == "number" and . >= 0 and floor == .)
+          and (.finding_ids | type == "string"
+            and test("^(none|unstructured|[a-f0-9]{12}(,[a-f0-9]{12}){0,4})$"))
+          and (.objective_cycle_id | type == "number"
+            and . >= 0 and floor == .)
+          and (.objective_prompt_ts | type == "number"
+            and . >= 0 and floor == .)
+          and (.review_revision | type == "number"
+            and . >= 0 and floor == .)
+          and (.ulw_enforcement_generation | type == "string"
+            and test("^[A-Za-z0-9._:-]{1,128}$"))
+          and ((has("review_dispatch_id") | not)
+            or (.review_dispatch_id | type == "string"
+              and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+          and ((has("native_agent_id") | not)
+            or (.native_agent_id | type == "string"
+              and test("^[A-Za-z0-9._:-]{1,128}$")))
+          and ((has("lifecycle_dispatch_id") | not)
+            or (.lifecycle_dispatch_id | type == "string"
+              and test("^dispatch-[A-Za-z0-9._:-]{8,80}$")))
+          and ((has("completion_digest") | not)
+            or (.completion_digest | type == "string"
+              and test("^[A-Fa-f0-9]{16,128}$")))
+          and (if .status == "accepted" then
+              .reason == "" and (has("cleanup_journal_version") | not)
+            else
+              (.reason | length) > 0
+              and .verdict == "UNREPORTED"
+              and .findings_count == 0 and .finding_ids == "none"
+              and (has("completion_digest") | not)
+            end)
+          and (if has("cleanup_journal_version") then
+              (.status == "ignored")
+              and (.cleanup_journal_version | IN(1,2))
+              and (.cleanup_pending_fingerprint | type == "string"
+                and test("^[A-Za-z0-9._:-]{8,80}$"))
+              and ((has("cleanup_start_fingerprint") | not)
+                or (.cleanup_start_fingerprint | type == "string"
+                  and test("^[A-Za-z0-9._:-]{8,80}$")))
+              and (if .cleanup_journal_version == 2 then
+                  (.cleanup_lifecycle_dispatch_id | type == "string"
+                    and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+                  and .lifecycle_dispatch_id
+                    == .cleanup_lifecycle_dispatch_id
+                else
+                  (has("cleanup_lifecycle_dispatch_id") | not)
+                  and (has("lifecycle_dispatch_id") | not)
+                end)
+            else
+              (has("cleanup_pending_fingerprint") | not)
+              and (has("cleanup_lifecycle_dispatch_id") | not)
+              and (has("cleanup_start_fingerprint") | not)
+            end);
+        # Receipt writers copy the complete causal outcome to the top level,
+        # then replace only `ts` with receipt time. Require exact presence and
+        # value equality for every other producer field. A null receipt must
+        # not smuggle projected causal fields; task receipts retain only their
+        # independently required native-agent coordinate.
+        def outcome_projection:
+          . as $receipt
+          | if .completion_outcome == null then
+              ([causal_outcome_keys[] as $field
+                | select($field != "ts")
+                | select($receipt.notification_kind != "task-notification"
+                    or $field != "native_agent_id")
+                | select($receipt | has($field))] | length) == 0
+            else
+              .completion_outcome as $outcome
+              | ($outcome | causal_outcome)
+              and ([causal_outcome_keys[] as $field
+                    | select($field != "ts")
+                    | select(
+                        (($receipt | has($field))
+                          != ($outcome | has($field)))
+                        or (($outcome | has($field))
+                          and $receipt[$field] != $outcome[$field]))]
+                  | length) == 0
+              and (if $receipt.notification_kind == "task-notification"
+                then $outcome.agent_type
+                       == $receipt.notification_agent_type
+                  and $outcome.native_agent_id == $receipt.native_agent_id
+                elif $receipt.notification_native_agent_id != ""
+                then ($outcome.native_agent_id // "")
+                       == $receipt.notification_native_agent_id
+                else true end)
+            end;
+        def agent_receipt_keys:
+          causal_outcome_keys +
+          ["notification_receipt","notification_kind","notification_key",
+           "notification_agent_type","notification_native_agent_id",
+           "notification_review_dispatch_id","completion_outcome"];
+        def task_receipt_keys:
+          causal_outcome_keys +
+          ["notification_receipt","notification_kind","notification_key",
+           "notification_agent_type","notification_status",
+           "notification_rejected_reason","notification_rebind_id",
+           "notification_retry_exhausted",
+           "notification_current_pending_preserved","completion_outcome"];
+        def base_receipt:
+          type == "object"
+          and .notification_receipt == true
+          and (.notification_kind | type == "string")
+          and (.notification_key | type == "string"
+            and length > 0 and length <= 768)
+          and (.notification_agent_type | type == "string"
+            and test("^[A-Za-z0-9._:-]{1,128}$"))
+          and (.ts | type == "number" and floor == . and . >= 0)
+          and has("completion_outcome")
+          and ((.completion_outcome == null)
+            or (.completion_outcome | type == "object"))
+          and outcome_projection;
+        def agent_receipt:
+          base_receipt
+          and ((keys - agent_receipt_keys) | length == 0)
+          and .notification_kind == "agent-posttool"
+          and (.notification_native_agent_id | type == "string"
+            and test("^[A-Za-z0-9._:-]{0,128}$"))
+          and (.notification_review_dispatch_id | type == "string"
+            and test("^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"));
+        def task_receipt:
+          base_receipt
+          and ((keys - task_receipt_keys) | length == 0)
+          and .notification_kind == "task-notification"
+          and (.native_agent_id | type == "string"
+            and test("^[A-Za-z0-9._:-]{1,128}$"))
+          and (.notification_status | type == "string"
+            and IN("completed","failed","stopped","cancelled","canceled"))
+          and (.notification_rejected_reason | type == "string"
+            and length <= 256)
+          and (.notification_rebind_id | type == "string"
+            and test("^$|^task-end-[A-Fa-f0-9]{16}$"))
+          and (.notification_retry_exhausted | type == "boolean")
+          and (.notification_current_pending_preserved | type == "boolean");
+        if all($rows[]; type == "object") | not then
+          error("invalid completion outcome ledger")
+        elif all($rows[];
+            (notification_shaped or causal_outcome)) | not then
+          error("invalid causal completion outcome")
+        else
+          [$rows[] | select((.notification_key // null) == $key)] as $claims
+          | if ($claims | length) == 0 then
+              {claimed:false,receipt:null}
+            elif ($claims | length) != 1 then
+              error("duplicate notification key authority")
+            else $claims[0] as $receipt
+              | if $kind == "agent-posttool" then
+                  if ($receipt | agent_receipt)
+                      and $receipt.notification_agent_type == $agent
+                      and $receipt.notification_native_agent_id == $native
+                      and $receipt.notification_review_dispatch_id == $dispatch
+                  then {claimed:true,receipt:$receipt}
+                  else error("invalid Agent PostTool receipt authority") end
+                else
+                  if ($receipt | task_receipt)
+                      and $receipt.notification_agent_type == $agent
+                      and $receipt.native_agent_id == $native
+                      and $receipt.notification_status == $status
+                  then {claimed:true,receipt:$receipt}
+                  else error("invalid task-notification receipt authority") end
+                end
+            end
+        end
+    ' "${snapshot}" 2>/dev/null)" || return 1
+  _omc_regular_file_snapshot_is_current \
+    "${outcomes_file}" "${snapshot}" 67108864 || return 1
+  printf '%s\n' "${parsed}"
+)
+
+# Foreground/background delivery receipts are bounded history, except while a
+# summary-first planner/reviewer waiter still names their lifecycle. In that
+# state the projected accepted outcome is the only durable proof that the
+# universal summary publisher finished before its exact pending/start rows
+# disappeared. Return those live lifecycle IDs so receipt writers can prune
+# unrelated history without discarding recovery authority. Callers already own
+# the session lock; malformed waiter authority fails closed.
+omc_completion_receipt_protected_lifecycle_ids_unlocked() {
+  local waiter_file parsed kind ids='[]'
+  for kind in plan reviewer; do
+    waiter_file="$(session_file "${kind}_summary_waiters.jsonl")"
+    parsed="$(omc_summary_waiter_ledger_json_unlocked \
+      "${kind}" "${waiter_file}")" || return 1
+    ids="$(jq -cn --argjson prior "${ids}" --argjson next "${parsed}" '
+      ($prior + [$next[].lifecycle_dispatch_id]) as $combined
+      | if ($combined | unique | length) == ($combined | length)
+        then $combined
+        else error("duplicate cross-ledger waiter authority") end
+    ' 2>/dev/null)" || return 1
+  done
+  printf '%s\n' "${ids}"
 }
 
 # Cleanup-only ignored completion outcomes are the durable recovery journal for
@@ -8964,40 +12039,85 @@ omc_pending_stateful_generation_current() {
 # consuming the journal. Because the outcome remains until this function
 # returns, a second consumer can converge after interruption at any boundary.
 omc_reconcile_ignored_completion_cleanup_unlocked() {
-  local outcome="$1" status reason version artifact file backup temp line
+  local outcome="$1" validated projection
+  local status reason version artifact file backup temp line
   local pending_fingerprint start_fingerprint target_fingerprint line_fingerprint
   local lifecycle_dispatch_id line_lifecycle_dispatch_id matches changed
   local pending_file starts_file pending_backup="" starts_backup=""
   local pending_temp="" starts_temp="" pending_changed=0 starts_changed=0
-  status="$(jq -r '.status // empty' <<<"${outcome}" 2>/dev/null || true)"
-  reason="$(jq -r '.reason // empty' <<<"${outcome}" 2>/dev/null || true)"
-  [[ "${status}" == "ignored" ]] || return 0
-  case "${reason}" in
-    enforcement-interval-closed|abandoned-dispatch-completion|prior-objective-completion|invalid-review-start-snapshot|review-generation-changed|plan-generation-changed|terminal-contract-retry-exhausted)
-      ;;
-    *) return 0 ;;
-  esac
-  version="$(jq -r '.cleanup_journal_version // 0' \
-    <<<"${outcome}" 2>/dev/null || true)"
-  [[ "${version}" =~ ^(1|2)$ ]] || return 0
-  pending_fingerprint="$(jq -r '.cleanup_pending_fingerprint // empty' \
-    <<<"${outcome}" 2>/dev/null || true)"
-  start_fingerprint="$(jq -r '.cleanup_start_fingerprint // empty' \
-    <<<"${outcome}" 2>/dev/null || true)"
-  [[ "${pending_fingerprint}" =~ ^[A-Za-z0-9._:-]{8,80}$ ]] \
-    || return 1
-  if [[ -n "${start_fingerprint}" \
-      && ! "${start_fingerprint}" =~ ^[A-Za-z0-9._:-]{8,80}$ ]]; then
-    return 1
-  fi
-  lifecycle_dispatch_id="$(jq -r \
-    '.cleanup_lifecycle_dispatch_id // empty' \
-    <<<"${outcome}" 2>/dev/null || true)"
-  if [[ "${version}" == "2" \
-      && ! "${lifecycle_dispatch_id}" \
-        =~ ^dispatch-[A-Za-z0-9._:-]{8,80}$ ]]; then
-    return 1
-  fi
+  jq -e 'type == "object"' <<<"${outcome}" >/dev/null 2>&1 || return 1
+  jq -e 'has("cleanup_journal_version")' \
+    <<<"${outcome}" >/dev/null 2>&1 || return 0
+  validated="$(jq -ce '
+    def required_keys:
+      ["ts","agent_type","status","reason","verdict","findings_count",
+       "finding_ids","objective_cycle_id","objective_prompt_ts",
+       "review_revision","ulw_enforcement_generation",
+       "cleanup_journal_version","cleanup_pending_fingerprint"];
+    def allowed_keys:
+      required_keys
+      + ["review_dispatch_id","native_agent_id","lifecycle_dispatch_id",
+         "cleanup_lifecycle_dispatch_id","cleanup_start_fingerprint"];
+    select(
+      type == "object"
+      and all(.. | strings; index("\u0000") == null)
+      and ((keys - allowed_keys) | length) == 0
+      and ((required_keys - keys) | length) == 0
+      and (.ts | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .)
+      and (.agent_type | type == "string"
+        and test("^[A-Za-z0-9._:-]{1,128}$"))
+      and .status == "ignored"
+      and (.reason | type == "string"
+        and IN("enforcement-interval-closed",
+               "abandoned-dispatch-completion",
+               "prior-objective-completion",
+               "invalid-review-start-snapshot",
+               "review-generation-changed",
+               "plan-generation-changed",
+               "terminal-contract-retry-exhausted"))
+      and .verdict == "UNREPORTED"
+      and .findings_count == 0
+      and .finding_ids == "none"
+      and (.objective_cycle_id | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .)
+      and (.objective_prompt_ts | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .)
+      and (.review_revision | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .)
+      and (.ulw_enforcement_generation | type == "string"
+        and test("^[A-Za-z0-9._:-]{1,128}$"))
+      and ((has("review_dispatch_id") | not)
+        or (.review_dispatch_id | type == "string"
+          and test("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+      and ((has("native_agent_id") | not)
+        or (.native_agent_id | type == "string"
+          and test("^[A-Za-z0-9._:-]{1,128}$")))
+      and (.cleanup_journal_version | IN(1,2))
+      and (.cleanup_pending_fingerprint | type == "string"
+        and test("^[A-Za-z0-9._:-]{8,80}$"))
+      and ((has("cleanup_start_fingerprint") | not)
+        or (.cleanup_start_fingerprint | type == "string"
+          and test("^[A-Za-z0-9._:-]{8,80}$")))
+      and (if .cleanup_journal_version == 2 then
+          (.cleanup_lifecycle_dispatch_id | type == "string"
+            and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+          and (.lifecycle_dispatch_id | type == "string"
+            and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+          and .lifecycle_dispatch_id == .cleanup_lifecycle_dispatch_id
+        else
+          (has("cleanup_lifecycle_dispatch_id") | not)
+          and (has("lifecycle_dispatch_id") | not)
+        end))
+  ' <<<"${outcome}" 2>/dev/null)" || return 1
+  [[ -n "${validated}" ]] || return 1
+  projection="$(jq -r '
+    [.status,.reason,.cleanup_journal_version,
+     .cleanup_pending_fingerprint,(.cleanup_start_fingerprint // ""),
+     (.cleanup_lifecycle_dispatch_id // "")] | @tsv
+  ' <<<"${validated}" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r status reason version pending_fingerprint \
+    start_fingerprint lifecycle_dispatch_id <<<"${projection}" || return 1
   pending_file="$(session_file "pending_agents.jsonl")"
   starts_file="$(session_file "agent_dispatch_starts.jsonl")"
 
@@ -9017,8 +12137,16 @@ omc_reconcile_ignored_completion_cleanup_unlocked() {
         rm -f "${pending_temp}" "${pending_backup}" \
           "${starts_temp}" "${starts_backup}" 2>/dev/null || true
         return 1
-      }
+    }
     [[ -s "${file}" ]] || continue
+    # Exact fingerprints/lifecycle IDs below can delete causal rows. Validate
+    # the complete source before Bash `read` can discard a raw NUL and turn a
+    # corrupt line into the journal's deletion target.
+    if ! omc_dispatch_authority_ledger_shell_safe "${file}"; then
+      rm -f "${pending_temp}" "${pending_backup}" \
+        "${starts_temp}" "${starts_backup}" 2>/dev/null || true
+      return 1
+    fi
     backup="$(mktemp "${file}.reconcile.rollback.XXXXXX")" || {
       rm -f "${pending_temp}" "${pending_backup}" \
         "${starts_temp}" "${starts_backup}" 2>/dev/null || true
@@ -9040,8 +12168,13 @@ omc_reconcile_ignored_completion_cleanup_unlocked() {
       line_fingerprint="$(_omc_token_digest "${line}" 2>/dev/null || true)"
       line_lifecycle_dispatch_id=""
       if [[ "${version}" == "2" ]]; then
-        if ! jq -e 'type == "object"' \
-            <<<"${line}" >/dev/null 2>&1; then
+        if ! jq -e '
+            type == "object"
+            and all(.. | strings; index("\u0000") == null)
+            and ((has("lifecycle_dispatch_id") | not)
+              or (.lifecycle_dispatch_id | type == "string"
+                and test("^dispatch-[A-Za-z0-9._:-]{8,80}$")))
+          ' <<<"${line}" >/dev/null 2>&1; then
           rm -f "${temp}" "${backup}" "${pending_temp}" \
             "${pending_backup}" "${starts_temp}" "${starts_backup}" \
             2>/dev/null || true
@@ -9113,17 +12246,21 @@ omc_reconcile_ignored_completion_cleanup_unlocked() {
 # durable intent. Outcomes remain one-shot for their foreground/background
 # consumer; this function only converges their exact fingerprinted artifacts.
 omc_reconcile_all_ignored_completion_cleanups_unlocked() {
-  local outcomes_file line
+  local outcomes_file outcomes line
   outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
   [[ ! -L "${outcomes_file}" ]] \
     && { [[ ! -e "${outcomes_file}" ]] \
       || [[ -f "${outcomes_file}" ]]; } || return 1
   [[ -s "${outcomes_file}" ]] || return 0
+  # Normalize raw outcomes and strictly validated delivery receipts through
+  # the same producer-schema parser used by publication recovery. A
+  # coordinate-shaped fragment must never retire causal rows.
+  outcomes="$(omc_causal_completion_outcomes_json_unlocked \
+    "${outcomes_file}")" || return 1
   while IFS= read -r line || [[ -n "${line}" ]]; do
     [[ -n "${line}" ]] || continue
-    jq -e 'type == "object"' <<<"${line}" >/dev/null 2>&1 || continue
     omc_reconcile_ignored_completion_cleanup_unlocked "${line}" || return 1
-  done <"${outcomes_file}"
+  done < <(jq -c '.[]' <<<"${outcomes}")
 }
 
 # Stop payloads on current Claude Code expose a level snapshot of background
@@ -9231,17 +12368,21 @@ record_agent_metric() {
     local now_ts
     now_ts="$(now_epoch)"
 
-    # Initialize if missing
-    if [[ ! -f "${metrics_file}" ]]; then
+    # Initialize only a genuinely absent path; never follow or overwrite a
+    # substituted cross-session metrics node.
+    if [[ -e "${metrics_file}" || -L "${metrics_file}" ]]; then
+      [[ -f "${metrics_file}" && ! -L "${metrics_file}" ]] || return 1
+    else
       printf '{}' > "${metrics_file}"
     fi
-
     local tmp_file
     if ! tmp_file="$(mktemp "${metrics_file}.XXXXXX")"; then
       log_anomaly "record_agent_metric" "mktemp failed for ${metrics_file}" 2>/dev/null || true
       return 1
     fi
-    if jq --arg a "${agent_name}" \
+    if _omc_transform_shell_safe_json_object \
+       "${metrics_file}" 16777216 "${tmp_file}" \
+       --arg a "${agent_name}" \
        --arg verdict "${verdict}" \
        --argjson ts "${now_ts}" \
        --arg pid "$(_omc_project_id 2>/dev/null || echo "unknown")" \
@@ -9264,7 +12405,7 @@ record_agent_metric() {
              last_used_ts:$ts,
              last_project_id:$pid
            }
-       ' "${metrics_file}" > "${tmp_file}" 2>/dev/null; then
+       '; then
       if ! mv "${tmp_file}" "${metrics_file}" 2>/dev/null; then
         rm -f "${tmp_file}"
         return 1
@@ -9284,21 +12425,26 @@ record_agent_metric() {
 read_agent_metric() {
   local agent_name="$1"
   [[ -f "${_AGENT_METRICS_FILE}" ]] || return 0
-  jq -c --arg a "${agent_name}" '(.agents[$a] // .[$a]) // empty' "${_AGENT_METRICS_FILE}" 2>/dev/null || true
+  _omc_project_shell_safe_json_object \
+    "${_AGENT_METRICS_FILE}" 16777216 -c --arg a "${agent_name}" \
+    '(.agents[$a] // .[$a]) // empty' 2>/dev/null || true
 }
 
 # get_all_agent_metrics: Return canonical v3 metrics JSON, normalizing a
 # legacy flat file in memory without mutating it.
 get_all_agent_metrics() {
+  local projected=""
   [[ -f "${_AGENT_METRICS_FILE}" ]] || { printf '{}'; return; }
-  jq -c '
+  projected="$(_omc_project_shell_safe_json_object \
+    "${_AGENT_METRICS_FILE}" 16777216 -c '
     . as $root
     | ($root | with_entries(select(.key | startswith("_")))) as $meta
     | (($root | with_entries(
           select((.key | startswith("_") | not) and .key != "agents" and (.value | type) == "object")
         )) + ($root.agents // {})) as $agents
     | $meta + {_schema_version:3, agents:$agents}
-  ' "${_AGENT_METRICS_FILE}" 2>/dev/null || printf '{}'
+  ' 2>/dev/null || true)"
+  [[ -n "${projected}" ]] && printf '%s\n' "${projected}" || printf '{}'
 }
 
 # --- end agent metrics ---
@@ -9356,16 +12502,22 @@ with_resume_lock() {
 _defect_patterns_validated=0
 
 _ensure_valid_defect_patterns() {
-  [[ "${_defect_patterns_validated}" -eq 1 ]] && return 0
-  _defect_patterns_validated=1
-  [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
-  if ! jq empty "${_DEFECT_PATTERNS_FILE}" 2>/dev/null; then
+  if [[ ! -e "${_DEFECT_PATTERNS_FILE}" \
+      && ! -L "${_DEFECT_PATTERNS_FILE}" ]]; then
+    _defect_patterns_validated=1
+    return 0
+  fi
+  [[ -f "${_DEFECT_PATTERNS_FILE}" \
+      && ! -L "${_DEFECT_PATTERNS_FILE}" ]] || return 1
+  if ! _omc_state_envelope_is_shell_safe \
+      "${_DEFECT_PATTERNS_FILE}" 16777216; then
     local archive
     archive="${_DEFECT_PATTERNS_FILE}.corrupt.$(date +%s)"
     cp "${_DEFECT_PATTERNS_FILE}" "${archive}" 2>/dev/null || true
     printf '{}' > "${_DEFECT_PATTERNS_FILE}"
     log_anomaly "common" "defect-patterns.json was corrupt, archived to ${archive}, reset to {}"
   fi
+  _defect_patterns_validated=1
 }
 
 # classify_finding_category: Classify a finding description into a defect category.
@@ -9515,15 +12667,22 @@ record_defect_pattern() {
       mkdir -p "$(dirname "${pf}")"
       printf '{}' > "${pf}"
     else
-      _ensure_valid_defect_patterns
+      _ensure_valid_defect_patterns || return 1
     fi
 
     local current
     current="$(jq -c --arg c "${category}" '.[$c] // {count:0, last_seen_ts:0, examples:[]}' "${pf}" 2>/dev/null || printf '{"count":0,"last_seen_ts":0,"examples":[]}')"
 
     local count
-    count="$(jq -r '.count' <<<"${current}")"
-    count=$((count + 1))
+    count="$(jq -er '
+      .count
+      | select(type == "number" and floor == . and . >= 0
+          and . <= 999999999999998)
+      | tostring
+    ' <<<"${current}" 2>/dev/null || printf '0')"
+    _omc_canonical_uint_in_range \
+      "${count}" 0 999999999999998 || count=0
+    count=$((10#${count} + 1))
 
     local tmp_file
     tmp_file="$(mktemp "${pf}.XXXXXX")"
@@ -9570,7 +12729,7 @@ record_defect_pattern() {
 get_top_defect_patterns() {
   local n="${1:-3}"
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
-  _ensure_valid_defect_patterns
+  _ensure_valid_defect_patterns || return 0
   local cutoff_ts
   cutoff_ts="$(( $(now_epoch) - 90 * 86400 ))"
   jq -r --argjson n "${n}" --argjson cutoff "${cutoff_ts}" '
@@ -9592,7 +12751,7 @@ get_top_defect_patterns() {
 get_defect_watch_list() {
   local n="${1:-3}"
   [[ -f "${_DEFECT_PATTERNS_FILE}" ]] || return 0
-  _ensure_valid_defect_patterns
+  _ensure_valid_defect_patterns || return 0
   local list
   list="$(jq -r --argjson n "${n}" --argjson cutoff "$(( $(now_epoch) - 90 * 86400 ))" '
     to_entries |
@@ -9687,7 +12846,15 @@ record_gate_skip() {
     _bump_skip_count() {
       local current
       current="$(read_state "skip_count")"
-      current="${current:-0}"
+      # State is durable but not inherently trusted: an interrupted/manual
+      # edit can leave an arithmetic expression here, and Bash recursively
+      # evaluates variable contents used by `$((...))`. Admit only a bounded
+      # canonical decimal before performing the increment. The upper bound
+      # reserves one value so `current + 1` remains inside the state schema.
+      if ! _omc_canonical_uint_in_range \
+          "${current}" 0 999999999999999998; then
+        current=0
+      fi
       write_state "skip_count" "$((current + 1))"
     }
     with_state_lock _bump_skip_count
@@ -9703,7 +12870,7 @@ record_gate_skip() {
 # at the per-event grain instead of the per-session aggregate that
 # session_summary.jsonl captures. Schema:
 #
-#   {ts, gate, event, block_count, block_cap, details}
+#   {ts, event_id, gate, event, block_count, block_cap, details}
 #
 # Where `event` is one of:
 #   - "block"                  — gate emitted a decision:block JSON
@@ -9713,6 +12880,13 @@ record_gate_skip() {
 # Reserved-for-future tokens that no caller emits today (emitter sites
 # would extend this list): "release" (gate cap reached, fall-through),
 # "skip" (/ulw-skip honored bypass).
+#
+# `event_id` is a durable `ge:<session_id>:<monotonic-sequence>` identity.
+# The sequence is allocated under the same session mutex as the bounded ledger
+# append, so copied resume histories retain their original identities while new
+# target-session events cannot collide with them. Legacy rows without an ID
+# remain readable, but safety-critical consumers must not infer uniqueness from
+# same-second payload equality.
 #
 # `block_count` and `block_cap` are conditional — present only on `block`
 # events; status-change events omit them by design (no block to count).
@@ -9742,6 +12916,56 @@ record_gate_skip() {
 # session dir → silent no-op. The gate's primary path (block-or-release)
 # must not depend on telemetry succeeding.
 
+_record_gate_event_with_sequence_locked() {
+  local base_row="${1:-}" cap="${2:-}" current="" next=""
+  local event_id="" row="" target="" ledger_max=0
+  validate_session_id "${SESSION_ID:-}" 2>/dev/null || return 1
+  current="$(read_state "gate_event_seq")"
+  target="$(session_file "gate_events.jsonl")"
+  # The state counter and bounded ledger are two durable observations of the
+  # allocation frontier. A syntactically valid counter can still be stale
+  # after manual recovery or a restored state snapshot, so always take their
+  # maximum. IDs are allocated before append; a counter ahead of the ledger is
+  # an intentional gap, while a ledger ahead of the counter must never be
+  # reused.
+  if ! _omc_canonical_uint_in_range \
+      "${current}" 0 999999999999999; then
+    current=0
+  fi
+  if [[ -e "${target}" || -L "${target}" ]]; then
+    [[ -f "${target}" && ! -L "${target}" ]] || return 1
+    _omc_strict_jsonl_file_is_bounded \
+      "${target}" 4194304 1048576 || return 1
+    ledger_max="$(jq -Rr --arg prefix "ge:${SESSION_ID}:" '
+        fromjson?
+        | .event_id?
+        | select(type == "string")
+        | select(startswith($prefix))
+        | .[($prefix | length):]
+        | select(test("^[1-9][0-9]{0,14}$"))
+        | tonumber
+      ' "${target}" 2>/dev/null | jq -s 'max // 0' 2>/dev/null)" \
+      || return 1
+    _omc_canonical_uint_in_range \
+      "${ledger_max}" 0 999999999999999 || return 1
+    if (( ledger_max > current )); then
+      current="${ledger_max}"
+    fi
+  fi
+  # The terminal exact integer remains a durable exhausted frontier. Never
+  # reset it to zero or allocate an out-of-envelope ID.
+  (( current < 999999999999999 )) || return 1
+  next=$((current + 1))
+  event_id="ge:${SESSION_ID}:${next}"
+  row="$(jq -c --arg event_id "${event_id}" \
+    '. + {event_id:$event_id}' <<<"${base_row}" 2>/dev/null)" || return 1
+  [[ -n "${row}" ]] || return 1
+  # Allocate before publication. A failed append may leave a harmless sequence
+  # gap, but can never reuse an identity for a later event.
+  write_state "gate_event_seq" "${next}" || return 1
+  _append_limited_state_locked "${target}" "${row}" "${cap}"
+}
+
 record_gate_event() {
   local gate="${1:-}"
   local event="${2:-}"
@@ -9752,10 +12976,10 @@ record_gate_event() {
 
   # Remaining args are key=value pairs. Recognized top-level keys:
   # block_count, block_cap. Everything else lands under .details.
-  # Values that parse as non-negative integers are passed via --argjson
-  # so they round-trip as JSON numbers, not strings — keeping numeric
-  # aggregations like `map(.details.pending_count) | add` honest. Any
-  # value that does not match `^[0-9]+$` falls back to --arg (string).
+  # Canonical non-negative integers inside the shared exact-number envelope
+  # are passed via --argjson so they round-trip as JSON numbers, not strings —
+  # keeping aggregations like `map(.details.pending_count) | add` honest. Any
+  # other value falls back to a bounded --arg string.
   #
   # v1.31.0 Wave 4 (sre-lens F-8): cap string values at 1KB before
   # passing to jq. PIPE_BUF on Linux is 4096 bytes; on macOS 512.
@@ -9767,7 +12991,12 @@ record_gate_event() {
   # human-readable error excerpt) while keeping rows under the
   # platform's PIPE_BUF floor.
   local _details_value_cap="${OMC_GATE_EVENT_DETAILS_VALUE_CAP:-1024}"
-  [[ "${_details_value_cap}" =~ ^[0-9]+$ ]] || _details_value_cap=1024
+  # The cap participates in substring and arithmetic expressions below. Keep
+  # an environment override useful, but never feed a leading-zero, oversized,
+  # or expression-shaped value to Bash arithmetic. The upper bound matches the
+  # other public count/config bounds and is comfortably inside signed shells.
+  _omc_canonical_uint_in_range \
+    "${_details_value_cap}" 1 2147483647 || _details_value_cap=1024
 
   # v1.34.0 (Bug B follow-on): tighter cap for `state-corruption`
   # gate events. The recovery markers `archive_path` and
@@ -9794,7 +13023,13 @@ record_gate_event() {
       block_count) block_count="${value}" ;;
       block_cap)   block_cap="${value}"   ;;
       *)
-        if [[ "${value}" =~ ^[0-9]+$ ]]; then
+        # jq stores all numbers as IEEE-754 doubles on the supported builds.
+        # Only pass canonical integers in the exact, shared 15-digit envelope
+        # through --argjson. Numeric-looking values outside that envelope are
+        # retained as bounded strings instead of making jq reject the complete
+        # details object and silently erasing sibling context.
+        if _omc_canonical_uint_in_range \
+            "${value}" 0 999999999999999; then
           details_args+=(--argjson "${key}" "${value}")
         else
           # Cap fat string values; numeric byte-count via ${#var} is
@@ -9819,10 +13054,25 @@ record_gate_event() {
     # $ARGS.named reduction. Bash 3.2-compatible. ARGS.named merges both
     # --arg (string) and --argjson (parsed JSON) keys.
     local jq_filter='$ARGS.named'
-    details_json="$(jq -nc "${details_args[@]}" "${jq_filter}" 2>/dev/null || printf '{}')"
+    details_json="$(jq -nc "${details_args[@]}" \
+      "${jq_filter}" 2>/dev/null)" || return 0
+    [[ -n "${details_json}" ]] || return 0
   fi
 
-  local row
+  local row event_ts block_count_json="null" block_cap_json="null"
+  event_ts="$(now_epoch 2>/dev/null || true)"
+  _omc_canonical_uint_in_range \
+    "${event_ts}" 1 999999999999999 || return 0
+  if [[ -n "${block_count}" ]]; then
+    _omc_canonical_uint_in_range \
+      "${block_count}" 0 999999999999999 || return 0
+    block_count_json="${block_count}"
+  fi
+  if [[ -n "${block_cap}" ]]; then
+    _omc_canonical_uint_in_range \
+      "${block_cap}" 0 999999999999999 || return 0
+    block_cap_json="${block_cap}"
+  fi
   # v1.36.x W2 F-010: schema_version field (`_v: 1`) on every row so
   # future schema migrations can read both old + new shapes side-by-side.
   # Convention shared with session_summary (`_v` at lib/timing.sh:1077),
@@ -9833,22 +13083,24 @@ record_gate_event() {
   # comment's former present-tense claim) would walk every cross-session
   # ledger and apply per-version transforms; `_v` is the discriminator.
   row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
+    --argjson ts "${event_ts}" \
     --arg host "$(omc_host)" \
     --arg gate "${gate}" \
     --arg event "${event}" \
-    --arg block_count "${block_count}" \
-    --arg block_cap "${block_cap}" \
+    --argjson block_count "${block_count_json}" \
+    --argjson block_cap "${block_cap_json}" \
     --argjson details "${details_json}" \
     '{_v:1,ts:$ts,host:$host,gate:$gate,event:$event} +
-     (if $block_count != "" then {block_count:($block_count|tonumber? // 0)} else {} end) +
-     (if $block_cap != "" then {block_cap:($block_cap|tonumber? // 0)} else {} end) +
+     (if $block_count != null then {block_count:$block_count} else {} end) +
+     (if $block_cap != null then {block_cap:$block_cap} else {} end) +
      {details:$details}' 2>/dev/null)"
 
   [[ -z "${row}" ]] && return 0
 
   local cap="${OMC_GATE_EVENTS_PER_SESSION_MAX:-500}"
-  append_limited_state "gate_events.jsonl" "${row}" "${cap}" 2>/dev/null || true
+  _omc_canonical_uint_in_range "${cap}" 1 2147483647 || cap=500
+  with_state_lock _record_gate_event_with_sequence_locked \
+    "${row}" "${cap}" 2>/dev/null || true
 
   # v1.47 (data-lens #1): generic block→reprompt pairing stamp. The
   # directional-FP instrument (block followed by a near-immediate user
@@ -9870,7 +13122,7 @@ record_gate_event() {
           # batch removes the window entirely). write_state_batch is
           # re-entrant under a held lock, same as write_state.
           write_state_batch \
-            "last_any_gate_block_ts" "$(now_epoch)" \
+            "last_any_gate_block_ts" "${event_ts}" \
             "last_any_gate_block_name" "${gate}" 2>/dev/null || true
           ;;
       esac
@@ -9886,7 +13138,10 @@ record_gate_event() {
 # Allows filtering cross-session metrics by project without storing full paths.
 
 _omc_project_id() {
-  printf '%s' "${PWD}" | shasum -a 256 2>/dev/null | cut -c1-12
+  local digest=""
+  digest="$(_verification_sha256_text "${PWD}" 2>/dev/null)" || return 1
+  [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%.12s' "${digest}"
 }
 
 # _omc_project_key
@@ -9918,7 +13173,11 @@ _omc_project_key() {
         norm="$(printf '%s' "${norm}" | sed -E 's|^[^@]+@||; s|:|/|')"
       fi
       norm="$(printf '%s' "${norm}" | sed -E 's|\.git/?$||; s|/+$||' | tr '[:upper:]' '[:lower:]')"
-      printf '%s' "${norm}" | shasum -a 256 2>/dev/null | cut -c1-12
+      local digest=""
+      digest="$(_verification_sha256_text "${norm}" 2>/dev/null)" \
+        || return 1
+      [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || return 1
+      printf '%.12s' "${digest}"
       return 0
     fi
   fi
@@ -10521,12 +13780,25 @@ current_session_risk_tier() {
   fi
 
   # Escalator 1: reviewer findings carry severity high|critical.
-  local _csrt_findings_file
+  local _csrt_findings_file _csrt_severity_signal=""
   _csrt_findings_file="$(session_file "findings.json")"
   if [[ -f "${_csrt_findings_file}" ]]; then
-    if jq -e '(.findings // []) | any(.severity == "high" or .severity == "critical")' "${_csrt_findings_file}" >/dev/null 2>&1; then
-      escalation_reasons="${escalation_reasons:+${escalation_reasons},}high_severity_findings"
-    fi
+    _csrt_severity_signal="$(_omc_project_shell_safe_json_object \
+      "${_csrt_findings_file}" 4194304 -er '
+        (.findings // [])
+        | select(type == "array")
+        | any(.severity == "high" or .severity == "critical")
+        | tostring
+      ' 2>/dev/null || true)"
+    case "${_csrt_severity_signal}" in
+      true)
+        escalation_reasons="${escalation_reasons:+${escalation_reasons},}high_severity_findings"
+        ;;
+      false) ;;
+      *)
+        escalation_reasons="${escalation_reasons:+${escalation_reasons},}invalid_findings_authority"
+        ;;
+    esac
   fi
 
   # Escalator 2: edited files touch sensitive surfaces (auth, payment,
@@ -10536,7 +13808,9 @@ current_session_risk_tier() {
   local _csrt_edited_log
   _csrt_edited_log="$(session_file "edited_files.log")"
   if [[ -f "${_csrt_edited_log}" ]]; then
-    if grep -Eiq '(^|/)(auth|authn|authz|payment|billing|stripe|migration|migrations|schema|secret|credential|keystore|crypto)([./_-]|$)' "${_csrt_edited_log}" 2>/dev/null; then
+    if ! _sweep_edited_files_valid "${_csrt_edited_log}"; then
+      escalation_reasons="${escalation_reasons:+${escalation_reasons},}invalid_edited_files_authority"
+    elif grep -Eiq '(^|/)(auth|authn|authz|payment|billing|stripe|migration|migrations|schema|secret|credential|keystore|crypto)([./_-]|$)' "${_csrt_edited_log}" 2>/dev/null; then
       escalation_reasons="${escalation_reasons:+${escalation_reasons},}sensitive_surface_edited"
     fi
   fi
@@ -10561,10 +13835,19 @@ current_session_risk_tier() {
   _csrt_discovered_scope="$(session_file "discovered_scope.jsonl")"
   if [[ -f "${_csrt_discovered_scope}" ]]; then
     local _csrt_pending_count
-    _csrt_pending_count="$(jq -s '[.[] | select((.status // "pending") == "pending")] | length' "${_csrt_discovered_scope}" 2>/dev/null || echo 0)"
-    [[ "${_csrt_pending_count}" =~ ^[0-9]+$ ]] || _csrt_pending_count=0
-    if [[ "${_csrt_pending_count}" -ge 3 ]]; then
-      escalation_reasons="${escalation_reasons:+${escalation_reasons},}pending_discovered_scope"
+    if ! _omc_strict_jsonl_file_is_bounded \
+        "${_csrt_discovered_scope}" 8388608 4096 \
+        || ! jq -e -s '
+          all(.[]; type == "object"
+            and all(.. | strings; index("\u0000") == null))
+        ' "${_csrt_discovered_scope}" >/dev/null 2>&1; then
+      escalation_reasons="${escalation_reasons:+${escalation_reasons},}invalid_discovered_scope_authority"
+    else
+      _csrt_pending_count="$(jq -s '[.[] | select((.status // "pending") == "pending")] | length' "${_csrt_discovered_scope}" 2>/dev/null || echo 0)"
+      [[ "${_csrt_pending_count}" =~ ^[0-9]+$ ]] || _csrt_pending_count=0
+      if [[ "${_csrt_pending_count}" -ge 3 ]]; then
+        escalation_reasons="${escalation_reasons:+${escalation_reasons},}pending_discovered_scope"
+      fi
     fi
   fi
 
@@ -11781,6 +15064,8 @@ append_discovered_scope() {
   _do_append_scope() {
     local file existing_ids
     file="$(session_file "discovered_scope.jsonl")"
+    [[ ! -L "${file}" ]] \
+      && { [[ ! -e "${file}" ]] || [[ -f "${file}" ]]; } || return 1
 
     # Invariant: existing_ids is always "|id1|id2|..." with both leading
     # and trailing pipes, so the substring check `*"|${id}|"*` matches.
@@ -11798,7 +15083,7 @@ append_discovered_scope() {
       row_id="$(jq -r '.id // empty' <<<"${row}" 2>/dev/null || true)"
       [[ -z "${row_id}" ]] && continue
       if [[ "${existing_ids}" != *"|${row_id}|"* ]]; then
-        printf '%s\n' "${row}" >> "${file}"
+        printf '%s\n' "${row}" >> "${file}" || return 1
         existing_ids="${existing_ids}${row_id}|"
       fi
     done <<<"${rows}"
@@ -11807,17 +15092,20 @@ append_discovered_scope() {
       local total
       total="$(wc -l < "${file}" 2>/dev/null | tr -d '[:space:]' || echo 0)"
       total="${total:-0}"
+      [[ "${total}" =~ ^[0-9]+$ ]] || return 1
       if [[ "${total}" -gt 200 ]]; then
         local trimmed
-        trimmed="$(mktemp "${file}.XXXXXX")"
-        tail -n 200 "${file}" > "${trimmed}" 2>/dev/null \
-          && mv "${trimmed}" "${file}" 2>/dev/null \
-          || rm -f "${trimmed}"
+        trimmed="$(mktemp "${file}.XXXXXX")" || return 1
+        if ! tail -n 200 "${file}" > "${trimmed}" 2>/dev/null \
+            || ! mv "${trimmed}" "${file}" 2>/dev/null; then
+          rm -f "${trimmed}" 2>/dev/null || true
+          return 1
+        fi
       fi
     fi
   }
 
-  with_scope_lock _do_append_scope || true
+  with_scope_lock _do_append_scope
 }
 
 # read_scope_count_by_status <status>
@@ -12226,9 +15514,13 @@ closeout_seal_is_required() {
       IFS= read -r _co_unknown || true
       IFS= read -r _co_surfaces || true
     } < <(review_cycle_edit_snapshot)
+    [[ "${_co_code:-0}" =~ ^[0-9]+$ ]] || _co_code=0
+    [[ "${_co_docs:-0}" =~ ^[0-9]+$ ]] || _co_docs=0
+    [[ "${_co_ui:-0}" =~ ^[0-9]+$ ]] || _co_ui=0
     [[ "${_co_unique:-0}" =~ ^[0-9]+$ ]] || _co_unique=0
     [[ "${_co_unknown:-0}" =~ ^[0-9]+$ ]] || _co_unknown=0
-    (( _co_unique > 0 || _co_unknown > 0 )) || return 1
+    (( _co_code > 0 || _co_docs > 0 || _co_ui > 0 \
+       || _co_unique > 0 || _co_unknown > 0 )) || return 1
   fi
   return 0
 }
@@ -12660,56 +15952,102 @@ closeout_record_provisional() {
 
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_claim_finalization_unlocked() {
-  local token previous status claimed_ts now
+  local claim_id="$1" token previous status claimed_ts now
+  [[ "${claim_id}" =~ ^finalizer-[a-f0-9]{48}$ ]] || return 1
   omc_enforcement_generation_matches_capture || return 1
   token="$(read_state "review_cycle_id" 2>/dev/null || true):$(read_state "prompt_revision" 2>/dev/null || true):$(read_state "session_outcome" 2>/dev/null || true)"
   previous="$(read_state "closeout_finalized_token" 2>/dev/null || true)"
   status="$(read_state "closeout_finalization_status" 2>/dev/null || true)"
   claimed_ts="$(read_state "closeout_finalization_claimed_ts" 2>/dev/null || true)"
-  now="$(now_epoch)"
-  [[ "${claimed_ts}" =~ ^[0-9]+$ ]] || claimed_ts=0
+  now="$(now_epoch)" || return 1
+  _omc_canonical_uint_in_range "${now}" 1 999999999999999 || return 1
   [[ -n "${token}" ]] || return 1
   if [[ "${token}" == "${previous}" && "${status}" == "complete" ]]; then
     return 1
   fi
-  if [[ "${token}" == "${previous}" && "${status}" == "claimed" ]] \
-      && (( now - claimed_ts < 120 )); then
-    return 1
+  if [[ "${token}" == "${previous}" && "${status}" == "claimed" ]]; then
+    # A malformed current-token lease is ambiguous durable authority. Never
+    # coerce it to zero and admit a concurrent replacement finalizer.
+    _omc_canonical_uint_in_range \
+      "${claimed_ts}" 1 999999999999999 || return 1
+    # A future timestamp can mean clock rollback or corrupted authority; it is
+    # never evidence that the existing claimant expired.
+    if (( now < claimed_ts || now - claimed_ts < 120 )); then
+      return 1
+    fi
   fi
   _write_state_batch_unlocked \
     "closeout_finalized_token" "${token}" \
     "closeout_finalization_status" "claimed" \
-    "closeout_finalization_claimed_ts" "${now}"
+    "closeout_finalization_claimed_ts" "${now}" \
+    "closeout_finalization_claim_id" "${claim_id}" || return 1
+  printf '%s\n' "${claim_id}"
 }
 
 closeout_claim_finalization() {
-  with_state_lock _closeout_claim_finalization_unlocked
+  local entropy claim_id PATH="${_OMC_OBSERVER_SAFE_PATH}"
+  [[ -r /dev/urandom ]] || return 1
+  entropy="$(od -An -N24 -tx1 /dev/urandom 2>/dev/null \
+    | tr -d '[:space:]')" || return 1
+  [[ "${entropy}" =~ ^[a-f0-9]{48}$ ]] || return 1
+  claim_id="finalizer-${entropy}"
+  with_state_lock _closeout_claim_finalization_unlocked "${claim_id}"
+}
+
+# Validate one accepted-release finalizer lease while the caller already owns
+# the session mutex.  Accepted child publishers call this immediately before
+# each durable effect, so a claimant that expired or was replaced cannot
+# publish canary/archive evidence for the replacement claimant's generation.
+_closeout_finalization_claim_is_current_unlocked() {
+  local claim_id="${1:-}" token claimed_ts now
+  [[ "${claim_id}" =~ ^finalizer-[a-f0-9]{48}$ ]] || return 1
+  omc_enforcement_generation_matches_capture || return 1
+  token="$(read_state "review_cycle_id" 2>/dev/null || true):$(read_state "prompt_revision" 2>/dev/null || true):$(read_state "session_outcome" 2>/dev/null || true)"
+  [[ "$(read_state "closeout_finalization_status" 2>/dev/null || true)" \
+      == "claimed" \
+      && "$(read_state "closeout_finalized_token" 2>/dev/null || true)" \
+        == "${token}" \
+      && "$(read_state "closeout_finalization_claim_id" 2>/dev/null || true)" \
+        == "${claim_id}" ]] || return 1
+  claimed_ts="$(read_state "closeout_finalization_claimed_ts" \
+    2>/dev/null || true)"
+  now="$(now_epoch)" || return 1
+  _omc_canonical_uint_in_range \
+    "${claimed_ts}" 1 999999999999999 || return 1
+  _omc_canonical_uint_in_range "${now}" 1 999999999999999 || return 1
+  (( now >= claimed_ts && now - claimed_ts < 120 ))
 }
 
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_complete_finalization_unlocked() {
-  omc_enforcement_generation_matches_capture || return 1
-  [[ "$(read_state "closeout_finalization_status" 2>/dev/null || true)" == "claimed" ]] || return 1
+  local claim_id="$1" completed_ts=""
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
+  completed_ts="$(now_epoch)" || return 1
+  _omc_canonical_uint_in_range \
+    "${completed_ts}" 1 999999999999999 || return 1
   _write_state_batch_unlocked \
     "closeout_finalization_status" "complete" \
-    "closeout_finalized_ts" "$(now_epoch)"
+    "closeout_finalized_ts" "${completed_ts}"
 }
 
 closeout_complete_finalization() {
-  with_state_lock _closeout_complete_finalization_unlocked
+  local claim_id="${1:-}"
+  with_state_lock _closeout_complete_finalization_unlocked "${claim_id}"
 }
 
 # shellcheck disable=SC2329 # invoked indirectly through with_state_lock
 _closeout_abandon_finalization_unlocked() {
-  omc_enforcement_generation_matches_capture || return 1
-  [[ "$(read_state "closeout_finalization_status" 2>/dev/null || true)" == "claimed" ]] || return 0
+  local claim_id="$1"
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
   _write_state_batch_unlocked \
     "closeout_finalization_status" "" \
-    "closeout_finalization_claimed_ts" ""
+    "closeout_finalization_claimed_ts" "" \
+    "closeout_finalization_claim_id" ""
 }
 
 closeout_abandon_finalization() {
-  with_state_lock _closeout_abandon_finalization_unlocked
+  local claim_id="${1:-}"
+  with_state_lock _closeout_abandon_finalization_unlocked "${claim_id}"
 }
 
 # --- Session discovery for manually-invoked scripts ---
@@ -12726,7 +16064,8 @@ closeout_abandon_finalization() {
 # Returns the session ID (basename of newest dir) or empty string if no
 # session directory exists. Never throws; STATE_ROOT-missing is silent.
 
-discover_latest_session() {
+_discover_latest_session() {
+  local allow_cross_project_fallback="${1:-0}"
   local d sid transferred_to newest_match="" newest_any=""
   [[ -d "${STATE_ROOT}" ]] || { printf ''; return 0; }
   shopt -s nullglob
@@ -12755,10 +16094,10 @@ discover_latest_session() {
     # the newest write in the tree, so mtime-only discovery otherwise routes
     # status and mutating manual helpers back into dormant state.
     [[ "${sid}" == "_watchdog" ]] && continue
-    transferred_to="$(jq -r '
-      (.resume_transferred_to // "")
-      | if type == "string" then . else "" end
-    ' "${d}/${STATE_JSON}" 2>/dev/null || true)"
+    _omc_state_envelope_is_shell_safe "${d}/${STATE_JSON}" || continue
+    transferred_to="$(_omc_read_valid_session_id_field \
+      "${d}/${STATE_JSON}" "resume_transferred_to" \
+      2>/dev/null || true)"
     if [[ -n "${transferred_to}" ]] \
         && [[ "${transferred_to}" != "${sid}" ]] \
         && validate_session_id "${transferred_to}" 2>/dev/null; then
@@ -12767,7 +16106,8 @@ discover_latest_session() {
     [[ -z "${newest_any}" || "${d}" -nt "${newest_any}" ]] && newest_any="${d}"
     if [[ -n "${current_cwd}" ]]; then
       local stored_cwd
-      stored_cwd="$(jq -r '.cwd // empty' "${d}/${STATE_JSON}" 2>/dev/null || true)"
+      stored_cwd="$(_omc_read_nul_free_string_field \
+        "${d}/${STATE_JSON}" "cwd" 2>/dev/null || true)"
       if [[ -n "${stored_cwd}" && "${stored_cwd}" == "${current_cwd}" ]]; then
         [[ -z "${newest_match}" || "${d}" -nt "${newest_match}" ]] && newest_match="${d}"
       fi
@@ -12775,14 +16115,1386 @@ discover_latest_session() {
   done
   if [[ -n "${newest_match}" ]]; then
     basename "${newest_match}"
-  elif [[ -n "${newest_any}" ]]; then
+  elif [[ "${allow_cross_project_fallback}" == "1" \
+      && -n "${newest_any}" ]]; then
     basename "${newest_any}"
   else
     printf ''
   fi
 }
 
+# Read-only status/reporting commands retain the legacy newest-session
+# fallback because they do not grant mutation authority. Callers that may
+# change session state must use discover_current_project_session instead: a
+# missing cwd match is ambiguity, not permission to mutate another project.
+discover_latest_session() {
+  _discover_latest_session 1
+}
+
+discover_current_project_session() {
+  _discover_latest_session 0
+}
+
 # --- end session discovery ---
+
+# True when Agent admission left an armed whole-file rollback snapshot, or the
+# exact reset died after quarantining any live lifecycle authority but before
+# committing inactive state. Neither shape can be replayed automatically after
+# later hooks may have advanced covered artifacts. Their only safe convergence
+# path is the exact managed /ulw-off reset, which taints live identities before
+# retiring the quarantine. Any retained direct dispatch node is authoritative:
+# even a death before `.ready` can make the platform launch the Agent after the
+# failed hook. A reset transaction with no staged authority is inert.
+omc_read_enforcement_generation_marker() {
+  local marker="${1:-}" raw="" byte_count=""
+  [[ -f "${marker}" && ! -L "${marker}" ]] || return 1
+  byte_count="$(LC_ALL=C wc -c <"${marker}" 2>/dev/null)" \
+    || return 1
+  byte_count="${byte_count//[[:space:]]/}"
+  [[ "${byte_count}" =~ ^[0-9]+$ \
+      && "${byte_count}" -ge 2 && "${byte_count}" -le 20 ]] || return 1
+  # Bash variables cannot retain NUL bytes and command substitution removes
+  # trailing newlines. Parse the bounded token, then compare the canonical
+  # reconstruction byte-for-byte with the source. That final cmp rejects NUL,
+  # CR, whitespace, alternate numeric spellings, and extra/missing newlines.
+  raw="$(cat "${marker}" 2>/dev/null)" || return 1
+  [[ "${raw}" =~ ^(0|[1-9][0-9]{0,17}|migration)$ ]] || return 1
+  printf '%s\n' "${raw}" \
+    | cmp -s - "${marker}" 2>/dev/null || return 1
+  printf '%s' "${raw}"
+}
+
+omc_interrupted_dispatch_transaction_present() {
+  local sid="${1:-}" session_dir txn staged journals staged_name
+  local staged_reset_present authority generation txn_generation tmp_generation
+  local state_tuple state_file
+  validate_session_id "${sid}" 2>/dev/null || return 1
+  session_dir="${STATE_ROOT}/${sid}"
+  for txn in "${session_dir}/.dispatch-txn."* \
+             "${session_dir}/.native-bind-txn."*; do
+    [[ -e "${txn}" || -L "${txn}" ]] || continue
+    # Directory creation is the first durable admission/binding intent.
+    # `.ready` marks a complete dispatch rollback snapshot, but a process death
+    # before it (or anywhere in native-ID binding) can still leave platform work
+    # whose causal ledgers are only partly published. Every retained active
+    # prefix therefore fences ordinary hooks until the exact managed reset.
+    return 0
+  done
+
+  # Exact /ulw-off quarantines dispatch journals, fixed publisher WALs, pending
+  # rows, and other transient authority by rename before committing inactive
+  # state. If that process dies in the middle, those bytes are no longer at
+  # their live prefixes but are not safe to ignore. A successful reset is
+  # distinguished by inactive state; after later reactivation, its incremented
+  # enforcement generation also keeps a stale committed quarantine inert.
+  state_file="${session_dir}/${STATE_JSON}"
+  for txn in "${session_dir}/.deactivate-txn."*; do
+    [[ -e "${txn}" || -L "${txn}" ]] || continue
+    [[ -d "${txn}" && ! -L "${txn}" ]] || return 0
+    journals="${txn}/journals"
+    staged_reset_present=0
+    if [[ -e "${journals}" || -L "${journals}" ]]; then
+      [[ -d "${journals}" && ! -L "${journals}" ]] || return 0
+      for staged in "${journals}/"* "${journals}"/.[!.]* \
+                    "${journals}"/..?*; do
+        [[ -e "${staged}" || -L "${staged}" ]] || continue
+        staged_reset_present=1
+        break
+      done
+    fi
+    if (( staged_reset_present == 0 )); then
+      for staged in "${txn}/"* "${txn}"/.[!.]* "${txn}"/..?*; do
+        [[ -e "${staged}" || -L "${staged}" ]] || continue
+        staged_name="${staged##*/}"
+        case "${staged_name}" in
+          journals|.enforcement-generation|.enforcement-generation.tmp)
+            continue
+            ;;
+        esac
+        # Every other node is either staged lifecycle authority or malformed
+        # transaction content. Ordinary hooks fence both; exact /ulw-off may
+        # conservatively retire either shape under its reset transaction.
+        staged_reset_present=1
+        break
+      done
+    fi
+    (( staged_reset_present == 1 )) || continue
+
+    # This predicate intentionally runs before ordinary state recovery in
+    # compact/resume/router entrypoints. A malformed state envelope therefore
+    # cannot be interpreted as inactive authority: decoded NUL would be lost
+    # by command substitution, while wrong scalar types can be coerced by
+    # `tostring` into apparently canonical control fields. Preserve the
+    # interrupted fence until the exact reset repairs either shape.
+    # Validate the generation before @tsv crosses into Bash. Command
+    # substitution drops NUL bytes, so a later shell regex could otherwise
+    # mistake an escaped JSON value such as "2\u0000" for canonical "2".
+    state_tuple="$(_omc_project_shell_safe_json_object \
+      "${state_file}" 16777216 -er '
+      select((.workflow_mode // "")
+          | type == "string" and IN("", "ultrawork"))
+      | select((.ulw_enforcement_active // "")
+          | type == "string" and IN("", "0", "1"))
+      | select((.ulw_enforcement_generation // "migration")
+          | type == "string")
+      | select((.session_outcome // "") | type == "string")
+      | (.ulw_enforcement_active // "") as $active
+      | (.ulw_enforcement_generation // "migration") as $generation
+      | select($generation == "migration"
+          or ($generation | test("^(0|[1-9][0-9]{0,17})$")))
+      | (if (.workflow_mode // "") == "ultrawork" then
+           if $active == "1" then "on"
+           elif $active == "0" then "off"
+           elif (.session_outcome // "") == "" then "on"
+           else "off" end
+         elif $active == "0" then "off"
+         elif (.workflow_mode // "") == ""
+             and (.session_outcome // "") == "" then "unknown"
+         else "off" end) as $authority
+      | [$authority, $generation]
+      | @tsv
+    ' 2>/dev/null || true)"
+    [[ -n "${state_tuple}" ]] || return 0
+    IFS=$'\t' read -r authority generation <<<"${state_tuple}"
+    txn_generation=""
+    tmp_generation=""
+    if [[ -e "${txn}/.enforcement-generation.tmp" \
+        || -L "${txn}/.enforcement-generation.tmp" ]]; then
+      tmp_generation="$(omc_read_enforcement_generation_marker \
+        "${txn}/.enforcement-generation.tmp" 2>/dev/null || true)"
+      [[ -n "${tmp_generation}" ]] || return 0
+    fi
+    if [[ -e "${txn}/.enforcement-generation" \
+        || -L "${txn}/.enforcement-generation" ]]; then
+      txn_generation="$(omc_read_enforcement_generation_marker \
+        "${txn}/.enforcement-generation" 2>/dev/null || true)"
+      [[ -n "${txn_generation}" ]] || return 0
+    else
+      # Staged authority without the final generation marker is an interrupted
+      # or malformed reset, even when provisional state already says off.
+      return 0
+    fi
+    if [[ -n "${tmp_generation}" \
+        && "${tmp_generation}" != "${txn_generation}" ]]; then
+      return 0
+    fi
+    if [[ "${authority}" == "off" ]]; then
+      continue
+    fi
+    if [[ "${authority}" == "unknown" \
+        && ! -f "${session_dir}/.ulw_active" ]]; then
+      return 0
+    fi
+    if [[ "${generation}" =~ ^(0|[1-9][0-9]{0,17}|migration)$ \
+        && "${txn_generation}" =~ ^(0|[1-9][0-9]{0,17}|migration)$ \
+        && "${generation}" != "${txn_generation}" ]]; then
+      continue
+    fi
+    return 0
+  done
+  return 1
+}
+
+# True when an outer state-lock user must run the publication recovery barrier.
+# A waiter alone is a legitimate summary-first rendezvous; only an exact
+# lifecycle/agent/native/digest receipt pair is replayable and therefore fences
+# newer mutation. Malformed paired ledgers fail closed through the recovery
+# entrypoint instead of being treated as absent.
+_omc_publication_recovery_portfolio_signature() (
+  local session_dir="${1:-}" path="" identity="" size="" digest=""
+  local snapshot="" max_file_bytes=67108864
+  [[ ! -L "${session_dir}" ]] || return 1
+  if [[ ! -e "${session_dir}" ]]; then
+    printf 'absent\n%.0s' {1..8}
+    return 0
+  fi
+  [[ -d "${session_dir}" ]] || return 1
+  for path in \
+      "${session_dir}/pending_agents.jsonl" \
+      "${session_dir}/plan_summary_waiters.jsonl" \
+      "${session_dir}/plan_publication_outcomes.jsonl" \
+      "${session_dir}/reviewer_summary_waiters.jsonl" \
+      "${session_dir}/reviewer_publication_outcomes.jsonl" \
+      "${session_dir}/agent_completion_outcomes.jsonl" \
+      "${session_dir}/.plan-txn.active" \
+      "${session_dir}/.reviewer-transaction.wal"; do
+    if [[ -L "${path}" ]]; then
+      printf 'symlink\n'
+    elif [[ ! -e "${path}" ]]; then
+      printf 'absent\n'
+    elif [[ -f "${path}" ]]; then
+      snapshot="$(mktemp "${path}.portfolio.XXXXXX" 2>/dev/null)" \
+        || return 1
+      if ! _omc_capture_regular_file_snapshot \
+          "${path}" "${snapshot}" "${max_file_bytes}"; then
+        rm -f "${snapshot}" 2>/dev/null || true
+        return 1
+      fi
+      size="$(_sweep_file_size "${snapshot}" 2>/dev/null || true)"
+      digest="$(_sweep_file_digest "${snapshot}" 2>/dev/null || true)"
+      if [[ ! "${size}" =~ ^[0-9]+$ || -z "${digest}" ]] \
+          || ! _omc_regular_file_snapshot_is_current \
+            "${path}" "${snapshot}" "${max_file_bytes}"; then
+        rm -f "${snapshot}" 2>/dev/null || true
+        return 1
+      fi
+      rm -f "${snapshot}" 2>/dev/null || return 1
+      snapshot=""
+      printf 'regular:%s:%s\n' "${size}" "${digest}"
+    elif [[ -d "${path}" ]]; then
+      identity="$(_sweep_file_identity "${path}" 2>/dev/null || true)"
+      [[ -n "${identity}" ]] || return 1
+      printf 'directory:%s\n' "${identity}"
+    else
+      printf 'special\n'
+    fi
+  done
+)
+
+omc_publication_recovery_needed() {
+  local sid="${1:-}" session_dir plan_wal reviewer_wal
+  local waiters receipts pending parent_outcomes
+  local waiters_json receipts_json pending_json parent_outcomes_json
+  local _omc_publication_kind now cutoff owner_claim dedicated_claim
+  local rebind_claim
+  local notification_native notification_identity='{}' notification_row=""
+  local notification_message="" notification_digest="" notification_actual_digest=""
+  local claim_tuple_row="" claim_tuple_message="" claim_tuple_digest=""
+  local claim_tuple_actual_digest=""
+  local owner_matches owner_is_dedicated=0 owner_is_rebind=0
+  local current_objective_ts current_prompt_revision current_cycle_id
+  local current_enforcement_generation
+  local portfolio_before="" portfolio_after=""
+  local portfolio_stable_under_lock=0
+  validate_session_id "${sid}" 2>/dev/null || return 1
+  session_dir="${STATE_ROOT}/${sid}"
+  plan_wal="${session_dir}/.plan-txn.active"
+  reviewer_wal="${session_dir}/.reviewer-transaction.wal"
+  pending="${session_dir}/pending_agents.jsonl"
+  parent_outcomes="${session_dir}/agent_completion_outcomes.jsonl"
+  if declare -F _omc_state_lock_reentry_valid >/dev/null 2>&1 \
+      && _omc_state_lock_reentry_valid; then
+    portfolio_stable_under_lock=1
+  else
+    portfolio_before="$(_omc_publication_recovery_portfolio_signature \
+      "${session_dir}" 2>/dev/null || true)"
+    [[ -n "${portfolio_before}" ]] || return 0
+  fi
+  # Every fresh incomplete universal completion claim freezes state mutation,
+  # not only planner/reviewer rendezvous rows. Ordinary specialists and the
+  # dedicated-reviewer-first hook order have no waiter yet, but their summary,
+  # Council, scope, and uncertainty effects are still being published across
+  # multiple state locks. Only the process-local exact claim owner may pass.
+  # Once the 120-second lease expires, an exact digest-bound replay may take
+  # over, but the row remains fenced until that replay has settled it. Time
+  # alone is never permission for a new prompt to rotate the objective.
+  if [[ -e "${pending}" || -L "${pending}" ]]; then
+    [[ -f "${pending}" && ! -L "${pending}" ]] || return 0
+    # Tolerated legacy noise is inert, but a raw NUL can be normalized by
+    # fromjson into a different numeric authority row. Validate the complete
+    # ledger while it is still raw; malformed authority keeps the fence set.
+    pending_json="$(omc_dispatch_authority_ledger_json_unlocked \
+      "${pending}")" || return 0
+    # pending_agents.jsonl has historically preserved unrelated malformed
+    # noise while exact valid rows continue to settle. A non-JSON line cannot
+    # itself be publication authority, so ignore it for this claim scan rather
+    # than turning harmless inspection and exact-row cleanup into a permanent
+    # global recovery freeze. Fixed WAL, waiter, and receipt ledgers remain
+    # strict because every byte there is transaction authority.
+    # Claim publication is an atomic row rewrite. Any non-abandoned row that
+    # carries part of that tuple but lacks its bounded identity, timestamp, or
+    # boolean phase is ambiguous durable authority, not ignorable legacy noise.
+    # Reject NUL while the message is still a jq string: jq -r followed by
+    # command substitution would silently normalize those bytes away in Bash.
+    if jq -e -n --argjson pending "${pending_json}" '
+      any($pending[];
+        (.review_dispatch_abandoned // false) != true
+        and (has("completion_claim_id")
+          or has("completion_claim_ts")
+          or has("completion_claim_effects_complete")
+          or has("completion_claim_digest")
+          or has("completion_claim_message"))
+        and ((((.completion_claim_id // null) | type) != "string")
+          or ((.completion_claim_id // "") | length) == 0
+          or ((.completion_claim_id // "") | length) > 256
+          or ((.completion_claim_id // "")
+            | test("^[A-Za-z0-9._:-]+$") | not)
+          or (((.completion_claim_ts // null) | type) != "number")
+          or ((.completion_claim_ts // 0) | floor)
+            != (.completion_claim_ts // 0)
+          or (.completion_claim_ts // -1) < 0
+          or (.completion_claim_ts // 0) > 999999999999999
+          or (has("completion_claim_effects_complete") | not)
+          or ((.completion_claim_effects_complete | type) != "boolean")
+          or (((.completion_claim_digest // null) | type) != "string")
+          or ((.completion_claim_digest // "")
+            | test("^[A-Fa-f0-9]{16,128}$") | not)
+          or (((.completion_claim_message // null) | type) != "string")
+          or ((.completion_claim_message // "") | length) == 0
+          or ((.completion_claim_message // "") | length) > 131072
+          or ((.completion_claim_message // "")
+            | index("\u0000")) != null))
+    ' >/dev/null 2>&1; then
+      return 0
+    fi
+    # Schema-valid digest text is still not proof that the persisted replay
+    # message is the one the claimant sealed. Stop WAIT may skip only a tuple
+    # whose content hashes back to its durable digest.
+    while IFS= read -r claim_tuple_row; do
+      [[ -n "${claim_tuple_row}" ]] || continue
+      claim_tuple_message="$(jq -r '.completion_claim_message' \
+        <<<"${claim_tuple_row}" 2>/dev/null || true)"
+      claim_tuple_digest="$(jq -r '.completion_claim_digest' \
+        <<<"${claim_tuple_row}" 2>/dev/null || true)"
+      claim_tuple_actual_digest="$(_omc_token_digest \
+        "${claim_tuple_message}" 2>/dev/null || true)"
+      [[ -n "${claim_tuple_actual_digest}" \
+          && "${claim_tuple_actual_digest}" == "${claim_tuple_digest}" ]] \
+        || return 0
+    done < <(jq -c '.[] | select(
+      (.review_dispatch_abandoned // false) != true
+      and (has("completion_claim_id")
+        or has("completion_claim_ts")
+        or has("completion_claim_effects_complete")
+        or has("completion_claim_digest")
+        or has("completion_claim_message"))
+      and ((.completion_claim_message // "") | type) == "string"
+      and ((.completion_claim_message // "")
+        | index("\u0000")) == null)' \
+      <<<"${pending_json}" 2>/dev/null)
+    now="$(now_epoch)"
+    # These values cross Bash-arithmetic and jq-number boundaries. Canonical
+    # 15-digit integers remain exact in jq and cannot wrap the signed shell
+    # arithmetic used for the completion-claim lease cutoff.
+    _omc_canonical_uint_in_range \
+      "${now}" 1 999999999999999 || return 0
+    cutoff=$((now - 120))
+    # A future-dated claim is ambiguous after clock rollback and cannot be
+    # treated as an ordinary fresh publisher, especially on the narrow Stop
+    # WAIT path that intentionally skips only genuinely current claims.
+    if jq -e -n --argjson pending "${pending_json}" \
+        --argjson now "${now}" '
+      any($pending[];
+        (.review_dispatch_abandoned // false) != true
+        and ((.completion_claim_id // "") | type) == "string"
+        and ((.completion_claim_id // "") | length) > 0
+        and (.completion_claim_ts > $now))
+    ' >/dev/null 2>&1; then
+      return 0
+    fi
+    owner_claim="${OMC_PUBLICATION_RECOVERY_CLAIM_ID:-}"
+    dedicated_claim="${OMC_PUBLICATION_DEDICATED_CLAIM_ID:-}"
+    rebind_claim="${OMC_PUBLICATION_REBIND_CLAIM_ID:-}"
+    notification_native="${OMC_PUBLICATION_TASK_NOTIFICATION_NATIVE_ID:-}"
+    if [[ -n "${OMC_PUBLICATION_AGENT_POSTTOOL_NATIVE_ID:-}" ]]; then
+      if [[ -n "${notification_native}" \
+          && "${notification_native}" \
+            != "${OMC_PUBLICATION_AGENT_POSTTOOL_NATIVE_ID}" ]]; then
+        return 0
+      fi
+      notification_native="${OMC_PUBLICATION_AGENT_POSTTOOL_NATIVE_ID}"
+    fi
+    if [[ -n "${owner_claim}" && -n "${dedicated_claim}" \
+        && "${owner_claim}" != "${dedicated_claim}" ]]; then
+      return 0
+    fi
+    if [[ -z "${owner_claim}" && -n "${dedicated_claim}" ]]; then
+      owner_claim="${dedicated_claim}"
+      owner_is_dedicated=1
+    fi
+    if [[ -n "${rebind_claim}" ]]; then
+      [[ "${rebind_claim}" =~ ^[A-Za-z0-9._:-]{1,160}$ ]] || return 0
+      if [[ -n "${owner_claim}" && "${owner_claim}" != "${rebind_claim}" ]]; then
+        return 0
+      fi
+      owner_claim="${rebind_claim}"
+      owner_is_dedicated=0
+      owner_is_rebind=1
+    fi
+    if [[ -n "${owner_claim}" \
+        || "${notification_native}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+      current_objective_ts="$(read_state \
+        "review_cycle_prompt_ts" 2>/dev/null || true)"
+      # Migrated/pre-cycle sessions bind pending rows to the historical
+      # last_user_prompt_ts coordinate.  The summary claimant uses that same
+      # fallback when it selects a row; the publication-lock capability must
+      # therefore resolve the identical objective or it will reject its own
+      # freshly written claim and strand completion_claim_effects_complete=false.
+      if [[ -z "${current_objective_ts}" ]]; then
+        current_objective_ts="$(read_state \
+          "last_user_prompt_ts" 2>/dev/null || true)"
+      elif ! _omc_canonical_uint_in_range \
+          "${current_objective_ts}" 0 999999999999999; then
+        return 0
+      fi
+      current_prompt_revision="$(read_state \
+        "prompt_revision" 2>/dev/null || true)"
+      current_cycle_id="$(read_state "review_cycle_id" 2>/dev/null || true)"
+      current_enforcement_generation="$(read_state \
+        "ulw_enforcement_generation" 2>/dev/null || true)"
+      if [[ -z "${current_objective_ts}" ]]; then
+        current_objective_ts=0
+      else
+        _omc_canonical_uint_in_range \
+          "${current_objective_ts}" 0 999999999999999 || return 0
+      fi
+      if [[ -z "${current_prompt_revision}" ]]; then
+        current_prompt_revision=0
+      else
+        _omc_canonical_uint_in_range \
+          "${current_prompt_revision}" 0 999999999999999 || return 0
+      fi
+      if [[ -z "${current_cycle_id}" ]]; then
+        current_cycle_id=0
+      else
+        _omc_canonical_uint_in_range \
+          "${current_cycle_id}" 0 999999999999999 || return 0
+      fi
+      if [[ -z "${current_enforcement_generation}" ]]; then
+        current_enforcement_generation="migration"
+      elif [[ "${current_enforcement_generation}" != "migration" ]] \
+          && ! _omc_canonical_uint_in_range \
+            "${current_enforcement_generation}" 0 999999999999999999; then
+        # A malformed interval marker cannot authorize either an in-process
+        # claim owner or a synthetic notification capability.
+        return 0
+      fi
+    fi
+    if [[ "${notification_native}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+      # An exact platform wake (synthetic task notification or Agent PostTool)
+      # must inspect its own current stateful completion claim: a fresh claim
+      # yields a read-only "still settling" directive, while the owning wake
+      # can retire an expired row under the same session lock. The capability
+      # is derived only from one exact native/lifecycle/claim/digest/generation/
+      # objective row whose stored redacted message hashes back to that digest.
+      # A sibling, ambiguity, malformed row, fixed WAL, or receipt pair remains
+      # fenced normally.
+      notification_row="$(jq -c -n \
+        --argjson pending "${pending_json}" \
+        --arg native "${notification_native}" \
+        --argjson objective_ts "${current_objective_ts}" \
+        --argjson prompt_revision "${current_prompt_revision}" \
+        --argjson cycle_id "${current_cycle_id}" \
+        --arg generation "${current_enforcement_generation}" '
+          [$pending[] | select(
+            (.review_dispatch_abandoned // false) != true
+            and (.native_agent_id // "") == $native
+            and ((.lifecycle_dispatch_id // "") | type) == "string"
+            and ((.lifecycle_dispatch_id // "")
+              | test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+            and ((.completion_claim_id // "") | type) == "string"
+            and ((.completion_claim_id // "")
+              | test("^completion-[A-Za-z0-9._:-]{8,160}$"))
+            and ((.completion_claim_ts // null) | type) == "number"
+            and (.completion_claim_ts | floor) == .completion_claim_ts
+            and .completion_claim_ts >= 0
+            and .completion_claim_ts <= 999999999999999
+            and ((.completion_claim_digest // "") | type) == "string"
+            and ((.completion_claim_digest // "")
+              | test("^[A-Fa-f0-9]{16,128}$"))
+            and ((.completion_claim_message // "") | type) == "string"
+            and ((.completion_claim_message // "") | length) > 0
+            and ((.completion_claim_message // "") | length) <= 131072
+            and ((.completion_claim_message // "")
+              | index("\u0000")) == null
+            and (.objective_prompt_ts // -1) == $objective_ts
+            and (.objective_prompt_revision // -1) == $prompt_revision
+            and (.objective_cycle_id // -1) == $cycle_id
+            and ((.ulw_enforcement_generation // "migration") | tostring)
+              == $generation
+            and ((.agent_type // "")
+              | IN("quality-planner","prometheus","quality-reviewer",
+                   "superpowers:code-reviewer","feature-dev:code-reviewer",
+                   "editor-critic","excellence-reviewer","release-reviewer",
+                   "metis","briefing-analyst","design-reviewer",
+                   "abstraction-critic","rigor-reviewer")))] as $matches
+          | if ($matches | length) == 1
+              and ([$pending[] | select(
+                (.completion_claim_id // "")
+                  == ($matches[0].completion_claim_id // "")
+                or (.lifecycle_dispatch_id // "")
+                  == ($matches[0].lifecycle_dispatch_id // ""))]
+                | length) == 1
+            then $matches[0] else empty end
+        ' 2>/dev/null || true)"
+      if [[ -n "${notification_row}" ]]; then
+        notification_message="$(jq -r '.completion_claim_message' \
+          <<<"${notification_row}" 2>/dev/null || true)"
+        notification_digest="$(jq -r '.completion_claim_digest' \
+          <<<"${notification_row}" 2>/dev/null || true)"
+        notification_actual_digest="$(_omc_token_digest \
+          "${notification_message}" 2>/dev/null || true)"
+        if [[ "${notification_actual_digest}" == "${notification_digest}" ]]; then
+          notification_identity="$(jq -c '{
+              lifecycle_dispatch_id,completion_claim_id,
+              completion_claim_digest,native_agent_id,
+              ulw_enforcement_generation
+            }' <<<"${notification_row}" 2>/dev/null || printf '{}')"
+        fi
+      fi
+    fi
+    if [[ -n "${owner_claim}" ]]; then
+      owner_matches="$(jq -r -n --argjson pending "${pending_json}" \
+        --arg owner_claim "${owner_claim}" --argjson cutoff "${cutoff}" \
+        --argjson dedicated "${owner_is_dedicated}" \
+        --argjson rebind "${owner_is_rebind}" \
+        --argjson objective_ts "${current_objective_ts}" \
+        --argjson prompt_revision "${current_prompt_revision}" \
+        --argjson cycle_id "${current_cycle_id}" \
+        --arg generation "${current_enforcement_generation}" '
+          [$pending[] | select(
+            (.review_dispatch_abandoned // false) != true
+            and (.completion_claim_id // "") == $owner_claim
+            and ((.completion_claim_ts // null) | type) == "number"
+            and (.completion_claim_ts | floor) == .completion_claim_ts
+            and .completion_claim_ts >= 0
+            and .completion_claim_ts <= 999999999999999
+            and (if $dedicated == 1
+              then (.completion_claim_effects_complete // false) == true
+              elif $rebind == 1
+              then (.native_agent_id // "") == ""
+              else .completion_claim_ts >= $cutoff end)
+            and (.objective_prompt_ts // -1) == $objective_ts
+            and (.objective_prompt_revision // -1) == $prompt_revision
+            and (.objective_cycle_id // -1) == $cycle_id
+            and ((.ulw_enforcement_generation // "migration") | tostring)
+              == $generation)] | length
+        ' 2>/dev/null || printf 0)"
+      # A process-local token is not durable authority by itself. If expiry,
+      # abandonment/rebind, or an objective/generation transition invalidated
+      # its exact row, force the owner through the same recovery fence as every
+      # other hook; it may not resume effects into a newer generation.
+      [[ "${owner_matches}" == "1" ]] || return 0
+    fi
+    # Expired or malformed incomplete claims are recovery work, not a live
+    # Stop wait. They remain fenced even for the narrow false-wait resolver.
+    if jq -e -n --argjson pending "${pending_json}" \
+        --arg owner_claim "${owner_claim}" \
+        --argjson notification "${notification_identity}" \
+        --argjson cutoff "${cutoff}" '
+      any($pending[];
+        (.review_dispatch_abandoned // false) != true
+        and ((.completion_claim_id // "") | type) == "string"
+        and ((.completion_claim_id // "") | length) > 0
+        and (.completion_claim_effects_complete // false) != true
+        and ((.completion_claim_ts // null) as $ts
+          | (($ts | type) != "number")
+            or ($ts | floor) != $ts
+            or $ts < 0
+            or $ts > 999999999999999
+            or $ts < $cutoff)
+        and ($owner_claim == ""
+          or (.completion_claim_id // "") != $owner_claim)
+        and (($notification | length) == 0 or ((
+          (.completion_claim_id // "") == $notification.completion_claim_id
+          and (.lifecycle_dispatch_id // "")
+            == $notification.lifecycle_dispatch_id
+          and (.completion_claim_digest // "")
+            == $notification.completion_claim_digest
+          and (.native_agent_id // "") == $notification.native_agent_id
+          and ((.ulw_enforcement_generation // "migration") | tostring)
+            == (($notification.ulw_enforcement_generation // "migration")
+              | tostring))
+          | not)))
+    ' >/dev/null 2>&1; then
+      return 0
+    fi
+    # A verified Stop WAIT is allowed to inspect/clear its own wait metadata
+    # while another fresh summary publisher is live. That narrow caller skips
+    # only this fresh-valid scan; every WAL, expired/malformed claim, and
+    # effects-complete/no-outcome row remains fenced.
+    if [[ -z "${OMC_PUBLICATION_STOP_WAIT_INTERNAL:-}" ]] \
+        && jq -e -n --argjson pending "${pending_json}" \
+        --arg owner_claim "${owner_claim}" \
+        --argjson notification "${notification_identity}" \
+        --argjson cutoff "${cutoff}" '
+      any($pending[];
+        (.review_dispatch_abandoned // false) != true
+        and ((.completion_claim_id // "") | type) == "string"
+        and ((.completion_claim_id // "") | length) > 0
+        and (.completion_claim_effects_complete // false) != true
+        and ((.completion_claim_ts // null) as $ts
+          | ($ts | type) == "number"
+            and ($ts | floor) == $ts
+            and $ts >= 0
+            and $ts <= 999999999999999
+            and $ts >= $cutoff)
+        and ($owner_claim == ""
+          or (.completion_claim_id // "") != $owner_claim)
+        and (($notification | length) == 0 or ((
+          (.completion_claim_id // "") == $notification.completion_claim_id
+          and (.lifecycle_dispatch_id // "")
+            == $notification.lifecycle_dispatch_id
+          and (.completion_claim_digest // "")
+            == $notification.completion_claim_digest
+          and (.native_agent_id // "") == $notification.native_agent_id
+          and ((.ulw_enforcement_generation // "migration") | tostring)
+            == (($notification.ulw_enforcement_generation // "migration")
+              | tostring))
+          | not)))
+    ' >/dev/null 2>&1; then
+      return 0
+    fi
+    # Effects-complete is not terminal: the accepted parent outcome and exact
+    # claim settlement are the transaction's roll-forward boundary. A crash in
+    # that narrow gap must fence every foreign mutator even when no dedicated
+    # planner/reviewer waiter exists. Generic tracked claims carry a redacted
+    # replay message; the recovery entrypoint below can deterministically
+    # append/dedupe the outcome and consume the exact row.
+    if jq -e -n --argjson pending "${pending_json}" \
+        --arg owner_claim "${owner_claim}" \
+        --argjson notification "${notification_identity}" '
+      any($pending[];
+        (.review_dispatch_abandoned // false) != true
+        and ((.completion_claim_id // "") | type) == "string"
+        and ((.completion_claim_id // "") | length) > 0
+        and (.completion_claim_effects_complete // false) == true
+        and ($owner_claim == ""
+          or (.completion_claim_id // "") != $owner_claim)
+        and (($notification | length) == 0 or ((
+          (.completion_claim_id // "") == $notification.completion_claim_id
+          and (.lifecycle_dispatch_id // "")
+            == $notification.lifecycle_dispatch_id
+          and (.completion_claim_digest // "")
+            == $notification.completion_claim_digest
+          and (.native_agent_id // "") == $notification.native_agent_id
+          and ((.ulw_enforcement_generation // "migration") | tostring)
+            == (($notification.ulw_enforcement_generation // "migration")
+              | tostring))
+          | not)))
+    ' >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if [[ -e "${plan_wal}" || -L "${plan_wal}" \
+      || -e "${reviewer_wal}" || -L "${reviewer_wal}" ]]; then
+    return 0
+  fi
+  for _omc_publication_kind in plan reviewer; do
+    if [[ "${_omc_publication_kind}" == "plan" ]]; then
+      waiters="${session_dir}/plan_summary_waiters.jsonl"
+      receipts="${session_dir}/plan_publication_outcomes.jsonl"
+    else
+      waiters="${session_dir}/reviewer_summary_waiters.jsonl"
+      receipts="${session_dir}/reviewer_publication_outcomes.jsonl"
+    fi
+    [[ -e "${waiters}" || -L "${waiters}" \
+        || -e "${receipts}" || -L "${receipts}" ]] || continue
+    [[ ! -L "${receipts}" ]] \
+      && { [[ ! -e "${receipts}" ]] || [[ -f "${receipts}" ]]; } \
+      || return 0
+    [[ ! -L "${pending}" ]] \
+      && { [[ ! -e "${pending}" ]] || [[ -f "${pending}" ]]; } || return 0
+    waiters_json="$(omc_summary_waiter_ledger_json_unlocked \
+      "${_omc_publication_kind}" "${waiters}")" || return 0
+    receipts_json='[]'
+    if [[ -s "${receipts}" ]]; then
+      receipts_json="$(_omc_strict_jsonl_array_unlocked \
+        "${receipts}" 4194304 128)" || return 0
+    fi
+    pending_json='[]'
+    if [[ -s "${pending}" ]]; then
+      pending_json="$(omc_dispatch_authority_ledger_json_unlocked \
+        "${pending}")" || return 0
+    fi
+    # Malformed paired ledgers are themselves recovery authority and fence
+    # mutation. For valid ledgers, only an exact digest-bound pair needs work;
+    # a waiter without its receipt is the ordinary live summary-first state.
+    if ! jq -e -n --arg kind "${_omc_publication_kind}" \
+        --argjson waiters "${waiters_json}" \
+        --argjson receipts "${receipts_json}" \
+        --argjson pending "${pending_json}" '
+          def receipt_valid:
+            type == "object" and .schema_version == 1
+            and (keys | sort == (if $kind == "plan" then
+              ["agent_type","completion_digest","decided_at",
+               "lifecycle_dispatch_id","native_agent_id","reason",
+               "result_plan_revision","schema_version",
+               "start_plan_revision","status","verdict"]
+            else
+              ["agent_type","completion_digest","decided_at",
+               "lifecycle_dispatch_id","native_agent_id","reason",
+               "result_review_revision","reviewer_type","schema_version",
+               "start_review_revision","status","verdict"]
+            end))
+            and all(.. | strings; index("\u0000") == null)
+            and (.decided_at | type == "number" and . >= 0
+              and . <= 999999999999999 and floor == .)
+            and (.lifecycle_dispatch_id | type == "string"
+              and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+            and (.agent_type | type == "string" and length > 0
+              and length <= 128)
+            and (.native_agent_id | type == "string" and length <= 128
+              and if $kind == "plan"
+                then test("^[A-Za-z0-9._:-]{1,128}$")
+                else test("^[A-Za-z0-9._:-]*$") end)
+            and (.completion_digest | type == "string"
+              and test("^[A-Fa-f0-9]{16,128}$"))
+            and (.status | IN("accepted","rejected"))
+            and (.reason | type == "string"
+              and length <= (if $kind == "plan" then 120 else 256 end))
+            and if $kind == "plan" then
+              (.verdict | IN("PLAN_READY","NEEDS_CLARIFICATION","BLOCKED"))
+              and (.start_plan_revision | type == "number" and . >= 0
+                and . <= 999999999999999 and floor == .)
+              and (.result_plan_revision | type == "number" and . >= 0
+                and . <= 999999999999999 and floor == .)
+            else
+              (.reviewer_type | type == "string" and length > 0
+                and length <= 64)
+              and (.verdict | type == "string" and length <= 32
+                and test("^[A-Z_]*$"))
+              and (.start_review_revision | type == "number" and . >= 0
+                and . <= 999999999999999 and floor == .)
+              and (.result_review_revision | type == "number" and . >= 0
+                and . <= 999999999999999 and floor == .)
+            end;
+          ($waiters | type) == "array"
+          and ($receipts | type) == "array"
+          and ($pending | type) == "array"
+          and all($waiters[]; type == "object")
+          and all($receipts[]; receipt_valid)
+          # pending_agents is the compatibility queue: unrelated malformed
+          # legacy lines are inert bytes, not publication authority. The
+          # parser above preserves only object rows for exact lifecycle
+          # matching; fixed WAL/waiter/receipt ledgers remain fully strict.
+          and all($pending[]; type == "object")
+          and (([$waiters[].lifecycle_dispatch_id] | unique | length)
+            == ($waiters | length))
+          and (([$receipts[].lifecycle_dispatch_id] | unique | length)
+            == ($receipts | length))
+        ' >/dev/null 2>&1; then
+      return 0
+    fi
+    # A valid waiter without a receipt is the normal summary-first rendezvous;
+    # a receipt without a waiter is bounded delivery history. Schema has still
+    # been checked above, but neither orphan alone is recovery work.
+    [[ "$(jq -r 'length' <<<"${waiters_json}")" -gt 0 \
+        && "$(jq -r 'length' <<<"${receipts_json}")" -gt 0 ]] || continue
+    [[ ! -L "${parent_outcomes}" ]] \
+      && { [[ ! -e "${parent_outcomes}" ]] \
+        || [[ -f "${parent_outcomes}" ]]; } || return 0
+    parent_outcomes_json='[]'
+    if [[ -s "${parent_outcomes}" ]]; then
+      parent_outcomes_json="$(omc_causal_completion_outcomes_json_unlocked \
+        "${parent_outcomes}")" || return 0
+    fi
+    if jq -e -n --argjson waiters "${waiters_json}" \
+        --argjson receipts "${receipts_json}" \
+        --argjson pending "${pending_json}" \
+        --argjson outcomes "${parent_outcomes_json}" \
+        --arg owner_claim "${OMC_PUBLICATION_RECOVERY_CLAIM_ID:-}" '
+          [$waiters[] as $w | $receipts[] as $r
+            | select(
+                ($r.lifecycle_dispatch_id // "")
+                  == ($w.lifecycle_dispatch_id // "")
+                and ($r.agent_type // "") == ($w.agent_type // "")
+                and ($r.native_agent_id // "")
+                  == ($w.native_agent_id // "")
+                and ($r.completion_digest // "")
+                  == ($w.completion_digest // ""))
+            | ([$pending[] | select(
+                (.lifecycle_dispatch_id // "")
+                  == ($w.lifecycle_dispatch_id // "")
+                and (.agent_type // "") == ($w.agent_type // "")
+                and (.native_agent_id // "")
+                  == ($w.native_agent_id // "")
+                and (.review_dispatch_abandoned // false) != true)]) as $p
+            | ([$outcomes[] | select(
+                type == "object"
+                and (.lifecycle_dispatch_id // "")
+                  == ($w.lifecycle_dispatch_id // "")
+                and (.agent_type // "") == ($w.agent_type // "")
+                and (.native_agent_id // "")
+                  == ($w.native_agent_id // "")
+                and (.status // "") == (if $r.status == "accepted"
+                    then "accepted" else "ignored" end))]) as $o
+            | select(
+                # More than one causal owner is ambiguous recovery authority.
+                ($p | length) > 1
+                # The one process that durably owns this exact completion
+                # claim may continue its effects/outcome transaction. Every
+                # other hook fences, including while effects are incomplete,
+                # so a new prompt cannot advance the objective underneath an
+                # old callback. A crashed owner loses this process-local token;
+                # receipt-bound recovery then takes over after the lease.
+                or (($p | length) == 1 and (
+                  (($p[0].completion_claim_id // "") == "")
+                  or $owner_claim == ""
+                  or (($p[0].completion_claim_id // "") != $owner_claim)))
+                # Once the exact parent outcome committed, an absent pending
+                # row makes the waiter cleanup debt and recovery must retire
+                # it. Without either pending or outcome, the pair is protected
+                # historical authority: preserve it, but do not fence an
+                # unrelated publisher forever.
+                or (($p | length) == 0 and ($o | length) > 0))]
+          | length > 0
+        ' >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  if [[ "${portfolio_stable_under_lock}" -ne 1 ]]; then
+    portfolio_after="$(_omc_publication_recovery_portfolio_signature \
+      "${session_dir}" 2>/dev/null || true)"
+    [[ -n "${portfolio_after}" \
+        && "${portfolio_after}" == "${portfolio_before}" ]] || return 0
+  fi
+  return 1
+}
+
+# Read one durable cold planner-recovery handoff. The sidecar is staged before
+# the fixed WAL is retired so PreCompact can recover safely and the following
+# compact SessionStart can still surface the exact rebind token. It becomes
+# trustworthy only after rollback: no plan WAL remains, both causal rows are
+# the matching abandonment tombstones, no exact receipt survived, and the
+# rollback notice binds the same transaction owner. Prints canonical JSON.
+omc_read_plan_cold_recovery_handoff() {
+  local sid="${1:-}" session_dir handoff_file handoff pending starts receipts
+  local notices lifecycle native agent digest transaction token handoff_size
+  local _omc_cold_file _omc_cold_allow_noise
+  validate_session_id "${sid}" 2>/dev/null || return 1
+  session_dir="${STATE_ROOT}/${sid}"
+  handoff_file="${session_dir}/plan_cold_recovery_handoff.json"
+  [[ -f "${handoff_file}" && ! -L "${handoff_file}" ]] || return 1
+  handoff_size="$(LC_ALL=C wc -c <"${handoff_file}" 2>/dev/null \
+    | tr -d '[:space:]' || true)"
+  [[ "${handoff_size}" =~ ^[0-9]+$ && "${handoff_size}" -le 4096 ]] \
+    || return 1
+  _omc_regular_file_has_no_raw_nul "${handoff_file}" 4096 || return 1
+  [[ ! -e "${session_dir}/.plan-txn.active" \
+      && ! -L "${session_dir}/.plan-txn.active" ]] || return 1
+  handoff="$(jq -cS '
+      select(type == "object"
+        and (keys | sort == ["agent_type","completion_digest","created_at",
+          "lifecycle_dispatch_id","native_agent_id","rebind_id",
+          "schema_version","status","transaction_id"])
+        and .schema_version == 1
+        and .status == "pending"
+        and (.transaction_id | type == "string"
+          and test("^plan-txn-[A-Fa-f0-9]{16,128}$"))
+        and (.lifecycle_dispatch_id | type == "string"
+          and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+        and (.native_agent_id | type == "string"
+          and test("^[A-Za-z0-9._:-]{1,128}$"))
+        and (.agent_type | type == "string"
+          and IN("quality-planner","prometheus"))
+        and (.completion_digest | type == "string"
+          and test("^[A-Fa-f0-9]{16,128}$"))
+        and (.rebind_id | type == "string"
+          and test("^rebind-resume-[A-Fa-f0-9-]{16,40}$"))
+        and (.created_at | type == "number" and . >= 0
+          and . <= 999999999999999 and floor == .))
+    ' "${handoff_file}" 2>/dev/null)" || return 1
+  [[ -n "${handoff}" ]] || return 1
+  lifecycle="$(jq -r '.lifecycle_dispatch_id' <<<"${handoff}")"
+  native="$(jq -r '.native_agent_id' <<<"${handoff}")"
+  agent="$(jq -r '.agent_type' <<<"${handoff}")"
+  digest="$(jq -r '.completion_digest' <<<"${handoff}")"
+  transaction="$(jq -r '.transaction_id' <<<"${handoff}")"
+  token="$(jq -r '.rebind_id' <<<"${handoff}")"
+  pending="${session_dir}/pending_agents.jsonl"
+  starts="${session_dir}/agent_dispatch_starts.jsonl"
+  receipts="${session_dir}/plan_publication_outcomes.jsonl"
+  notices="${session_dir}/plan_recovery_notices.jsonl"
+  for _omc_cold_file in "${pending}" "${starts}" "${receipts}" "${notices}"; do
+    [[ ! -L "${_omc_cold_file}" ]] \
+      && { [[ ! -e "${_omc_cold_file}" ]] || [[ -f "${_omc_cold_file}" ]]; } \
+      || return 1
+  done
+  [[ -s "${pending}" && -s "${starts}" && -s "${notices}" ]] || return 1
+  if [[ -e "${receipts}" ]]; then
+    _omc_strict_jsonl_file_is_bounded "${receipts}" 4194304 128 \
+      || return 1
+  fi
+  _omc_strict_jsonl_file_is_bounded "${notices}" 4194304 512 \
+    || return 1
+  for _omc_cold_file in "${pending}" "${starts}"; do
+    omc_dispatch_authority_ledger_shell_safe "${_omc_cold_file}" \
+      || return 1
+    _omc_cold_allow_noise=0
+    [[ "${_omc_cold_file}" == "${pending}" ]] && _omc_cold_allow_noise=1
+    jq -Rse --arg lifecycle "${lifecycle}" --arg native "${native}" \
+      --arg agent "${agent}" --arg token "${token}" \
+      --argjson allow_noise "${_omc_cold_allow_noise}" '
+        [split("\n")[] | select(length > 0)
+          | (try fromjson catch null)] as $rows
+        | ($allow_noise == 1 or all($rows[]; type == "object"))
+        and ([$rows[] | select(type == "object")
+          | select((.lifecycle_dispatch_id // "") == $lifecycle
+            and (.native_agent_id // "") == $native
+            and (.agent_type // "") == $agent
+            and (.review_dispatch_abandoned // false) == true
+            and (.review_dispatch_abandonment_reason // "")
+              == "cold-resume-interrupted-planner-publication"
+            and (.cold_resume_rebind_id // "") == $token)] | length == 1)
+      ' "${_omc_cold_file}" >/dev/null 2>&1 || return 1
+  done
+  if [[ -s "${receipts}" ]]; then
+    jq -Rse --arg lifecycle "${lifecycle}" '
+      index("\u0000") == null
+      and all(split("\n")[] | select(length > 0);
+        (fromjson | .lifecycle_dispatch_id // "") != $lifecycle)
+    ' "${receipts}" >/dev/null 2>&1 || return 1
+  fi
+  jq -Rse --arg transaction "${transaction}" \
+      --arg lifecycle "${lifecycle}" --arg native "${native}" \
+      --arg agent "${agent}" --arg digest "${digest}" '
+    index("\u0000") == null
+    and ([split("\n")[] | select(length > 0) | fromjson
+      | select(.schema_version == 1
+        and .transaction_id == $transaction
+        and .owner.tracked == true
+        and .owner.lifecycle_dispatch_id == $lifecycle
+        and .owner.native_agent_id == $native
+        and .owner.agent_type == $agent
+        and .owner.completion_digest == $digest)] | length == 1)
+  ' "${notices}" >/dev/null 2>&1 || return 1
+  printf '%s' "${handoff}"
+}
+
+# Recover fixed-name planner/reviewer publication journals before another hook
+# mutates their overlapping state surfaces. Dedicated publishers remain the
+# only code allowed to interpret/commit their WALs; this barrier merely invokes
+# those production recovery entrypoints in a deterministic order and verifies
+# that a successful return actually retired each fixed name. It emits no text.
+_omc_cleanup_orphaned_dedicated_waiter_unlocked() {
+  local sid="${1:-}" kind="${2:-}" lifecycle="${3:-}" native="${4:-}"
+  local agent="${5:-}" digest="${6:-}" waiters waiter_kind matches waiter
+  validate_session_id "${sid}" 2>/dev/null || return 1
+  case "${kind}" in
+    planner)
+      waiters="${STATE_ROOT}/${sid}/plan_summary_waiters.jsonl"
+      waiter_kind="plan"
+      ;;
+    reviewer)
+      waiters="${STATE_ROOT}/${sid}/reviewer_summary_waiters.jsonl"
+      waiter_kind="reviewer"
+      ;;
+    *) return 1 ;;
+  esac
+  [[ ! -L "${waiters}" ]] \
+    && { [[ ! -e "${waiters}" ]] || [[ -f "${waiters}" ]]; } \
+    || return 1
+  [[ -s "${waiters}" ]] || return 0
+  omc_summary_waiter_ledger_json_unlocked "${waiter_kind}" "${waiters}" \
+    >/dev/null || return 1
+  matches="$(jq -Rsr --arg lifecycle "${lifecycle}" \
+    --arg native "${native}" --arg agent "${agent}" \
+    --arg digest "${digest}" '
+      [split("\n")[] | select(length > 0) | . as $raw
+        | (fromjson) as $row
+        | select(($row.lifecycle_dispatch_id // "") == $lifecycle
+          and ($row.native_agent_id // "") == $native
+          and ($row.agent_type // "") == $agent
+          and ($row.completion_digest // "") == $digest)
+        | $raw] as $matches
+      | if ($matches | length) <= 1 then ($matches[0] // "")
+        else error("ambiguous orphan waiter") end
+    ' "${waiters}" 2>/dev/null)" || return 1
+  waiter="${matches}"
+  [[ -n "${waiter}" ]] || return 0
+  rewrite_jsonl_line_atomic "${waiters}" "${waiter}" ""
+}
+
+# Validate every durable, non-abandoned completion claim tuple before
+# publication recovery derives a cutoff, extracts a row into Bash, or invokes
+# a replay publisher. Non-JSON legacy noise remains ignorable just as it is in
+# omc_publication_recovery_needed; an object that asserts a claim is authority
+# and must carry bounded identity, lease, phase, digest, and replay message.
+# Replay messages must be NUL-free before any raw jq projection into Bash.
+_omc_publication_claim_timestamps_valid_unlocked() {
+  local pending="${1:-}" emit_json="${2:-0}" parsed="[]"
+  local row="" message="" digest="" actual_digest=""
+  [[ -f "${pending}" && ! -L "${pending}" ]] || return 1
+  [[ "${emit_json}" == "0" || "${emit_json}" == "1" ]] || return 1
+  parsed="$(omc_dispatch_authority_ledger_json_unlocked \
+    "${pending}")" || return 1
+  jq -e -n --argjson rows "${parsed}" '
+    all($rows[];
+      . as $row
+      | if (($row | type) == "object"
+          and ($row.review_dispatch_abandoned // false) != true
+          and (($row | has("completion_claim_id"))
+            or ($row | has("completion_claim_ts"))
+            or ($row | has("completion_claim_effects_complete"))
+            or ($row | has("completion_claim_digest"))
+            or ($row | has("completion_claim_message"))))
+        then ((($row.completion_claim_id // null) | type) == "string"
+          and (($row.completion_claim_id // "") | length) > 0
+          and (($row.completion_claim_id // "") | length) <= 256
+          and (($row.completion_claim_id // "")
+            | test("^[A-Za-z0-9._:-]+$"))
+          and (($row.completion_claim_ts // null) | type) == "number"
+          and ($row.completion_claim_ts | floor) == $row.completion_claim_ts
+          and $row.completion_claim_ts >= 0
+          and $row.completion_claim_ts <= 999999999999999
+          and ($row | has("completion_claim_effects_complete"))
+          and (($row.completion_claim_effects_complete | type) == "boolean")
+          and (($row.completion_claim_digest // null) | type) == "string"
+          and (($row.completion_claim_digest // "")
+            | test("^[A-Fa-f0-9]{16,128}$"))
+          and (($row.completion_claim_message // null) | type) == "string"
+          and (($row.completion_claim_message // "") | length) > 0
+          and (($row.completion_claim_message // "") | length) <= 131072
+          and (($row.completion_claim_message // "")
+            | index("\u0000")) == null)
+        else true
+        end)
+  ' >/dev/null 2>&1 || return 1
+  while IFS= read -r row; do
+    [[ -n "${row}" ]] || continue
+    message="$(jq -r '.completion_claim_message' \
+      <<<"${row}" 2>/dev/null || true)"
+    digest="$(jq -r '.completion_claim_digest' \
+      <<<"${row}" 2>/dev/null || true)"
+    actual_digest="$(_omc_token_digest "${message}" 2>/dev/null || true)"
+    [[ -n "${actual_digest}" && "${actual_digest}" == "${digest}" ]] \
+      || return 1
+  done < <(jq -c '
+    .[] as $row
+    | select(($row | type) == "object"
+      and ($row.review_dispatch_abandoned // false) != true
+      and (($row | has("completion_claim_id"))
+        or ($row | has("completion_claim_ts"))
+        or ($row | has("completion_claim_effects_complete"))
+        or ($row | has("completion_claim_digest"))
+        or ($row | has("completion_claim_message")))
+      and (($row.completion_claim_message // "") | type) == "string"
+      and (($row.completion_claim_message // "")
+        | index("\u0000")) == null)
+    | $row
+  ' <<<"${parsed}" 2>/dev/null)
+  [[ "${emit_json}" == "0" ]] || printf '%s\n' "${parsed}"
+}
+
+omc_recover_active_publication_transactions() {
+  local sid="${1:-}" plan_wal reviewer_wal scripts_dir
+  local plan_waiters plan_receipts reviewer_waiters reviewer_receipts
+  local pending_file generic_rows generic_row generic_agent generic_native
+  local generic_lifecycle generic_digest generic_message generic_claim
+  local generic_payload generic_actual_digest generic_now generic_cutoff
+  local dedicated_rows dedicated_row dedicated_agent dedicated_native
+  local dedicated_lifecycle dedicated_digest dedicated_message dedicated_claim
+  local dedicated_claim_ts dedicated_actual_digest dedicated_kind
+  local dedicated_receipts dedicated_receipt_count dedicated_payload
+  local pending_rows='[]' receipt_rows='[]' remaining_rows='[]'
+  validate_session_id "${sid}" 2>/dev/null || return 1
+  plan_wal="${STATE_ROOT}/${sid}/.plan-txn.active"
+  reviewer_wal="${STATE_ROOT}/${sid}/.reviewer-transaction.wal"
+  plan_waiters="${STATE_ROOT}/${sid}/plan_summary_waiters.jsonl"
+  plan_receipts="${STATE_ROOT}/${sid}/plan_publication_outcomes.jsonl"
+  reviewer_waiters="${STATE_ROOT}/${sid}/reviewer_summary_waiters.jsonl"
+  reviewer_receipts="${STATE_ROOT}/${sid}/reviewer_publication_outcomes.jsonl"
+  pending_file="${STATE_ROOT}/${sid}/pending_agents.jsonl"
+  scripts_dir="${_OMC_AUTOWORK_SCRIPTS_DIR:-${HOME}/.claude/skills/autowork/scripts}"
+  [[ "${scripts_dir}" == /* && -d "${scripts_dir}" ]] || return 1
+  if [[ -e "${pending_file}" || -L "${pending_file}" ]]; then
+    [[ -f "${pending_file}" && ! -L "${pending_file}" ]] || return 1
+    # Fence malformed or content-unbound claim authority before a dedicated
+    # WAL recovery is allowed to publish any overlapping state.
+    pending_rows="$(_omc_publication_claim_timestamps_valid_unlocked \
+      "${pending_file}" 1)" || return 1
+  fi
+
+  if [[ -e "${plan_wal}" || -L "${plan_wal}" ]] \
+      || { [[ -s "${plan_waiters}" && -s "${plan_receipts}" ]]; }; then
+    OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+      bash "${scripts_dir}/record-plan.sh" --recover-active "${sid}" \
+      </dev/null >/dev/null 2>&1 || return 1
+    [[ ! -e "${plan_wal}" && ! -L "${plan_wal}" ]] || return 1
+  fi
+  if [[ -e "${reviewer_wal}" || -L "${reviewer_wal}" ]] \
+      || { [[ -s "${reviewer_waiters}" \
+          && -s "${reviewer_receipts}" ]]; }; then
+    OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+      bash "${scripts_dir}/record-reviewer.sh" --recover-active "${sid}" \
+      </dev/null >/dev/null 2>&1 || return 1
+    [[ ! -e "${reviewer_wal}" && ! -L "${reviewer_wal}" ]] || return 1
+  fi
+
+  # A universal SubagentStop can claim a planner/reviewer row before either
+  # dedicated hook has created its WAL or receipt.  Receipt-bound rows replay
+  # through the normal summary rendezvous.  If no exact receipt ever appeared,
+  # wait out the claim lease, then use the universal hook's cleanup journal to
+  # retire the exact pending/start pair as ignored.  This closes the otherwise
+  # permanent row-only fence without fabricating a plan or reviewer verdict.
+  if [[ -e "${pending_file}" || -L "${pending_file}" ]]; then
+    [[ -f "${pending_file}" && ! -L "${pending_file}" ]] || return 1
+    # The dedicated WAL/waiter recoverers above may have consumed or rewritten
+    # the exact pending row. Refresh the snapshot before deriving follow-up
+    # replay work; reusing the entry snapshot can replay an already-settled
+    # effects-complete claim and turn successful convergence into recursion or
+    # a false recovery failure.
+    pending_rows="$(_omc_publication_claim_timestamps_valid_unlocked \
+      "${pending_file}" 1)" || return 1
+    generic_now="$(now_epoch)"
+    _omc_canonical_uint_in_range \
+      "${generic_now}" 1 999999999999999 || return 1
+    generic_cutoff=$((generic_now - 120))
+    dedicated_rows="$(jq -cn --argjson pending "${pending_rows}" \
+      --argjson cutoff "${generic_cutoff}" \
+      --arg dedicated_owner "${OMC_PUBLICATION_DEDICATED_CLAIM_ID:-}" '
+      [$pending[] | select(type == "object")
+        | select((.review_dispatch_abandoned // false) != true
+          and ($dedicated_owner == ""
+            or (.completion_claim_id // "") != $dedicated_owner)
+          and (((.completion_claim_effects_complete // false) == true)
+            or (((.completion_claim_ts // null) | type) == "number"
+              and (.completion_claim_ts | floor) == .completion_claim_ts
+              and .completion_claim_ts < $cutoff))
+          and ((.completion_claim_id // "") | type) == "string"
+          and ((.completion_claim_id // "")
+            | test("^completion-[A-Za-z0-9._:-]{8,160}$"))
+          and ((.completion_claim_ts // null) | type) == "number"
+          and (.completion_claim_ts | floor) == .completion_claim_ts
+          and .completion_claim_ts >= 0
+          and .completion_claim_ts <= 999999999999999
+          and ((.lifecycle_dispatch_id // "") | type) == "string"
+          and ((.lifecycle_dispatch_id // "")
+            | test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+          and ((.native_agent_id // "") | type) == "string"
+          and ((.native_agent_id // "")
+            | test("^[A-Za-z0-9._:-]{1,128}$"))
+          and ((.agent_type // "") | type) == "string"
+          and ((.agent_type // "")
+            | IN("quality-planner","prometheus","quality-reviewer",
+                 "superpowers:code-reviewer","feature-dev:code-reviewer",
+                 "editor-critic","excellence-reviewer","release-reviewer",
+                 "metis","briefing-analyst","design-reviewer"))
+          and ((.completion_claim_digest // "") | type) == "string"
+          and ((.completion_claim_digest // "")
+            | test("^[A-Fa-f0-9]{16,128}$"))
+          and ((.completion_claim_message // "") | type) == "string"
+          and ((.completion_claim_message // "") | length) > 0
+          and ((.completion_claim_message // "") | length) <= 131072
+          and ((.completion_claim_message // "")
+            | index("\u0000")) == null)]
+      | if (group_by(.lifecycle_dispatch_id)
+          | any(.[]; length != 1))
+        then error("ambiguous dedicated completion lifecycle") else . end
+    ' 2>/dev/null)" || return 1
+    while IFS= read -r dedicated_row; do
+      [[ -n "${dedicated_row}" ]] || continue
+      dedicated_agent="$(jq -r '.agent_type' <<<"${dedicated_row}")"
+      dedicated_native="$(jq -r '.native_agent_id' <<<"${dedicated_row}")"
+      dedicated_lifecycle="$(jq -r '.lifecycle_dispatch_id' \
+        <<<"${dedicated_row}")"
+      dedicated_digest="$(jq -r '.completion_claim_digest' \
+        <<<"${dedicated_row}")"
+      dedicated_message="$(jq -r '.completion_claim_message' \
+        <<<"${dedicated_row}")"
+      dedicated_claim="$(jq -r '.completion_claim_id' \
+        <<<"${dedicated_row}")"
+      dedicated_claim_ts="$(jq -r '.completion_claim_ts' \
+        <<<"${dedicated_row}")"
+      _omc_canonical_uint_in_range \
+        "${dedicated_claim_ts}" 0 999999999999999 || return 1
+      dedicated_actual_digest="$(_omc_token_digest \
+        "${dedicated_message}" 2>/dev/null || true)"
+      [[ "${dedicated_actual_digest}" == "${dedicated_digest}" ]] \
+        || return 1
+      case "$(omc_dedicated_publication_kind \
+          "${dedicated_agent}" 2>/dev/null || true)" in
+        planner)
+          dedicated_kind="planner"
+          dedicated_receipts="${plan_receipts}"
+          ;;
+        reviewer)
+          dedicated_kind="reviewer"
+          dedicated_receipts="${reviewer_receipts}"
+          ;;
+        *) return 1 ;;
+      esac
+      [[ ! -L "${dedicated_receipts}" ]] \
+        && { [[ ! -e "${dedicated_receipts}" ]] \
+          || [[ -f "${dedicated_receipts}" ]]; } || return 1
+      dedicated_receipt_count=0
+      if [[ -s "${dedicated_receipts}" ]]; then
+        receipt_rows="$(_omc_strict_jsonl_array_unlocked \
+          "${dedicated_receipts}" 4194304 128)" || return 1
+        dedicated_receipt_count="$(jq -nr \
+          --argjson rows "${receipt_rows}" \
+          --arg lifecycle "${dedicated_lifecycle}" \
+          --arg agent "${dedicated_agent}" \
+          --arg native "${dedicated_native}" \
+          --arg digest "${dedicated_digest}" '
+            if all($rows[]; type == "object") then
+              [$rows[]
+              | select((.lifecycle_dispatch_id // "") == $lifecycle
+                and (.agent_type // "") == $agent
+                and (.native_agent_id // "") == $native
+                and (.completion_digest // "") == $digest)] | length end
+            else error("invalid dedicated publication receipt authority") end
+          ' 2>/dev/null)" || return 1
+      fi
+      [[ "${dedicated_receipt_count}" =~ ^[0-9]+$ \
+          && "${dedicated_receipt_count}" -le 1 ]] || return 1
+      # effects_complete may be only milliseconds old while the parallel
+      # dedicated hook is still publishing. Without a receipt, lease expiry is
+      # the sole authority to retire rather than race that live publisher.
+      if [[ "${dedicated_receipt_count}" -eq 0 \
+          && "${dedicated_claim_ts}" -ge "${generic_cutoff}" ]]; then
+        continue
+      fi
+      dedicated_payload="$(jq -nc --arg sid "${sid}" \
+        --arg agent "${dedicated_agent}" --arg native "${dedicated_native}" \
+        --arg message "${dedicated_message}" '
+          {session_id:$sid,agent_type:$agent,agent_id:$native,
+           last_assistant_message:$message,stop_hook_active:false}
+        ')" || return 1
+      if [[ "${dedicated_receipt_count}" -eq 1 ]]; then
+        if [[ "${dedicated_kind}" == "planner" ]]; then
+          printf '%s' "${dedicated_payload}" \
+            | OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+              OMC_PLAN_SUMMARY_REPLAY=1 \
+              OMC_PUBLICATION_RECOVERY_CLAIM_ID="${dedicated_claim}" \
+              bash "${scripts_dir}/record-subagent-summary.sh" \
+              >/dev/null 2>&1 || return 1
+        else
+          printf '%s' "${dedicated_payload}" \
+            | OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+              OMC_REVIEWER_SUMMARY_REPLAY=1 \
+              OMC_PUBLICATION_RECOVERY_CLAIM_ID="${dedicated_claim}" \
+              bash "${scripts_dir}/record-subagent-summary.sh" \
+              >/dev/null 2>&1 || return 1
+        fi
+      else
+        printf '%s' "${dedicated_payload}" \
+          | OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+            OMC_ORPHANED_DEDICATED_CLAIM_RETIRE=1 \
+            OMC_PUBLICATION_RECOVERY_CLAIM_ID="${dedicated_claim}" \
+            bash "${scripts_dir}/record-subagent-summary.sh" \
+            >/dev/null 2>&1 || return 1
+      fi
+      if [[ -s "${pending_file}" ]]; then
+        remaining_rows="$(omc_dispatch_authority_ledger_json_unlocked \
+          "${pending_file}")" || return 1
+        if jq -e -n --argjson rows "${remaining_rows}" \
+            --arg lifecycle "${dedicated_lifecycle}" '
+            any($rows[];
+              (.lifecycle_dispatch_id // "") == $lifecycle
+              and (.review_dispatch_abandoned // false) != true)
+          ' >/dev/null 2>&1; then
+          return 1
+        fi
+      fi
+      # A waiter without a receipt is inert once its causal rows are retired,
+      # but remove it opportunistically to keep the bounded ledger tidy.
+      _with_lockdir "${STATE_ROOT}/${sid}/.state.lock" \
+        "publication-recovery-waiter-cleanup" \
+        _omc_cleanup_orphaned_dedicated_waiter_unlocked \
+        "${sid}" "${dedicated_kind}" "${dedicated_lifecycle}" \
+        "${dedicated_native}" "${dedicated_agent}" "${dedicated_digest}" \
+        >/dev/null 2>&1 || log_anomaly "publication-recovery" \
+          "could not prune inert ${dedicated_kind} waiter lifecycle=${dedicated_lifecycle}" \
+          2>/dev/null || true
+    done < <(jq -c '.[]' <<<"${dedicated_rows}" 2>/dev/null) || return 1
+  fi
+
+  # Ordinary tracked completions do not have a dedicated publisher receipt,
+  # but their claimed pending row carries the redacted exact message and
+  # digest. If the universal hook died after effects_complete=true and before
+  # the accepted parent outcome/settlement, replay that exact callback in its
+  # outcome-only path. The replay is lifecycle-idempotent: it neither repeats
+  # summary/Council/scope effects nor conflicts with an outcome that landed
+  # just before process death.
+  if [[ -e "${pending_file}" || -L "${pending_file}" ]]; then
+    [[ -f "${pending_file}" && ! -L "${pending_file}" ]] || return 1
+    pending_rows="$(_omc_publication_claim_timestamps_valid_unlocked \
+      "${pending_file}" 1)" || return 1
+    generic_now="$(now_epoch)"
+    _omc_canonical_uint_in_range \
+      "${generic_now}" 1 999999999999999 || return 1
+    generic_cutoff=$((generic_now - 120))
+    generic_rows="$(jq -cn --argjson pending "${pending_rows}" \
+      --argjson cutoff "${generic_cutoff}" '
+      [$pending[] | select(type == "object")
+        | select((.review_dispatch_abandoned // false) != true
+          and (((.completion_claim_effects_complete // false) == true)
+            or ((.completion_claim_effects_complete // false) != true
+              and ((.completion_claim_ts // null) | type) == "number"
+              and (.completion_claim_ts | floor) == .completion_claim_ts
+              and .completion_claim_ts < $cutoff))
+          and ((.completion_claim_id // "") | type) == "string"
+          and ((.completion_claim_id // "")
+            | test("^completion-[A-Za-z0-9._:-]{8,160}$"))
+          and ((.completion_claim_ts // null) | type) == "number"
+          and (.completion_claim_ts | floor) == .completion_claim_ts
+          and .completion_claim_ts >= 0
+          and .completion_claim_ts <= 999999999999999
+          and ((.lifecycle_dispatch_id // "") | type) == "string"
+          and ((.lifecycle_dispatch_id // "")
+            | test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+          and ((.native_agent_id // "") | type) == "string"
+          and ((.native_agent_id // "")
+            | test("^[A-Za-z0-9._:-]{1,128}$"))
+          and ((.agent_type // "") | type) == "string"
+          and ((.agent_type // "") | length) > 0
+          and ((.completion_claim_digest // "") | type) == "string"
+          and ((.completion_claim_digest // "")
+            | test("^[A-Fa-f0-9]{16,128}$"))
+          and ((.completion_claim_message // "") | type) == "string"
+          and ((.completion_claim_message // "") | length) > 0
+          and ((.completion_claim_message // "") | length) <= 131072
+          and ((.completion_claim_message // "")
+            | index("\u0000")) == null
+          and (.agent_type
+            | IN("quality-planner","prometheus","quality-reviewer",
+                 "superpowers:code-reviewer","feature-dev:code-reviewer",
+                 "editor-critic","excellence-reviewer","release-reviewer",
+                 "metis","briefing-analyst","design-reviewer") | not))]
+      | if (group_by(.lifecycle_dispatch_id)
+          | any(.[]; length != 1))
+        then error("ambiguous generic completion lifecycle") else . end
+    ' 2>/dev/null)" || return 1
+    while IFS= read -r generic_row; do
+      [[ -n "${generic_row}" ]] || continue
+      generic_agent="$(jq -r '.agent_type' <<<"${generic_row}")"
+      generic_native="$(jq -r '.native_agent_id' <<<"${generic_row}")"
+      generic_lifecycle="$(jq -r '.lifecycle_dispatch_id' \
+        <<<"${generic_row}")"
+      generic_digest="$(jq -r '.completion_claim_digest' \
+        <<<"${generic_row}")"
+      generic_message="$(jq -r '.completion_claim_message' \
+        <<<"${generic_row}")"
+      generic_claim="$(jq -r '.completion_claim_id' <<<"${generic_row}")"
+      generic_actual_digest="$(_omc_token_digest "${generic_message}" \
+        2>/dev/null || true)"
+      [[ "${generic_actual_digest}" == "${generic_digest}" ]] || return 1
+      generic_payload="$(jq -nc --arg sid "${sid}" \
+        --arg agent "${generic_agent}" --arg native "${generic_native}" \
+        --arg message "${generic_message}" '
+          {session_id:$sid,agent_type:$agent,agent_id:$native,
+           last_assistant_message:$message,stop_hook_active:false}
+        ')" || return 1
+      printf '%s' "${generic_payload}" \
+        | OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+          OMC_GENERIC_SUMMARY_REPLAY=1 \
+          OMC_PUBLICATION_RECOVERY_CLAIM_ID="${generic_claim}" \
+          bash "${scripts_dir}/record-subagent-summary.sh" \
+          >/dev/null 2>&1 || return 1
+      # Exact lifecycle disappearance is the only successful settlement. A
+      # zero-exit hook that merely suppressed the callback is not convergence.
+      if [[ -s "${pending_file}" ]]; then
+        remaining_rows="$(omc_dispatch_authority_ledger_json_unlocked \
+          "${pending_file}")" || return 1
+        if jq -e -n --argjson rows "${remaining_rows}" \
+            --arg lifecycle "${generic_lifecycle}" '
+            any($rows[];
+              (.lifecycle_dispatch_id // "") == $lifecycle
+              and (.review_dispatch_abandoned // false) != true)
+          ' >/dev/null 2>&1; then
+          return 1
+        fi
+      fi
+    done < <(jq -c '.[]' <<<"${generic_rows}" 2>/dev/null) || return 1
+  fi
+
+  # A successful recovery call is a convergence proof, not just a best-effort
+  # sweep. Fresh incomplete claims, malformed effects-complete rows, or a WAL
+  # created during the sweep remain fenced and make the caller fail closed.
+  ! omc_publication_recovery_needed "${sid}"
+}
 
 # Final cleanup: unset bootstrap helpers now that all libs have been sourced.
 unset _omc_self _omc_self_dir

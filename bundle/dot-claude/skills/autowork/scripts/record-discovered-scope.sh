@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "${SCRIPT_DIR}/common.sh"
 
-SESSION_ID="$(discover_latest_session)"
+SESSION_ID="${SESSION_ID:-$(discover_current_project_session)}"
 if [[ -z "${SESSION_ID}" ]]; then
   printf 'record-discovered-scope: no active session found under %s\n' "${STATE_ROOT}" >&2
   exit 1

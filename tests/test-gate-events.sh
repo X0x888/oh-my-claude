@@ -303,6 +303,181 @@ fi
 teardown_test
 
 # ---------------------------------------------------------------------
+# Test 6b: numeric admission is canonical and invalid details stay visible
+# ---------------------------------------------------------------------
+printf 'Test 6b: numeric caps/counts are canonical and details are lossless\n'
+setup_test
+init_session "ge6b"
+gate_numeric_rc=0
+SESSION_ID="ge6b" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  OMC_GATE_EVENT_DETAILS_VALUE_CAP=08 \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='ge6b'
+    record_gate_event 'quality' 'block' \
+      'block_count=2' 'block_cap=5' \
+      'leading_zero=08' 'oversized=1000000000000000' \
+      'good=7' 'note=abcdefghijklmnopqrstuvwxyz0123456789'
+  " >/dev/null 2>&1 || gate_numeric_rc=$?
+assert_eq "leading-zero details cap cannot reach Bash arithmetic" \
+  "0" "${gate_numeric_rc}"
+events_file="$(events_file_for "ge6b")"
+if [[ -s "${events_file}" ]]; then
+  pass=$((pass + 1))
+  assert_eq "canonical detail remains a JSON number" \
+    "number:7" "$(jq -r '.details.good | type + ":" + tostring' "${events_file}")"
+  assert_eq "leading-zero detail is retained as a string" \
+    "string:08" "$(jq -r '.details.leading_zero | type + ":" + .' "${events_file}")"
+  assert_eq "oversized numeric detail is retained as a string" \
+    "string:1000000000000000" \
+    "$(jq -r '.details.oversized | type + ":" + .' "${events_file}")"
+  assert_eq "invalid numeric-looking detail does not erase siblings" \
+    "abcdefghijklmnopqrstuvwxyz0123456789" \
+    "$(jq -r '.details.note' "${events_file}")"
+else
+  printf '  FAIL: canonical detail regression emitted no row\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# The JSONL line cap also reaches subtraction in the bounded appender. A
+# leading-zero override must fall back before that arithmetic instead of being
+# interpreted as an octal literal.
+setup_test
+init_session "ge6c"
+gate_line_cap_rc=0
+SESSION_ID="ge6c" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  OMC_GATE_EVENTS_PER_SESSION_MAX=08 \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='ge6c'
+    record_gate_event 'quality' 'audited' 'observed=1'
+  " >/dev/null 2>&1 || gate_line_cap_rc=$?
+assert_eq "leading-zero line cap cannot reach Bash arithmetic" \
+  "0" "${gate_line_cap_rc}"
+if [[ -s "$(events_file_for "ge6c")" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: invalid line-cap fallback emitted no row\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+# Invalid top-level counts may not be coerced to a fabricated numeric zero,
+# and an invalid or unavailable clock may neither escape a best-effort
+# telemetry call nor reach jq --argjson or durable state.
+setup_test
+init_session "ge6d"
+SESSION_ID="ge6d" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='ge6d'
+    record_gate_event 'quality' 'block' 'block_count=08' 'block_cap=5'
+    record_gate_event 'quality' 'block' \
+      'block_count=1' 'block_cap=1000000000000000'
+    now_epoch() { printf '08'; }
+    record_gate_event 'quality' 'block' 'block_count=1' 'block_cap=5'
+    now_epoch() { return 1; }
+    record_gate_event 'quality' 'block' 'block_count=1' 'block_cap=5'
+  "
+events_file="$(events_file_for "ge6d")"
+if [[ ! -e "${events_file}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: invalid count/timestamp fabricated a gate-event row\n' >&2
+  fail=$((fail + 1))
+fi
+assert_eq "invalid/unavailable timestamp cannot stamp generic block state" \
+  "" "$(jq -r '.last_any_gate_block_ts // empty' \
+    "${TEST_HOME}/.claude/quality-pack/state/ge6d/session_state.json")"
+teardown_test
+
+# The event sequence is both a jq number and a Bash counter. Keep it inside
+# the shared exact-integer envelope, recover the ledger frontier exactly, and
+# stop cleanly once the terminal ID has been allocated.
+setup_test
+init_session "ge6e"
+events_file="$(events_file_for "ge6e")"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:ge6e:999999999999998","ts":1,"host":"fixture","gate":"quality","event":"audited","details":{}}' \
+  >"${events_file}"
+jq '.gate_event_seq="1"' \
+  "${TEST_HOME}/.claude/quality-pack/state/ge6e/session_state.json" \
+  >"${TEST_HOME}/.claude/quality-pack/state/ge6e/session_state.json.tmp"
+mv "${TEST_HOME}/.claude/quality-pack/state/ge6e/session_state.json.tmp" \
+  "${TEST_HOME}/.claude/quality-pack/state/ge6e/session_state.json"
+SESSION_ID="ge6e" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='ge6e'
+    record_gate_event 'quality' 'audited' 'observed=1'
+    record_gate_event 'quality' 'audited' 'observed=2'
+  "
+assert_eq "ledger recovery allocates the terminal exact event ID once" "1" \
+  "$(jq -s '[.[] | select(.event_id == "ge:ge6e:999999999999999")] | length' \
+    "${events_file}")"
+assert_eq "exhausted event frontier never wraps or emits an inexact ID" "2" \
+  "$(wc -l <"${events_file}" | tr -d '[:space:]')"
+assert_eq "terminal exact sequence remains durable" "999999999999999" \
+  "$(jq -r '.gate_event_seq' \
+    "${TEST_HOME}/.claude/quality-pack/state/ge6e/session_state.json")"
+teardown_test
+
+# Literal NUL in an existing numeric token must not be normalized while the
+# recorder derives its monotonic allocation frontier. Preserve the corrupt
+# bytes and do not advance durable sequence state.
+setup_test
+init_session "ge6f"
+events_file="$(events_file_for "ge6f")"
+printf '%s\0%s\n' \
+  '{"_v":1,"event_id":"ge:ge6f:1","ts":1' \
+  ',"host":"fixture","gate":"quality","event":"audited","details":{}}' \
+  >"${events_file}"
+events_digest_before="$(shasum -a 256 "${events_file}" | awk '{print $1}')"
+SESSION_ID="ge6f" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='ge6f'
+    record_gate_event 'quality' 'audited' 'observed=2'
+  "
+assert_eq "raw-NUL gate ledger remains byte-exact" \
+  "${events_digest_before}" \
+  "$(shasum -a 256 "${events_file}" | awk '{print $1}')"
+assert_eq "raw-NUL gate ledger cannot advance event sequence" "" \
+  "$(jq -r '.gate_event_seq // empty' \
+    "${TEST_HOME}/.claude/quality-pack/state/ge6f/session_state.json")"
+teardown_test
+
+# A strict JSONL allocation ledger with no final newline is a torn append, even
+# when the last JSON object is otherwise valid.
+setup_test
+init_session "ge6g"
+events_file="$(events_file_for "ge6g")"
+printf '%s' \
+  '{"_v":1,"event_id":"ge:ge6g:1","ts":1,"host":"fixture","gate":"quality","event":"audited","details":{}}' \
+  >"${events_file}"
+events_digest_before="$(shasum -a 256 "${events_file}" | awk '{print $1}')"
+SESSION_ID="ge6g" STATE_ROOT="${TEST_HOME}/.claude/quality-pack/state" \
+  bash -c "
+    set -euo pipefail
+    . '${HOOK_DIR}/common.sh'
+    SESSION_ID='ge6g'
+    record_gate_event 'quality' 'audited' 'observed=2'
+  "
+assert_eq "torn gate ledger remains byte-exact" \
+  "${events_digest_before}" \
+  "$(shasum -a 256 "${events_file}" | awk '{print $1}')"
+assert_eq "torn gate ledger cannot advance event sequence" "" \
+  "$(jq -r '.gate_event_seq // empty' \
+    "${TEST_HOME}/.claude/quality-pack/state/ge6g/session_state.json")"
+teardown_test
+
+# ---------------------------------------------------------------------
 # Test 7: v1.18.0 — mark-user-decision emits a user-decision-marked event
 # under gate=finding-status. The event must be visible to /ulw-report.
 # ---------------------------------------------------------------------

@@ -122,6 +122,14 @@
         "hooks": [
           {
             "type": "command",
+            "command": "$HOME/.claude/skills/autowork/scripts/dispatch-recovery-guard.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "$HOME/.claude/skills/autowork/scripts/pretool-timing.sh"
           }
         ]

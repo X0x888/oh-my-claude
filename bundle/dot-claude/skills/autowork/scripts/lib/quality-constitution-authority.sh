@@ -8,14 +8,22 @@
 # it is not a secret and is not an OS security boundary.
 
 QC_AUTH_GRANT_FILE="quality_constitution_authorization.json"
+QC_AUTH_GRANT_MAX_BYTES=4096
+QC_CONSTITUTION_MAX_BYTES=67108864
 
 qc_authority_hash_text() {
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | awk '{print $1}'
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
-  else
-    cksum | awk '{print $1 "-" $2}'
+  local value=""
+  if IFS= read -r -d '' value; then
+    printf 'quality-constitution: NUL bytes are not valid authority material\n' >&2
+    return 1
+  fi
+  # common.sh owns and seals the one trusted SHA implementation. Keep this
+  # protocol library usable as a standalone parser fixture, but make hashing
+  # fail explicitly when that authority primitive has not been loaded.
+  if ! declare -F _verification_sha256_text >/dev/null 2>&1 \
+      || ! _verification_sha256_text "${value}"; then
+    printf 'quality-constitution: SHA-256 is required for authority identities\n' >&2
+    return 1
   fi
 }
 
@@ -40,15 +48,135 @@ qc_authority_unquote() {
   printf '%s' "${value}"
 }
 
-qc_authority_project_key() {
+# Split the reference grammar on the first unquoted literal ` because `.
+# Results are returned in globals because command substitution would erase
+# them in a subshell. Backslash escapes are deliberately unsupported: this is
+# a narrow authority grammar, not a shell parser.
+qc_authority_split_reference_payload() {
+  local value="${1:-}" quote="" char="" i=0 length=0
+  length="${#value}"
+  QC_AUTH_REFERENCE_LOCATOR=""
+  QC_AUTH_REFERENCE_BECAUSE=""
+  for (( i = 0; i < length; i++ )); do
+    char="${value:i:1}"
+    if [[ -n "${quote}" ]]; then
+      [[ "${char}" == "${quote}" ]] && quote=""
+      continue
+    fi
+    case "${char}" in
+      \"|\') quote="${char}" ;;
+      *)
+        if [[ "${value:i:9}" == " because " ]]; then
+          QC_AUTH_REFERENCE_LOCATOR="$(trim_whitespace "${value:0:i}")"
+          QC_AUTH_REFERENCE_BECAUSE="$(trim_whitespace "${value:i+9}")"
+          [[ -n "${QC_AUTH_REFERENCE_LOCATOR}" \
+              && -n "${QC_AUTH_REFERENCE_BECAUSE}" ]]
+          return
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+qc_authority_project_key() (
+  # Project identity selects durable user-owned authority. Resolve it in a
+  # sanitized subshell so inherited BASH_ENV functions cannot redirect git
+  # observation, remote normalization, or hashing to a different profile.
+  POSIXLY_CORRECT=1 || \return 1
+  \unset -f builtin command printf read local type declare unset cd pwd \
+    return git sed tr shasum sha256sum awk cut || \return 1
   local root="${1:-${PWD}}" key=""
   if declare -F _omc_project_key >/dev/null 2>&1; then
     key="$(cd "${root}" 2>/dev/null && _omc_project_key 2>/dev/null || true)"
   fi
   if [[ -z "${key}" ]]; then
-    key="$(printf '%s' "${root}" | qc_authority_hash_text | cut -c1-12)"
+    key="$(_verification_sha256_text "${root}" 2>/dev/null)" || return 1
+    [[ "${key}" =~ ^[0-9a-f]{64}$ ]] || return 1
+    key="${key:0:12}"
   fi
   printf '%s' "${key}"
+)
+
+# Side-effect-free schema authority shared by the durable helper and consumers
+# that bind an immutable Constitution snapshot. Caps are explicit parameters so
+# a consumer cannot silently validate a truncated projection with a lower local
+# limit. The caller remains responsible for checking that `path` is the exact
+# derived profile path for its project key.
+qc_constitution_is_valid() {
+  local path="${1:-}" claim_cap="${2:-500}" reference_cap="${3:-200}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin}"
+  [[ -n "${path}" && -f "${path}" && ! -L "${path}" ]] || return 1
+  [[ "${claim_cap}" =~ ^[1-9][0-9]*$ && "${reference_cap}" =~ ^[1-9][0-9]*$ ]] \
+    || return 1
+  (( claim_cap <= 500 && reference_cap <= 200 )) || return 1
+  # jq accepts some literal NUL placements adjacent to scalars and can parse
+  # the resulting byte stream as different JSON authority. Reject raw NUL and
+  # oversize storage at the regular-file boundary before schema projection.
+  declare -F _omc_regular_file_has_no_raw_nul >/dev/null 2>&1 || return 1
+  _omc_regular_file_has_no_raw_nul \
+    "${path}" "${QC_CONSTITUTION_MAX_BYTES}" || return 1
+  jq -e \
+    --argjson claim_cap "${claim_cap}" \
+    --argjson reference_cap "${reference_cap}" '
+    .schema_version == 1 and
+    all(.. | strings; index("\u0000") == null) and
+    (.profile_id | type == "string"
+      and test("^qcp_[A-Za-z0-9._-]{1,128}$")) and
+    (.generation | type == "number" and floor == . and . >= 0) and
+    (.claims | type == "array" and length <= $claim_cap) and
+    (.references | type == "array" and length <= $reference_cap) and
+    (([.claims[].id, .references[].id] | unique | length) ==
+     ((.claims | length) + (.references | length))) and
+    (([.claims[],.references[] | select(has("last_operation_id")) | .last_operation_id] |
+      unique | length) ==
+     ([.claims[],.references[] | select(has("last_operation_id"))] | length)) and
+    all(.claims[];
+      (.id | type == "string"
+        and test("^qc_[A-Za-z0-9._:-]{1,128}$")) and
+      (.category | IN("mission","audience","outcome","quality_floor","principle","signature","voice","workflow","non_goal","anti_pattern","vision")) and
+      (.statement | type == "string" and length > 0 and length <= 600 and ([explode[] | select(. < 32 or . == 127)] | length == 0)) and
+      (.rationale | type == "string" and length <= 600 and ([explode[] | select(. < 32 or . == 127)] | length == 0)) and
+      (.polarity | IN("must","must_not","prefer","avoid","aspire")) and
+      (.enforcement | IN("blocking","advisory")) and
+      (.authority | IN("user_pinned","user_confirmed","user_selected","inferred")) and
+      (.status | IN("active","tentative","review_due","superseded","archived")) and
+      ((.enforcement != "blocking") or (.authority | IN("user_pinned","user_confirmed"))) and
+      ((.enforcement != "blocking") or (.polarity | IN("must","must_not"))) and
+      (.scope | type == "object") and
+      all([.scope.domains,.scope.task_types,.scope.surfaces,.scope.audiences,.scope.paths][];
+          type == "array" and length <= 32 and
+          all(.[]; type == "string" and length > 0 and length <= 240 and
+              ([explode[] | select(. < 32 or . == 127)] | length == 0))) and
+      (.evidence_ids | type == "array" and length <= 50 and
+       all(.[]; type == "string"
+         and test("^qe_[A-Za-z0-9._:-]{1,128}$"))) and
+      (.created_at | type == "number" and floor == . and . >= 0) and
+      (.last_supported_at | type == "number" and floor == . and . >= 0) and
+      (.review_after | type == "number" and floor == . and . >= 0) and
+      (if has("source_candidate_id") then
+         (.source_candidate_id | type == "string"
+           and test("^qk_[A-Za-z0-9._:-]{1,128}$"))
+       else true end) and
+      (if has("last_operation_id") then
+         (.last_operation_id | type == "string" and test("^qco_[0-9a-f]{16}$"))
+       else true end)) and
+    all(.references[];
+      (.id | type == "string"
+        and test("^qr_[A-Za-z0-9._:-]{1,128}$")) and
+      (.polarity | IN("exemplar","anti_exemplar")) and
+      (.kind | IN("repo_path","url","description")) and
+      (.locator | type == "string" and length > 0 and length <= 1000 and ([explode[] | select(. < 32 or . == 127)] | length == 0)) and
+      (.because | type == "string" and length > 0 and length <= 600 and ([explode[] | select(. < 32 or . == 127)] | length == 0)) and
+      (.aspects | type == "string" and length <= 300 and ([explode[] | select(. < 32 or . == 127)] | length == 0)) and
+      (.do_not_copy | type == "string" and length <= 400 and ([explode[] | select(. < 32 or . == 127)] | length == 0)) and
+      (.authority | IN("user_pinned","user_confirmed")) and
+      (.status | IN("active","stale","archived")) and
+      (.added_at | type == "number" and floor == . and . >= 0) and
+      (if has("last_operation_id") then
+         (.last_operation_id | type == "string" and test("^qco_[0-9a-f]{16}$"))
+       else true end))
+  ' "${path}" >/dev/null 2>&1
 }
 
 qc_authority_operation_add_claim() {
@@ -102,13 +230,17 @@ qc_authority_operation_remove() {
     '{action:"remove",arguments:{id:$id,reason:$reason}}'
 }
 
-qc_authority_validate_operation() {
-  local operation="${1:-}"
-  printf '%s' "${operation}" | jq -e '
+_qc_authority_canonical_operation_stream() {
+  jq -cS -e '
+    def control_free_string:
+      type == "string" and
+      ([explode[] | select(. < 32 or (. >= 127 and . <= 159))] | length == 0);
+    select(
     type == "object" and
     (keys == ["action","arguments"]) and
     (.action | IN("add-claim","accept","reject","add-reference","remove")) and
     (.arguments | type == "object") and
+    all(.. | strings; control_free_string) and
     (if .action == "add-claim" then
        (.arguments | keys == ["audience","authority","category","domain","enforcement","path","polarity","rationale","statement","status","surface","task_type"]) and
        (.arguments.category | IN("mission","audience","outcome","quality_floor","principle","signature","voice","workflow","non_goal","anti_pattern","vision")) and
@@ -144,13 +276,19 @@ qc_authority_validate_operation() {
        (.arguments.id | type == "string" and test("^(qc|qr)_[A-Za-z0-9._-]+$")) and
        (.arguments.reason | type == "string" and length <= 300)
      end)
-  ' >/dev/null 2>&1
+    )
+  '
+}
+
+qc_authority_validate_operation() {
+  local operation="${1:-}"
+  printf '%s' "${operation}" \
+    | _qc_authority_canonical_operation_stream >/dev/null 2>&1
 }
 
 qc_authority_canonical_operation() {
   local operation="${1:-}"
-  qc_authority_validate_operation "${operation}" || return 1
-  printf '%s' "${operation}" | jq -cS .
+  printf '%s' "${operation}" | _qc_authority_canonical_operation_stream
 }
 
 qc_authority_operation_digest() {
@@ -164,9 +302,11 @@ qc_authority_base64_encode() {
 qc_authority_base64_decode() {
   local encoded="${1:-}"
   if printf '' | base64 --decode >/dev/null 2>&1; then
-    printf '%s' "${encoded}" | base64 --decode
+    printf '%s' "${encoded}" | base64 --decode \
+      | _qc_authority_canonical_operation_stream
   else
-    printf '%s' "${encoded}" | base64 -D
+    printf '%s' "${encoded}" | base64 -D \
+      | _qc_authority_canonical_operation_stream
   fi
 }
 
@@ -190,10 +330,9 @@ qc_authority_operation_from_prompt() {
   else
     payload="$(trim_whitespace "${rest#* }")"
   fi
-  payload="$(qc_authority_unquote "${payload}")"
-
   case "${verb}" in
     remember)
+      payload="$(qc_authority_unquote "${payload}")"
       statement="$(qc_authority_sanitize_text "${payload}" 600)"
       [[ -n "${statement}" ]] || return 1
       qc_authority_operation_add_claim \
@@ -201,6 +340,7 @@ qc_authority_operation_from_prompt() {
         "user_confirmed" "active" "" "" "" "" ""
       ;;
     must)
+      payload="$(qc_authority_unquote "${payload}")"
       statement="$(qc_authority_sanitize_text "${payload}" 600)"
       [[ -n "${statement}" ]] || return 1
       qc_authority_operation_add_claim \
@@ -208,6 +348,7 @@ qc_authority_operation_from_prompt() {
         "user_confirmed" "active" "" "" "" "" ""
       ;;
     must-not|must_not)
+      payload="$(qc_authority_unquote "${payload}")"
       statement="$(qc_authority_sanitize_text "${payload}" 600)"
       [[ -n "${statement}" ]] || return 1
       qc_authority_operation_add_claim \
@@ -215,6 +356,7 @@ qc_authority_operation_from_prompt() {
         "user_confirmed" "active" "" "" "" "" ""
       ;;
     avoid)
+      payload="$(qc_authority_unquote "${payload}")"
       statement="$(qc_authority_sanitize_text "${payload}" 600)"
       [[ -n "${statement}" ]] || return 1
       qc_authority_operation_add_claim \
@@ -236,6 +378,7 @@ qc_authority_operation_from_prompt() {
       [[ "${id}" =~ ^qk_[A-Za-z0-9._-]+$ ]] || return 1
       reason="$(trim_whitespace "${payload#"${id}"}")"
       [[ "${reason}" == because\ * ]] && reason="${reason#because }"
+      reason="$(qc_authority_unquote "${reason}")"
       reason="$(qc_authority_sanitize_text "${reason}" 300)"
       qc_authority_operation_reject "${id}" "${reason}"
       ;;
@@ -244,14 +387,15 @@ qc_authority_operation_from_prompt() {
       [[ "${id}" =~ ^(qc|qr)_[A-Za-z0-9._-]+$ ]] || return 1
       reason="$(trim_whitespace "${payload#"${id}"}")"
       [[ "${reason}" == because\ * ]] && reason="${reason#because }"
+      reason="$(qc_authority_unquote "${reason}")"
       reason="$(qc_authority_sanitize_text "${reason}" 300)"
       qc_authority_operation_remove "${id}" "${reason}"
       ;;
     reference|anti-reference)
       [[ "${verb}" == "anti-reference" ]] && polarity="anti_exemplar"
-      [[ "${payload}" == *" because "* ]] || return 1
-      locator="$(trim_whitespace "${payload%% because *}")"
-      because="$(trim_whitespace "${payload#* because }")"
+      qc_authority_split_reference_payload "${payload}" || return 1
+      locator="${QC_AUTH_REFERENCE_LOCATOR}"
+      because="${QC_AUTH_REFERENCE_BECAUSE}"
       locator="$(qc_authority_unquote "${locator}")"
       because="$(qc_authority_unquote "${because}")"
       locator="$(qc_authority_sanitize_text "${locator}" 1000)"
@@ -326,6 +470,43 @@ qc_authority_issue_grant_unlocked() {
   printf '%s\n' "${grant}"
 }
 
+# Validate the bounded regular grant directly from the file before any bytes
+# enter a Bash variable. Raw NUL is rejected byte-for-byte before jq, while
+# escaped NUL/C0/C1 values fail the recursive string check. The canonical
+# output is the only representation that may cross into Bash afterward.
+qc_authority_read_grant_file() {
+  local path="${1:-}"
+  local PATH="${_OMC_OBSERVER_SAFE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin}"
+  [[ -n "${path}" && -f "${path}" && ! -L "${path}" ]] || return 1
+  declare -F _omc_regular_file_has_no_raw_nul >/dev/null 2>&1 || return 1
+  _omc_regular_file_has_no_raw_nul \
+    "${path}" "${QC_AUTH_GRANT_MAX_BYTES}" || return 1
+  jq -cS -e -s '
+    def control_free_string:
+      type == "string" and
+      ([explode[] | select(. < 32 or (. >= 127 and . <= 159))] | length == 0);
+    select(
+      length == 1 and
+      (.[0] |
+        type == "object" and
+        (keys == ["_v","action","grant_id","issued_at","operation_digest",
+                  "project_key","prompt_revision","prompt_ts","session_id_digest"]) and
+        ._v == 1 and
+        (.grant_id | type == "string" and test("^qca_[0-9a-f]{20}$")) and
+        (.session_id_digest | type == "string" and test("^[0-9a-f]{64}$")) and
+        (.project_key | type == "string" and test("^[0-9a-f]{12}$")) and
+        (.prompt_revision | type == "number" and floor == . and . > 0) and
+        (.prompt_ts | type == "number" and floor == . and . > 0) and
+        (.action | IN("add-claim","accept","reject","add-reference","remove")) and
+        (.operation_digest | type == "string" and test("^[0-9a-f]{64}$")) and
+        (.issued_at | type == "number" and floor == . and . > 0) and
+        all(.. | strings; control_free_string)
+      )
+    )
+    | .[0]
+  ' "${path}" 2>/dev/null
+}
+
 qc_authority_consume_grant_unlocked() {
   local grant_id="$1" operation="$2" project_key="$3"
   local canonical digest action path grant current_revision current_prompt_ts
@@ -340,18 +521,7 @@ qc_authority_consume_grant_unlocked() {
     printf 'quality-constitution: no current regular-file user authorization grant\n' >&2
     return 1
   fi
-  grant="$(<"${path}")"
-  if ! printf '%s' "${grant}" | jq -e '
-      ._v == 1 and
-      (.grant_id | type == "string" and startswith("qca_")) and
-      (.session_id_digest | type == "string" and length > 0) and
-      (.project_key | type == "string" and length > 0) and
-      (.prompt_revision | type == "number" and floor == . and . > 0) and
-      (.prompt_ts | type == "number" and floor == . and . > 0) and
-      (.action | IN("add-claim","accept","reject","add-reference","remove")) and
-      (.operation_digest | type == "string" and length > 0) and
-      (.issued_at | type == "number" and floor == . and . > 0)
-    ' >/dev/null 2>&1; then
+  if ! grant="$(qc_authority_read_grant_file "${path}")"; then
     printf 'quality-constitution: malformed user authorization grant\n' >&2
     return 1
   fi

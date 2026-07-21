@@ -7,6 +7,11 @@ and complete—plus quality gates that block Claude from claiming "done" until
 the work proves that bar, tests pass, and independent review clears the remaining
 frontier. So you stop babysitting both correctness and ambition.*
 
+> **Main / Unreleased preview:** the frozen Definition of Excellent described
+> on this page is currently on `main`, not in the pinned v1.50.0 release. Use
+> the rolling install below to try it; use the pinned install for the latest
+> stable release.
+
 [![Version](https://img.shields.io/badge/Version-1.50.0-blue.svg)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Shell](https://img.shields.io/badge/Shell-bash-green.svg)]()
@@ -28,7 +33,7 @@ Four outcomes you'll feel in your first week:
 - **Claude can't claim "done" with broken code.** Quality gates intercept the Stop event until tests, review, and verification land. No more "I've made the changes" on work that doesn't compile.
 - **Your prompts get classified before Claude acts.** Execution vs advisory, coding vs writing — and routed to the right specialists automatically. Less steering per turn; more useful first responses.
 - **When Claude is uncertain, it tells you instead of guessing.** Declare-and-proceed openers surface the model's interpretation in one sentence so you can redirect cheaply if it's wrong — instead of finding out 3 commits later.
-- **Claude no longer gets to invent the finish line after seeing what it built.** Serious `/ulw` work freezes a five-axis Definition of Excellent before mutation, records criterion-level artifact proof, and uses a fresh excellence reviewer to search for the strongest remaining move. “Visionary” is a blocking axis, not decorative praise.
+- **On main (Unreleased), Claude no longer gets to invent the finish line after seeing what it built.** Serious `/ulw` work freezes a five-axis Definition of Excellent before mutation, records criterion-level artifact proof, and uses a fresh excellence reviewer to search for the strongest remaining move. “Visionary” is a blocking axis, not decorative praise.
 
 The harness is bash hooks + skills + agents installed as an overlay into `~/.claude/`. It sits alongside Claude Code; Claude Code's own surface is unchanged.
 
@@ -42,7 +47,7 @@ The harness is bash hooks + skills + agents installed as an overlay into `~/.cla
 | | Vanilla Claude Code | oh-my-claude |
 |---|---|---|
 | **Quality enforcement** | None | Hard stop gates |
-| **Definition of quality** | Whatever the active model decides late | Frozen before mutation; five task-specific axes + evidence + blind frontier |
+| **Definition of quality** | Whatever the active model decides late | On main (Unreleased): frozen before mutation; five task-specific axes + evidence + blind frontier |
 | **Intent classification** | None | 5-category state machine |
 | **Domain coverage** | Code-focused | Coding, writing, research, ops |
 | **Dependencies** | — | bash + jq |
@@ -56,7 +61,7 @@ See real catches in [`docs/showcase.md`](docs/showcase.md) — sessions where th
 
 ## Quick start
 
-Requires Claude Code 2.1.163+, `jq`, and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). Debian/Ubuntu: `apt install jq rsync`. `install.sh` hard-fails before mutation when Claude Code is older or `jq` is missing.
+Requires Claude Code 2.1.163+, `jq`, and `rsync`. macOS: `brew install jq` (`rsync` is preinstalled). Debian/Ubuntu: `apt install jq rsync`. `install.sh` hard-fails before mutation when Claude Code is older or `jq` is missing. Optional screenshot-as-Definition proof additionally uses a system Perl with the core `Compress::Raw::Zlib` module to CRC-check, inflate, and validate PNG scanlines; when that decoder is unavailable, planning rejects that proof method before the contract freezes and another proof method remains usable.
 
 ```bash
 # Pinned install (recommended — install-remote.sh prints the current tag tip):
@@ -113,7 +118,7 @@ Escalation order before any of these fires (v1.40.0): ship inline → wave-appen
 
 Both install paths keep Claude Code's permission prompts on; once you trust the harness, [`--bypass-permissions`](#power-user-setup) removes them. Quality gates apply either way.
 
-Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes the harness cleanly (timestamped backups and your user-owned Quality Constitution stay preserved). Use `--purge-quality-constitutions` only when you explicitly want that taste data erased.
+Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes the harness cleanly, disables any registered resume-watchdog scheduler, and atomically removes managed settings (including bypass-permissions values) without replacing a symlinked dotfiles target (timestamped backups and your user-owned Quality Constitution stay preserved). Use `--purge-quality-constitutions` only when you explicitly want that taste data erased; uninstall refuses unsafe symlinked deletion ancestors before changing either the profile or managed harness.
 
 Already in Claude Code and want to skip the manual steps? See [AI-assisted install](#ai-assisted-install) below.
 
@@ -156,9 +161,9 @@ Your `--model-tier` preference persists in `~/.claude/oh-my-claude.conf` and re-
 
 **Install flags (v1.36.0+):**
 - `--no-ghostty` / `--with-ghostty` — skip or force-install Ghostty theme/config. Default auto-detects: only seeds `~/.config/ghostty/` when that directory already exists.
-- `--keep-backups=N` (default `10`) — prune older `oh-my-claude-*` backup directories after install. `--keep-backups=all` disables pruning. Closes the unbounded-accumulation surface during patch cascades.
+- `--keep-backups=N` (default `10`, canonical decimal `0..10000`) — prune older `oh-my-claude-*` backup directories after install. `--keep-backups=all` disables pruning. Closes the unbounded-accumulation surface during patch cascades.
 
-Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes everything cleanly. Backups of pre-install settings live at `~/.claude/backups/oh-my-claude-<timestamp>/` (auto-pruned per `--keep-backups`; the most recent always survives).
+Reversible: `bash ~/.local/share/oh-my-claude/uninstall.sh` removes the managed harness, settings wiring, bypass mode, CLI link, and watchdog scheduler while preserving backups and user-owned Quality Constitutions. Backups of pre-install settings live at `~/.claude/backups/oh-my-claude-<timestamp>/` (auto-pruned per `--keep-backups`; the most recent always survives).
 
 ## Troubleshooting
 
@@ -205,7 +210,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 **Missing verification or review blocks completion attempts.** Skip tests, skip the generic reviewer for an edited code/prose surface, defer work to a "future session" without a checkpoint, miss prompt-stated commit/push obligations, or leave a semantically required specialist review uncovered — each initially hard-stops completion. Caps prevent infinite loops: if Claude cannot satisfy a gate, it eventually surfaces the unresolved gap instead of spinning.
 
-### Definition of Excellent: a finish line Claude cannot move
+### Definition of Excellent: a finish line Claude cannot move *(main / Unreleased)*
 
 **Serious work now establishes the quality bar before implementation, not after it.** With `definition_of_excellent=adaptive` (default), medium/high-risk, broad, open-mandate, Zero-Steering, and explicitly ambitious prompts arm a causal protocol:
 
@@ -216,7 +221,7 @@ The result: Claude classifies your intent before acting, routes work to speciali
 
 The visionary axis means a coherent, recoverable, evidence-testable step-change in the user's outcome—not novelty theater or unrelated scope. A deliberately restrained design can be visionary when it unlocks the better operating model. The optional user-owned Quality Constitution (`/quality-constitution`) stores explicit standards and annotated exemplars under `~/.claude/omc-user/`; repositories and model prose cannot silently promote preferences into blocking rules. See [`docs/definition-of-excellent.md`](docs/definition-of-excellent.md) for the protocol and falsifiable blind A/B evaluation contract.
 
-**Evidence status:** the enforcement mechanism and blind evaluator are implemented, but the preregistered paid A/B campaign has not run. Measured superiority over the exact pre-feature harness remains pending.
+**Evidence status:** the enforcement mechanism, sealed first-attempt campaign protocol, and blind evaluator are implemented, but the paid A/B campaign has not run. Comparison, report, and claim evaluation freeze the judge schema, calibration contract, canonical probe roster, and fixture tree as one private generation, then refuse output if either the snapshot or live authority drifts; raced evidence nodes are quarantined away from accepted final names without recursive traversal. Measured superiority over the exact pre-feature harness remains pending.
 
 ### Agent-first execution
 
@@ -279,7 +284,7 @@ Assessment and implementation are separate decisions. Only a successfully comple
 
 ### Zero dependencies
 
-**No npm. No TypeScript. No Node.js runtime. No plugin framework.** The entire harness is bash scripts and `jq`. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory.
+**No npm. No TypeScript. No Node.js runtime. No plugin framework.** The core harness is bash scripts and `jq`. It works anywhere Claude Code runs, installs in seconds, and leaves no footprint beyond the `~/.claude/` directory. The optional validated-PNG Definition proof path uses system Perl's core zlib module when present and fails feasibility closed when absent.
 
 ## Usage examples
 
@@ -334,7 +339,7 @@ oh-my-claude/
 │   └── statusline.py                        # Custom statusline widget
 ├── config/settings.patch.json               # Merged into user settings on install
 ├── evals/realwork/                           # Outcome eval scenarios for minimal-prompt shipping across code + design/UI + native artifacts + mixed + quantitative/data-analysis + regulated/high-stakes + writing + research + scholarly + ops + advisory
-├── tests/               (157 bash + 1 py)   # See CLAUDE.md for canonical commands
+├── tests/               (159 bash + 1 py)   # See CLAUDE.md for canonical commands
 ├── tools/                                    # Developer-only tools (not installed)
 └── docs/                                    # Architecture, customization, FAQ, prompts
 ```
@@ -552,7 +557,7 @@ bash ~/.claude/install-resume-watchdog.sh
 
 The installer detects your platform, registers the scheduler, sets `resume_watchdog=on`, and runs a dry-tick to confirm health. On launchd/systemd hosts it installs the native scheduler; on fallback hosts it writes a managed crontab entry when `crontab` is available and otherwise prints the exact line to add manually. Tail the log at `~/.claude/quality-pack/state/.watchdog-logs/resume-watchdog.log` (macOS) or `journalctl --user -u oh-my-claude-resume-watchdog.service -f` (Linux).
 
-When `tmux` is not available the watchdog falls back to an OS notification — you click the alert, open Claude Code, and run `/ulw-resume` manually. For cron fallback hosts, inspect the managed entry with `crontab -l`. To uninstall the watchdog: `bash ~/.claude/install-resume-watchdog.sh --uninstall [--reset-conf]`.
+When `tmux` is not available the watchdog falls back to an OS notification — you click the alert, open Claude Code, and run `/ulw-resume` manually. For cron fallback hosts, inspect the managed entry with `crontab -l`. To disable only the watchdog: `bash ~/.claude/install-resume-watchdog.sh --uninstall [--reset-conf]`. A full `uninstall.sh` run performs that scheduler cleanup automatically before removing the harness.
 
 ## Release & distribution tooling (maintainers)
 

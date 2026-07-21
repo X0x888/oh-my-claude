@@ -4,9 +4,9 @@
 # `start` row in `<session>/timing.jsonl` for every tool call. Pairs
 # with posttool-timing.sh, which writes the matching `end` row.
 #
-# Lock-free hot path: a single sub-PIPE_BUF JSONL append per call. No
-# state-lock acquisition on this path. Aggregation under lock happens
-# only at Stop / on-demand surfaces.
+# Hot path: a single sub-PIPE_BUF JSONL append per call under the timing
+# log's dedicated mutex. This path never takes the broader session-state
+# lock; Stop's cap-and-rename rotation uses the same log mutex.
 #
 # Fast-exit when:
 #   - jq is unavailable (common.sh exits 0 in that case before this runs)
@@ -30,14 +30,22 @@ fi
 # parse cost on every PreTool fire.
 export OMC_LAZY_CLASSIFIER=1
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 is_time_tracking_enabled || exit 0
 
 SESSION_ID="$(json_get '.session_id')"
 [[ -z "${SESSION_ID}" ]] && exit 0
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+omc_interrupted_dispatch_transaction_present "${SESSION_ID}" && exit 0
 
 tool_name="$(json_get '.tool_name')"
 [[ -z "${tool_name}" ]] && exit 0

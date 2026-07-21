@@ -52,7 +52,7 @@ The symptom-table above is a discovery shortcut. Each row maps to a skill in the
 |-------|---------|-------------|
 | **omc-config** | `/omc-config [setup\|update\|change]` | Guided multi-choice walkthrough for `oh-my-claude.conf` — pick a profile (Maximum / Balanced / Minimal) or fine-tune individual clusters. Auto-detects first-time setup vs upgrade vs ad-hoc change. |
 | **omc-doctor** | `/omc-doctor` | One-shot install health check against the installed `~/.claude` tree (core files, @-includes, hook wiring, state root) — from any directory, days after install. Use when the harness feels off or gates stopped firing. |
-| **quality-constitution** | `/quality-constitution [show\|remember\|must\|avoid\|review\|accept\|reject\|reference\|audit]` | Curate the user-owned quality principles, signatures, anti-patterns, and annotated exemplars used by the frozen Definition of Excellent. Inferred candidates remain advisory until explicit acceptance. |
+| **quality-constitution** | `/quality-constitution [show\|remember\|must\|must-not\|avoid\|propose\|review\|accept\|reject\|reference\|anti-reference\|remove\|audit]` | Curate the user-owned quality principles, signatures, anti-patterns, and annotated exemplars used by the frozen Definition of Excellent. Inferred candidates remain advisory until explicit acceptance. |
 | **ulw-demo** | `/ulw-demo` | Guided 90-second walkthrough that fires the quality gates on a demo file — best first step after install. |
 
 ### Working — your real tasks

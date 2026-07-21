@@ -41,7 +41,7 @@ fi
 # the original discovery fallback for the legacy validator path; this
 # moves it up so the new v1.40.0 guard inherits the same protection.
 if [[ -z "${SESSION_ID:-}" ]]; then
-  SESSION_ID="$(discover_latest_session)"
+  SESSION_ID="$(discover_current_project_session)"
 fi
 if [[ -z "${SESSION_ID:-}" ]]; then
   printf 'mark-deferred: no active session (SESSION_ID unset and no session found under %s)\n' "${STATE_ROOT}" >&2

@@ -64,7 +64,10 @@ build_healthy() {
   jq -n '{hooks: {Stop: [{hooks: [{type: "command",
     command: "$HOME/.claude/skills/autowork/scripts/stop-guard.sh"}]}]}}' \
     > "${root}/settings.json"
-  printf 'installed_version=9.9.9\n' > "${root}/oh-my-claude.conf"
+  {
+    printf 'installed_version=0.0.1\n'
+    printf 'installed_version=  9.9.9  \r\n'
+  } > "${root}/oh-my-claude.conf"
   printf -- '---\nname: demo\n---\n' > "${root}/skills/demo/SKILL.md"
   printf -- '---\nname: a\n---\n' > "${root}/agents/a.md"
 }

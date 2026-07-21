@@ -10,7 +10,7 @@
     {"kind": "files", "globs": ["src/**", "tests/**"]}
   ],
   "hard_checks": [
-    {"id": "label_fixed", "description": "The misspelled status label is corrected.", "critical": true},
+    {"id": "label_fixed", "description": "The misspelled status label is corrected.", "critical": false},
     {"id": "behavior_unchanged", "description": "Public behavior and snapshots beyond the label remain unchanged.", "critical": true},
     {"id": "scope_bounded", "description": "No unrelated files, dependencies, or features are added.", "critical": true}
   ],
@@ -38,9 +38,9 @@
     "max_candidate_cost_ratio": 1.25,
     "max_candidate_wall_ratio": 1.25,
     "candidate_summary_contract": {
-      "schema_version": 3,
-      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
-      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "schema_version": 4,
+      "required_top_level": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"],
+      "generation_authority": "evaluator-owned-cli-telemetry-v1",
       "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
     }
   }

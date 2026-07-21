@@ -36,6 +36,7 @@ set -euo pipefail
 # the four.
 export OMC_LAZY_CLASSIFIER=1
 
+_OMC_HOOK_CALLER_PATH="${PATH:-}"
 _omc_hook_source="${BASH_SOURCE[0]}"
 SCRIPT_DIR="${_omc_hook_source%/*}"
 [[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
@@ -47,6 +48,26 @@ unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 
 HOOK_JSON="$(_omc_read_hook_stdin)"
 [[ -n "${HOOK_JSON}" ]] || exit 0
+if ! _posttool_dispatch_sid="$(jq -er '
+    def valid_sid:
+      type == "string" and length >= 1 and length <= 128
+      and test("^[A-Za-z0-9_.-]+$")
+      and . != "." and . != ".."
+      and (contains("..") | not) and (test("^\\.+$") | not);
+    select(type == "object" and (.session_id | valid_sid))
+    | .session_id
+  ' <<<"${HOOK_JSON}" 2>/dev/null)"; then
+  # Invalid lifecycle identity may not be normalized into another session by
+  # Bash (which discards decoded NUL bytes) and then forwarded to every child.
+  exit 0
+fi
+if omc_interrupted_dispatch_transaction_present \
+      "${_posttool_dispatch_sid}"; then
+  # A tool result already in flight when Agent admission became interrupted
+  # must not advance timing/edit/verification/delivery/closeout state around
+  # the retained journal. Exact reset is the only convergence owner.
+  exit 0
+fi
 
 _dispatch_one() {
   # Feed the captured payload to a handler sourced in a pipeline subshell.

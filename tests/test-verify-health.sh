@@ -11,8 +11,12 @@
 #   T3  — stale heartbeat (15min) → `WARN: watchdog=warn-stale-Ns ...`.
 #   T4  — very stale heartbeat (1hr) → `FAIL: watchdog=fail-stale-Ns ...`.
 #   T5  — unreadable heartbeat (garbage) → `WARN: watchdog=warn-unreadable ...`.
+#   T5b — noncanonical, oversized, mixed, binary, future, and unsafe heartbeat nodes are unreadable.
+#   T5c — a noncanonical system clock fails before arithmetic/JSON import.
 #   T6  — active session count reflects dir mtime.
-#   T7  — anomaly count from anomaly_log.jsonl ≥ 4 → WARN escalation.
+#   T6b — traversal failure still emits one WARN status line.
+#   T6c — an unsafe/unreadable anomaly node degrades health to WARN.
+#   T7  — anomaly count from the production hooks.log ≥ 4 → WARN escalation.
 #   T8  — anomaly count > 10 → FAIL escalation.
 #   T9  — exit code maps to status (OK=0, WARN=1, FAIL=2).
 #   T10 — output line matches regex contract for external monitor wrap.
@@ -80,7 +84,8 @@ printf 'T2: healthy heartbeat → ok status\n'
 T="$(setup_target)"
 mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
 _now="$(date +%s)"
-printf '%s' "$(( _now - 5 ))" > "${T}/.claude/quality-pack/state/_watchdog/heartbeat"
+printf '%s' "$(( _now - 5 ))" \
+  > "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
 set +e
 out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
 rc=$?
@@ -95,7 +100,8 @@ printf 'T3: stale heartbeat 15min → WARN\n'
 T="$(setup_target)"
 mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
 _now="$(date +%s)"
-printf '%s' "$(( _now - 900 ))" > "${T}/.claude/quality-pack/state/_watchdog/heartbeat"
+printf '%s' "$(( _now - 900 ))" \
+  > "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
 set +e
 out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
 rc=$?
@@ -110,7 +116,8 @@ printf 'T4: very stale heartbeat 2hr → FAIL\n'
 T="$(setup_target)"
 mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
 _now="$(date +%s)"
-printf '%s' "$(( _now - 7200 ))" > "${T}/.claude/quality-pack/state/_watchdog/heartbeat"
+printf '%s' "$(( _now - 7200 ))" \
+  > "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
 set +e
 out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
 rc=$?
@@ -124,13 +131,83 @@ rm -rf "${T}"
 printf 'T5: garbage heartbeat → warn-unreadable\n'
 T="$(setup_target)"
 mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
-printf 'not-a-number' > "${T}/.claude/quality-pack/state/_watchdog/heartbeat"
+printf 'not-a-number' \
+  > "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
 set +e
 out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
 rc=$?
 set -e
 assert_eq "T5: exit code 1 (WARN)" "1" "${rc}"
 assert_match "T5: warn-unreadable" 'watchdog=warn-unreadable' "${out}"
+rm -rf "${T}"
+
+# T5b: numeric-looking poison must not be normalized into a healthy heartbeat.
+printf 'T5b: noncanonical heartbeat values remain unreadable\n'
+_now="$(date +%s)"
+for _heartbeat_case in \
+    '08' \
+    '9999999999999999' \
+    '123mixed456' \
+    "$(( _now + 3600 ))"; do
+  T="$(setup_target)"
+  mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
+  printf '%s\n' "${_heartbeat_case}" \
+    > "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
+  set +e
+  out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "T5b: ${_heartbeat_case} exits WARN" "1" "${rc}"
+  assert_match "T5b: ${_heartbeat_case} is unreadable" \
+    'watchdog=warn-unreadable' "${out}"
+  rm -rf "${T}"
+done
+
+T="$(setup_target)"
+mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
+printf '%s\0' "${_now}" \
+  > "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
+set +e
+out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
+rc=$?
+set -e
+assert_eq "T5b: NUL-suffixed epoch exits WARN" "1" "${rc}"
+assert_match "T5b: NUL-suffixed epoch is unreadable" \
+  'watchdog=warn-unreadable' "${out}"
+rm -rf "${T}"
+
+T="$(setup_target)"
+mkdir -p "${T}/.claude/quality-pack/state/_watchdog"
+ln -s "${T}/missing-heartbeat-target" \
+  "${T}/.claude/quality-pack/state/_watchdog/last_tick_completed_ts"
+set +e
+out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
+rc=$?
+set -e
+assert_eq "T5b: dangling heartbeat symlink exits WARN" "1" "${rc}"
+assert_match "T5b: dangling heartbeat symlink is unreadable" \
+  'watchdog=warn-unreadable' "${out}"
+rm -rf "${T}"
+
+# T5c: `date` output crosses the same canonical boundary before it reaches
+# Bash arithmetic or jq --argjson.
+printf 'T5c: noncanonical system clock fails closed\n'
+T="$(setup_target)"
+_clock_bin="${T}/bin"
+mkdir -p "${_clock_bin}"
+cat > "${_clock_bin}/date" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' '08'
+EOF
+chmod +x "${_clock_bin}/date"
+set +e
+out="$(PATH="${_clock_bin}:${PATH}" TARGET_HOME="${T}" \
+  bash "${VERIFY}" --health 2>&1)"
+rc=$?
+set -e
+assert_eq "T5c: invalid clock exits FAIL" "2" "${rc}"
+assert_match "T5c: invalid clock has one-line failure status" \
+  '^FAIL: watchdog=clock-unreadable sessions=0 anomalies_1h=0$' "${out}"
 rm -rf "${T}"
 
 # T6: active-session count reflects directory mtime
@@ -149,15 +226,56 @@ set -e
 assert_match "T6: sessions=1 (stale dir excluded)" 'sessions=1' "${out}"
 rm -rf "${T}"
 
+# T6b: a failed state traversal must not trip `set -e` and exit without the
+# health endpoint's mandatory one-line status contract.
+printf 'T6b: active-session traversal failure degrades to one WARN line\n'
+T="$(setup_target)"
+_find_bin="${T}/bin"
+mkdir -p "${_find_bin}"
+cat > "${_find_bin}/find" <<'EOF'
+#!/usr/bin/env bash
+exit 97
+EOF
+chmod +x "${_find_bin}/find"
+set +e
+out="$(PATH="${_find_bin}:${PATH}" TARGET_HOME="${T}" \
+  bash "${VERIFY}" --health 2>&1)"
+rc=$?
+set -e
+assert_eq "T6b: traversal failure exits WARN" "1" "${rc}"
+assert_match "T6b: traversal failure retains one-line schema" \
+  '^WARN: watchdog=no-watchdog sessions=0 anomalies_1h=0$' "${out}"
+assert_eq "T6b: traversal failure emits exactly one line" "1" \
+  "$(printf '%s' "${out}" | grep -c '^' || true)"
+rm -rf "${T}"
+
+# T6c: an existing anomaly node is not the same as a benign missing log. An
+# unsafe node or read failure must degrade health rather than silently report
+# zero anomalies.
+printf 'T6c: unreadable anomaly source degrades to one WARN line\n'
+T="$(setup_target)"
+ln -s "${T}/missing-hooks-target" \
+  "${T}/.claude/quality-pack/state/hooks.log"
+set +e
+out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
+rc=$?
+set -e
+assert_eq "T6c: dangling anomaly symlink exits WARN" "1" "${rc}"
+assert_match "T6c: anomaly read failure retains one-line schema" \
+  '^WARN: watchdog=no-watchdog sessions=0 anomalies_1h=0$' "${out}"
+assert_eq "T6c: anomaly read failure emits exactly one line" "1" \
+  "$(printf '%s' "${out}" | grep -c '^' || true)"
+rm -rf "${T}"
+
 # T7: anomaly count 4-10 → WARN escalation
 printf 'T7: anomaly count >=4 → WARN\n'
 T="$(setup_target)"
-_now="$(date +%s)"
+_now_text="$(date '+%Y-%m-%d %H:%M:%S')"
 {
   for i in 1 2 3 4 5; do
-    printf '{"ts":%s,"source":"test","reason":"r"}\n' "${_now}"
+    printf '%s  [anomaly]  test  r%s\n' "${_now_text}" "${i}"
   done
-} > "${T}/.claude/quality-pack/anomaly_log.jsonl"
+} > "${T}/.claude/quality-pack/state/hooks.log"
 set +e
 out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
 rc=$?
@@ -170,12 +288,12 @@ rm -rf "${T}"
 # T8: anomaly count > 10 → FAIL escalation
 printf 'T8: anomaly count >10 → FAIL\n'
 T="$(setup_target)"
-_now="$(date +%s)"
+_now_text="$(date '+%Y-%m-%d %H:%M:%S')"
 {
   for i in $(seq 1 12); do
-    printf '{"ts":%s,"source":"test","reason":"r"}\n' "${_now}"
+    printf '%s  [anomaly]  test  r%s\n' "${_now_text}" "${i}"
   done
-} > "${T}/.claude/quality-pack/anomaly_log.jsonl"
+} > "${T}/.claude/quality-pack/state/hooks.log"
 set +e
 out="$(TARGET_HOME="${T}" bash "${VERIFY}" --health 2>&1)"
 rc=$?

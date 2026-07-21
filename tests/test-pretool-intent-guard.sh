@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1090
 # test-pretool-intent-guard.sh — focused regression for pretool-intent-guard.sh.
 #
 # Coverage:
@@ -26,6 +27,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HOOK_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/pretool-intent-guard.sh"
+DISPATCH_GUARD_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/dispatch-recovery-guard.sh"
+PENDING_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-pending-agent.sh"
+PRETOOL_TIMING_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/pretool-timing.sh"
+TOOL_START_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-tool-start-revision.sh"
 COMMON_SH="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 
 ORIG_HOME="${HOME}"
@@ -181,10 +186,553 @@ run_guard() {
   printf '%s' "${payload}" | bash "${HOOK_SCRIPT}" 2>/dev/null || true
 }
 
+run_dispatch_guard() {
+  local sid="$1" tool="${2:-Read}" cmd="${3:-}" payload
+  payload="$(jq -nc --arg s "${sid}" --arg t "${tool}" --arg c "${cmd}" '{
+    session_id:$s,tool_name:$t,tool_input:{command:$c},
+    hook_event_name:"PreToolUse"
+  }')"
+  printf '%s' "${payload}" \
+    | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true
+}
+
 denied() {
   local out="$1"
   [[ -n "${out}" ]] && grep -q '"permissionDecision":"deny"' <<<"${out}"
 }
+
+# ----------------------------------------------------------------------
+# Interrupted Agent admission is a universal PreTool fence. Only the exact
+# bundled /ulw-off command may cross it; a near match must not inherit reset
+# authority.
+setup_test
+init_session "t_dispatch_recovery" "execution"
+dispatch_recovery_dir="${TEST_HOME}/.claude/quality-pack/state/t_dispatch_recovery"
+mkdir "${dispatch_recovery_dir}/.dispatch-txn.interrupted"
+touch "${dispatch_recovery_dir}/.dispatch-txn.interrupted/.ready"
+out_dispatch_read="$(run_guard \
+  "t_dispatch_recovery" "git status --short")"
+assert_contains "T_dispatch_recovery: read-only tool is fenced" \
+  '"permissionDecision":"deny"' "${out_dispatch_read}"
+assert_contains "T_dispatch_recovery: denial identifies admission recovery" \
+  '[Dispatch recovery]' "${out_dispatch_read}"
+out_dispatch_universal="$(run_dispatch_guard \
+  "t_dispatch_recovery" "Read")"
+assert_contains "T_dispatch_recovery: universal hook denies Read" \
+  '"permissionDecision":"deny"' "${out_dispatch_universal}"
+assert_eq "T_dispatch_recovery: guard is wired without a matcher" "1" \
+  "$(jq '[.hooks.PreToolUse[]
+      | select(has("matcher") | not)
+      | .hooks[]?
+      | select((.command // "")
+        | contains("dispatch-recovery-guard.sh"))]
+    | length' "${REPO_ROOT}/config/settings.patch.json")"
+dispatch_read_payload="$(jq -nc --arg sid t_dispatch_recovery '{
+  session_id:$sid,tool_name:"Read",tool_use_id:"dispatch-read-start",
+  tool_input:{file_path:"README.md"},hook_event_name:"PreToolUse"
+}')"
+printf '%s' "${dispatch_read_payload}" \
+  | bash "${TOOL_START_SCRIPT}" >/dev/null 2>&1 || true
+assert_eq "T_dispatch_recovery: verification-start sibling writes nothing" \
+  "0" \
+  "$([[ -d "${dispatch_recovery_dir}/.verification-starts" ]] \
+    && find "${dispatch_recovery_dir}/.verification-starts" -type f \
+      | grep -q . && printf 1 || printf 0)"
+printf '%s' "${dispatch_read_payload}" \
+  | bash "${PRETOOL_TIMING_SCRIPT}" >/dev/null 2>&1 || true
+assert_eq "T_dispatch_recovery: timing sibling writes nothing" "0" \
+  "$([[ -e "${dispatch_recovery_dir}/timing.jsonl" ]] \
+    && printf 1 || printf 0)"
+dispatch_agent_out="$(jq -nc --arg sid t_dispatch_recovery '{
+    session_id:$sid,tool_name:"Agent",
+    tool_input:{subagent_type:"oracle",description:"must remain blocked"},
+    hook_event_name:"PreToolUse"
+  }' | bash "${PENDING_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_dispatch_recovery: Agent recorder independently denies" \
+  '"permissionDecision":"deny"' "${dispatch_agent_out}"
+assert_eq "T_dispatch_recovery: Agent recorder preserves armed journal" "1" \
+  "$([[ -e "${dispatch_recovery_dir}/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+out_dispatch_near_reset="$(run_guard "t_dispatch_recovery" \
+  'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}" && echo unsafe')"
+assert_contains "T_dispatch_recovery: compound near-reset remains denied" \
+  '"permissionDecision":"deny"' "${out_dispatch_near_reset}"
+dispatch_nul_reset_payload="$(jq -nc '
+  {session_id:("t_dispatch_recovery" + "\u0000"),tool_name:"Bash",
+   tool_input:{command:("bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "
+     + "\u0000" + "\"${CLAUDE_SESSION_ID}\"")},
+   hook_event_name:"PreToolUse"}')"
+out_dispatch_nul_reset="$(printf '%s' "${dispatch_nul_reset_payload}" \
+  | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_dispatch_recovery: NUL-normalized exact reset is denied" \
+  '"permissionDecision":"deny"' "${out_dispatch_nul_reset}"
+assert_contains "T_dispatch_recovery: malformed reset fails at lifecycle input" \
+  '[Lifecycle input]' "${out_dispatch_nul_reset}"
+assert_eq "T_dispatch_recovery: malformed reset preserves interrupted journal" \
+  "1" \
+  "$([[ -e "${dispatch_recovery_dir}/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+out_dispatch_exact_reset="$(run_guard "t_dispatch_recovery" \
+  'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+assert_eq "T_dispatch_recovery: exact managed reset command is allowed" \
+  "" "${out_dispatch_exact_reset}"
+assert_eq "T_dispatch_recovery: universal hook also allows exact reset" \
+  "" "$(run_dispatch_guard "t_dispatch_recovery" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+rm -f "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+out_dispatch_without_global="$(run_dispatch_guard \
+  "t_dispatch_recovery" "Read")"
+assert_contains "T_dispatch_recovery: direct journal survives missing global marker" \
+  '"permissionDecision":"deny"' "${out_dispatch_without_global}"
+assert_eq "T_dispatch_recovery: exact reset is still sole markerless exception" \
+  "" "$(run_dispatch_guard "t_dispatch_recovery" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+teardown_test
+
+# ----------------------------------------------------------------------
+# A staged deactivation can look stale only after both generations are
+# validated as canonical inside jq. An escaped NUL must not be stripped by
+# Bash and turn a malformed live-state generation into a newer clean number.
+setup_test
+init_session "t_dispatch_generation_nul" "execution"
+dispatch_generation_dir="${TEST_HOME}/.claude/quality-pack/state/t_dispatch_generation_nul"
+jq '. + {
+      ulw_enforcement_active:"1",
+      ulw_enforcement_generation:("2" + "\u0000")
+    }' "${dispatch_generation_dir}/session_state.json" \
+  >"${dispatch_generation_dir}/session_state.json.tmp"
+mv "${dispatch_generation_dir}/session_state.json.tmp" \
+  "${dispatch_generation_dir}/session_state.json"
+mkdir -p \
+  "${dispatch_generation_dir}/.deactivate-txn.poison/journals/.dispatch-txn.interrupted"
+touch \
+  "${dispatch_generation_dir}/.deactivate-txn.poison/journals/.dispatch-txn.interrupted/.ready"
+printf '%s\n' '1' \
+  >"${dispatch_generation_dir}/.deactivate-txn.poison/.enforcement-generation"
+out_dispatch_generation_nul="$(run_dispatch_guard \
+  "t_dispatch_generation_nul" "Read")"
+assert_contains "T_dispatch_generation: NUL-bearing state generation stays fenced" \
+  '"permissionDecision":"deny"' "${out_dispatch_generation_nul}"
+assert_contains "T_dispatch_generation: malformed generation is recovery work" \
+  '[Dispatch recovery]' "${out_dispatch_generation_nul}"
+assert_eq "T_dispatch_generation: denial preserves staged authority" "1" \
+  "$([[ -e "${dispatch_generation_dir}/.deactivate-txn.poison/journals/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+teardown_test
+
+# ----------------------------------------------------------------------
+# A source whose resume ownership was committed is dormant even though its
+# copied workflow/generation remains present for report/replay. The universal
+# hook fences every real tool; only the exact managed reset remains admissible.
+setup_test
+init_session "t_resume_transferred_source" "execution"
+resume_source_dir="${TEST_HOME}/.claude/quality-pack/state/t_resume_transferred_source"
+jq '. + {
+      ulw_enforcement_active:"1",
+      ulw_enforcement_generation:"4",
+      resume_transferred_to:"t_resume_live_owner"
+    }' "${resume_source_dir}/session_state.json" \
+  >"${resume_source_dir}/session_state.json.tmp"
+mv "${resume_source_dir}/session_state.json.tmp" \
+  "${resume_source_dir}/session_state.json"
+# The target may retire the shared active marker after ownership has moved.
+# Dormant-source authority is per-session and must remain fenced regardless.
+rm -f "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+out_resume_source_read="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: universal hook denies dormant-source Read" \
+  '"permissionDecision":"deny"' "${out_resume_source_read}"
+assert_contains "T_resume_source: denial names logical resume ownership" \
+  '[Resume ownership]' "${out_resume_source_read}"
+assert_contains "T_resume_source: denial identifies the live owner" \
+  't_resume_live_owner' "${out_resume_source_read}"
+assert_contains "T_resume_source: missing global marker does not bypass fence" \
+  '"permissionDecision":"deny"' "${out_resume_source_read}"
+resume_nested_decoy_payload='{"tool_input":{"command":"embedded \"session_id\":\"fake-session\""},"session_id":"t_resume_transferred_source","tool_name":"Read","hook_event_name":"PreToolUse"}'
+out_resume_nested_decoy="$(printf '%s' "${resume_nested_decoy_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: nested identity decoy cannot spoof top-level prefilter" \
+  '"permissionDecision":"deny"' "${out_resume_nested_decoy}"
+
+resume_nul_sid_payload="$(jq -nc '
+  {session_id:("t_resume_transferred_source" + "\u0000"),tool_name:"Read",
+   tool_input:{},hook_event_name:"PreToolUse"}')"
+out_resume_nul_sid="$(printf '%s' "${resume_nul_sid_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: NUL-bearing hook session ID is denied" \
+  '"permissionDecision":"deny"' "${out_resume_nul_sid}"
+assert_contains "T_resume_source: NUL session ID fails at lifecycle input" \
+  '[Lifecycle input]' "${out_resume_nul_sid}"
+assert_not_contains_ci "T_resume_source: NUL session ID cannot normalize into owner lookup" \
+  '[Resume ownership]' "${out_resume_nul_sid}"
+
+resume_nul_tool_payload="$(jq -nc --arg cmd \
+  'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"' '
+  {session_id:"t_resume_transferred_source",tool_name:("Ba" + "\u0000" + "sh"),
+   tool_input:{command:$cmd},hook_event_name:"PreToolUse"}')"
+out_resume_nul_tool="$(printf '%s' "${resume_nul_tool_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: NUL-bearing tool cannot mint reset authority" \
+  '"permissionDecision":"deny"' "${out_resume_nul_tool}"
+
+resume_nul_command_payload="$(jq -nc '
+  {session_id:"t_resume_transferred_source",tool_name:"Bash",
+   tool_input:{command:("bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "
+     + "\u0000" + "\"${CLAUDE_SESSION_ID}\"")},hook_event_name:"PreToolUse"}')"
+out_resume_nul_command="$(printf '%s' "${resume_nul_command_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: NUL-bearing command cannot mint reset authority" \
+  '"permissionDecision":"deny"' "${out_resume_nul_command}"
+
+# EOF is part of the authority boundary. Truly truncated/malformed JSON and a
+# valid JSON value with the wrong top-level schema must be denied statically;
+# none may be mistaken for an ordinary markerless session.
+resume_truncated_payload='{"session_id":"t_resume_transferred_source","tool_name":"Read"'
+out_resume_truncated="$(printf '%s' "${resume_truncated_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: EOF-truncated payload is denied" \
+  '"permissionDecision":"deny"' "${out_resume_truncated}"
+assert_contains "T_resume_source: EOF-truncated payload is identified as lifecycle input" \
+  'complete valid top-level hook object' "${out_resume_truncated}"
+
+resume_malformed_payload='{"session_id":"t_resume_transferred_source","tool_name":]}'
+out_resume_malformed="$(printf '%s' "${resume_malformed_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: malformed EOF-complete payload is denied" \
+  '"permissionDecision":"deny"' "${out_resume_malformed}"
+assert_contains "T_resume_source: malformed payload never claims resume authority" \
+  'complete valid top-level hook object' "${out_resume_malformed}"
+
+resume_nonobject_payload='["t_resume_transferred_source","Read"]'
+out_resume_nonobject="$(printf '%s' "${resume_nonobject_payload}" \
+  | bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: non-object top-level JSON is denied" \
+  '"permissionDecision":"deny"' "${out_resume_nonobject}"
+assert_contains "T_resume_source: top-level hook schema is validated" \
+  'complete valid top-level hook object' "${out_resume_nonobject}"
+
+# These test seams only force denial. They cover hosts with no trusted parser
+# and a parser that exists but cannot prove a known constant before parsing
+# any hook/state authority.
+out_resume_missing_jq="$(printf '%s' "${resume_nested_decoy_payload}" \
+  | OMC_TEST_DISPATCH_GUARD_JQ_FAILURE=missing \
+    bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: unavailable trusted parser fails closed" \
+  '"permissionDecision":"deny"' "${out_resume_missing_jq}"
+assert_contains "T_resume_source: unavailable parser denial is static" \
+  'trusted JSON parser was unavailable' "${out_resume_missing_jq}"
+
+out_resume_broken_jq="$(printf '%s' "${resume_nested_decoy_payload}" \
+  | OMC_TEST_DISPATCH_GUARD_JQ_FAILURE=broken \
+    bash "${DISPATCH_GUARD_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_resume_source: broken trusted parser fails closed" \
+  '"permissionDecision":"deny"' "${out_resume_broken_jq}"
+assert_contains "T_resume_source: broken parser fails its integrity probe" \
+  'failed its integrity check' "${out_resume_broken_jq}"
+
+out_resume_source_near_reset="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Bash" \
+  'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}" && echo unsafe')"
+assert_contains "T_resume_source: compound near-reset remains denied" \
+  '"permissionDecision":"deny"' "${out_resume_source_near_reset}"
+assert_eq "T_resume_source: exact managed reset remains allowed" "" \
+  "$(run_dispatch_guard "t_resume_transferred_source" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+resume_source_tool_payload="$(jq -nc --arg sid t_resume_transferred_source '{
+  session_id:$sid,tool_name:"Read",tool_use_id:"resume-source-read",
+  tool_input:{file_path:"README.md"},hook_event_name:"PreToolUse"
+}')"
+printf '%s' "${resume_source_tool_payload}" \
+  | bash "${TOOL_START_SCRIPT}" >/dev/null 2>&1 || true
+assert_eq "T_resume_source: lifecycle sibling records no verification start" \
+  "0" \
+  "$([[ -d "${resume_source_dir}/.verification-starts" ]] \
+    && find "${resume_source_dir}/.verification-starts" -type f \
+      | grep -q . && printf 1 || printf 0)"
+
+resume_guard_fifo="${TEST_HOME}/resume-guard-input.fifo"
+resume_guard_release_fifo="${TEST_HOME}/resume-guard-release.fifo"
+mkfifo "${resume_guard_fifo}" "${resume_guard_release_fifo}"
+resume_partial_payload='{"session_id":"t_resume_transferred_source","tool_name":"Read","tool_input":{},"hook_event_name":"PreToolUse"}'
+(
+  exec 9>"${resume_guard_fifo}"
+  printf '%s' "${resume_partial_payload}" >&9
+  IFS= read -r _resume_guard_release <"${resume_guard_release_fifo}"
+) &
+resume_guard_writer_pid=$!
+resume_guard_output="${TEST_HOME}/resume-guard-partial.out"
+OMC_HOOK_STDIN_TIMEOUT_S=1 \
+  bash "${DISPATCH_GUARD_SCRIPT}" <"${resume_guard_fifo}" \
+    >"${resume_guard_output}" 2>/dev/null &
+resume_guard_pid=$!
+resume_guard_finished=0
+for _resume_guard_wait in $(seq 1 500); do
+  if ! kill -0 "${resume_guard_pid}" 2>/dev/null; then
+    resume_guard_finished=1
+    break
+  fi
+  sleep 0.01
+done
+if [[ "${resume_guard_finished}" -eq 0 ]]; then
+  kill "${resume_guard_pid}" 2>/dev/null || true
+fi
+wait "${resume_guard_pid}" 2>/dev/null || true
+out_resume_partial_pipe="$(cat "${resume_guard_output}" 2>/dev/null || true)"
+kill "${resume_guard_writer_pid}" 2>/dev/null || true
+wait "${resume_guard_writer_pid}" 2>/dev/null || true
+assert_contains "T_resume_source: partial-open pipe is denied before authority parsing" \
+  '"permissionDecision":"deny"' "${out_resume_partial_pipe}"
+assert_contains "T_resume_source: partial-open pipe is distinguished from closed JSON" \
+  'did not reach EOF' "${out_resume_partial_pipe}"
+assert_not_contains_ci "T_resume_source: timed-out input never claims resume ownership" \
+  '[Resume ownership]' "${out_resume_partial_pipe}"
+assert_eq "T_resume_source: partial-open pipe is bounded by hook timeout" \
+  "1" "${resume_guard_finished}"
+
+# Addressed lifecycle state must remain authoritative even when the global
+# marker selects the full-common path. common.sh's tolerant read helpers may
+# fail open for legacy callers, but this universal guard must deny invalid
+# top-level bytes and filesystem nodes before allowing any tool.
+resume_state_backup="${resume_source_dir}/session_state.valid.json"
+cp "${resume_source_dir}/session_state.json" "${resume_state_backup}"
+: >"${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+printf '%s\n' \
+  '{"resume_initialization_txn_id":"resume-init-guardtyped123456","resume_initialization_source_id":"resume-guard-source","resume_transferred_to":""}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_active_init_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker valid init pair is fenced" \
+  '"permissionDecision":"deny"' "${out_resume_active_init_state}"
+assert_contains "T_resume_source: valid init pair uses generation fence" \
+  '[Resume initialization]' "${out_resume_active_init_state}"
+assert_eq "T_resume_source: exact reset is allowed for active init pair" "" \
+  "$(run_dispatch_guard "t_resume_transferred_source" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+printf '%s\n' \
+  '{"resume_initialization_txn_id":7,"resume_initialization_source_id":"resume-guard-source","resume_transferred_to":""}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_active_typed_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker non-string init field is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_typed_state}"
+assert_eq "T_resume_source: exact reset is allowed for malformed init fields" "" \
+  "$(run_dispatch_guard "t_resume_transferred_source" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+printf '%s\n' \
+  '{"resume_initialization_txn_id":"resume-init-guardpartial123456","resume_transferred_to":""}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_active_partial_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker partial init pair is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_partial_state}"
+printf '%s\n' \
+  '{"resume_initialization_txn_id":"","resume_initialization_source_id":"","resume_transferred_to":9}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_active_transfer_type="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker non-string transfer field is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_transfer_type}"
+jq -nc '
+  {resume_initialization_txn_id:"",resume_initialization_source_id:"",
+   resume_transferred_to:("t_resume_live_owner" + "\u0000")}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_active_nul_owner="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: NUL-bearing state owner is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_nul_owner}"
+assert_contains "T_resume_source: invalid owner fails as lifecycle state" \
+  '[Lifecycle input]' "${out_resume_active_nul_owner}"
+printf '%s' '{"workflow_mode":' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_active_malformed_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker malformed state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_malformed_state}"
+assert_contains "T_resume_source: malformed state denial is authoritative" \
+  'Lifecycle state could not be parsed authoritatively' \
+  "${out_resume_active_malformed_state}"
+printf '%s\n' '[]' >"${resume_source_dir}/session_state.json"
+out_resume_active_nonobject_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker non-object state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_nonobject_state}"
+rm -f "${resume_source_dir}/session_state.json"
+ln -s "${resume_state_backup}" "${resume_source_dir}/session_state.json"
+out_resume_active_symlink_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker symlinked state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_symlink_state}"
+rm -f "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+out_resume_markerless_symlink_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: markerless symlinked state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_markerless_symlink_state}"
+rm -f "${resume_source_dir}/session_state.json"
+printf '%s' '{"workflow_mode":' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_markerless_malformed_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: markerless malformed state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_markerless_malformed_state}"
+printf '%s\n' '[]' >"${resume_source_dir}/session_state.json"
+out_resume_markerless_nonobject_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: markerless non-object state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_markerless_nonobject_state}"
+printf '%s\n' \
+  '{"resume_initialization_txn_id":"resume-init-markerless123456","resume_initialization_source_id":"resume-markerless-source","resume_transferred_to":""}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_markerless_init_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: markerless valid init pair is fenced" \
+  '"permissionDecision":"deny"' "${out_resume_markerless_init_state}"
+assert_contains "T_resume_source: markerless init pair reaches exact fence" \
+  '[Resume initialization]' "${out_resume_markerless_init_state}"
+assert_eq "T_resume_source: markerless init pair admits only exact reset" "" \
+  "$(run_dispatch_guard "t_resume_transferred_source" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+printf '%s\n' \
+  '{"resume_initialization_source_id":"resume-markerless-source","resume_transferred_to":""}' \
+  >"${resume_source_dir}/session_state.json"
+out_resume_markerless_partial_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: markerless partial init pair is denied" \
+  '"permissionDecision":"deny"' "${out_resume_markerless_partial_state}"
+
+# State authority has its own 1 MiB budget before jq. Exercise both the
+# markerless fast path and the global-marker/common path; neither may spend
+# unbounded parser work, while the one exact reset remains available.
+dd if=/dev/zero of="${resume_source_dir}/session_state.json" \
+  bs=1048576 count=2 >/dev/null 2>&1
+out_resume_markerless_oversized_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: markerless oversized state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_markerless_oversized_state}"
+assert_contains "T_resume_source: oversized state uses authoritative-state denial" \
+  'Lifecycle state could not be parsed authoritatively' \
+  "${out_resume_markerless_oversized_state}"
+assert_eq "T_resume_source: exact reset remains available for oversized state" "" \
+  "$(run_dispatch_guard "t_resume_transferred_source" "Bash" \
+    'bash ~/.claude/skills/autowork/scripts/ulw-deactivate.sh "${CLAUDE_SESSION_ID}"')"
+: >"${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+out_resume_active_oversized_state="$(run_dispatch_guard \
+  "t_resume_transferred_source" "Read")"
+assert_contains "T_resume_source: active-marker oversized state is denied" \
+  '"permissionDecision":"deny"' "${out_resume_active_oversized_state}"
+rm -f "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+
+# An atomic writer replacing a benign generation after the fast-path snapshot
+# cannot inherit that snapshot's allow decision. The identity recheck routes
+# through common.sh and the shared state lock, which observes the new owner.
+printf '%s\n' \
+  '{"resume_initialization_txn_id":"","resume_initialization_source_id":"","resume_transferred_to":""}' \
+  >"${resume_source_dir}/session_state.json"
+dispatch_state_ready="${TEST_HOME}/dispatch-state-ready"
+dispatch_state_release="${TEST_HOME}/dispatch-state-release"
+dispatch_state_out="${TEST_HOME}/dispatch-state.out"
+dispatch_state_payload="$(jq -nc --arg sid t_resume_transferred_source '{
+  session_id:$sid,tool_name:"Read",tool_input:{},hook_event_name:"PreToolUse"
+}')"
+(
+  printf '%s' "${dispatch_state_payload}" \
+    | OMC_TEST_DISPATCH_GUARD_STATE_READY_FILE="${dispatch_state_ready}" \
+      OMC_TEST_DISPATCH_GUARD_STATE_RELEASE_FILE="${dispatch_state_release}" \
+      bash "${DISPATCH_GUARD_SCRIPT}" >"${dispatch_state_out}" 2>/dev/null
+) &
+dispatch_state_pid=$!
+dispatch_state_wait=0
+while [[ ! -e "${dispatch_state_ready}" && "${dispatch_state_wait}" -lt 500 ]]; do
+  sleep 0.01
+  dispatch_state_wait=$((dispatch_state_wait + 1))
+done
+if [[ -e "${dispatch_state_ready}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T_resume_source: state snapshot barrier was not reached\n' >&2
+  fail=$((fail + 1))
+fi
+printf '%s\n' \
+  '{"resume_initialization_txn_id":"","resume_initialization_source_id":"","resume_transferred_to":"replacement-owner"}' \
+  >"${resume_source_dir}/session_state.json.next"
+mv "${resume_source_dir}/session_state.json.next" \
+  "${resume_source_dir}/session_state.json"
+: >"${dispatch_state_release}"
+wait "${dispatch_state_pid}" 2>/dev/null || true
+out_resume_replaced_state="$(<"${dispatch_state_out}")"
+assert_contains "T_resume_source: replaced benign generation is denied" \
+  '"permissionDecision":"deny"' "${out_resume_replaced_state}"
+assert_contains "T_resume_source: replacement generation supplies live owner" \
+  'replacement-owner' "${out_resume_replaced_state}"
+
+# The bounded copy itself must remain bounded if the pathname grows, becomes a
+# symlink, or becomes a blocking FIFO after lstat. Every race fails closed
+# without parsing the replacement; the FIFO case also proves the open has a
+# wall-clock ceiling instead of wedging the universal PreTool guard.
+for dispatch_copy_race in grow symlink fifo; do
+  rm -f "${resume_source_dir}/session_state.json"
+  printf '%s\n' \
+    '{"resume_initialization_txn_id":"","resume_initialization_source_id":"","resume_transferred_to":""}' \
+    >"${resume_source_dir}/session_state.json"
+  copy_ready="${TEST_HOME}/dispatch-copy-${dispatch_copy_race}.ready"
+  copy_release="${TEST_HOME}/dispatch-copy-${dispatch_copy_race}.release"
+  copy_out="${TEST_HOME}/dispatch-copy-${dispatch_copy_race}.out"
+  (
+    printf '%s' "${dispatch_state_payload}" \
+      | OMC_TEST_DISPATCH_GUARD_COPY_READY_FILE="${copy_ready}" \
+        OMC_TEST_DISPATCH_GUARD_COPY_RELEASE_FILE="${copy_release}" \
+        OMC_TEST_DISPATCH_GUARD_COPY_TIMEOUT_S=1 \
+        bash "${DISPATCH_GUARD_SCRIPT}" >"${copy_out}" 2>/dev/null
+  ) &
+  copy_pid=$!
+  copy_wait=0
+  while [[ ! -e "${copy_ready}" && "${copy_wait}" -lt 500 ]]; do
+    sleep 0.01
+    copy_wait=$((copy_wait + 1))
+  done
+  if [[ -e "${copy_ready}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: T_resume_source: %s copy barrier was not reached\n' \
+      "${dispatch_copy_race}" >&2
+    fail=$((fail + 1))
+  fi
+  if [[ "${dispatch_copy_race}" == "grow" ]]; then
+    dd if=/dev/zero of="${resume_source_dir}/session_state.json" \
+      bs=1048576 count=2 >/dev/null 2>&1
+  elif [[ "${dispatch_copy_race}" == "symlink" ]]; then
+    copy_outside="${TEST_HOME}/dispatch-copy-outside.json"
+    printf '%s\n' \
+      '{"resume_initialization_txn_id":"","resume_initialization_source_id":"","resume_transferred_to":"outside-owner"}' \
+      >"${copy_outside}"
+    rm -f "${resume_source_dir}/session_state.json"
+    ln -s "${copy_outside}" "${resume_source_dir}/session_state.json"
+  else
+    rm -f "${resume_source_dir}/session_state.json"
+    mkfifo "${resume_source_dir}/session_state.json"
+  fi
+  : >"${copy_release}"
+  wait "${copy_pid}" 2>/dev/null || true
+  copy_result="$(<"${copy_out}")"
+  assert_contains "T_resume_source: ${dispatch_copy_race} during bounded copy is denied" \
+    '"permissionDecision":"deny"' "${copy_result}"
+  assert_contains "T_resume_source: ${dispatch_copy_race} race uses state denial" \
+    'Lifecycle state could not be parsed authoritatively' "${copy_result}"
+done
+rm -f "${resume_source_dir}/session_state.json"
+mv "${resume_state_backup}" "${resume_source_dir}/session_state.json"
+
+# The universal state fence must not assume an FHS layout after explicitly
+# admitting jq from Nix profiles. Keep the core-tool resolver on the same
+# immutable-store boundary so NixOS sessions do not deny every addressed tool.
+dispatch_guard_source="$(<"${DISPATCH_GUARD_SCRIPT}")"
+assert_contains "T_resume_source: core tools include system-profile Nix resolution" \
+  '"/run/current-system/sw/bin/${tool}"' "${dispatch_guard_source}"
+assert_contains "T_resume_source: core tools include multi-user Nix resolution" \
+  '"/nix/var/nix/profiles/default/bin/${tool}"' "${dispatch_guard_source}"
+assert_contains "T_resume_source: Nix profile tools canonicalize into the immutable store" \
+  '/nix/store/*/bin)' "${dispatch_guard_source}"
+unset dispatch_guard_source
+teardown_test
 
 # ----------------------------------------------------------------------
 # T0a: execution intent + Edit before any specialist → agent-first deny
@@ -2844,6 +3392,62 @@ out_authority_redirect="$(run_guard "t_definition_authority" \
 assert_contains "T_definition_authority: Bash write into session state is denied" \
   '"permissionDecision":"deny"' "${out_authority_redirect}"
 
+definition_authority_alias="${TEST_HOME}/definition-state-link"
+ln -s "${definition_authority_dir}" "${definition_authority_alias}"
+out_authority_alias_bash="$(run_guard "t_definition_authority" \
+  "sed -i s/old/forged/ ${definition_authority_alias}/verification_receipts.jsonl")"
+assert_contains "T_definition_authority: Bash symlink alias into session state is denied" \
+  '"permissionDecision":"deny"' "${out_authority_alias_bash}"
+out_authority_alias_redirect="$(run_guard "t_definition_authority" \
+  "printf forged > ${definition_authority_alias}/verification_receipts.jsonl")"
+assert_contains "T_definition_authority: redirected Bash symlink alias is denied" \
+  '"permissionDecision":"deny"' "${out_authority_alias_redirect}"
+out_authority_alias_assignment="$(run_guard "t_definition_authority" \
+  "p=${definition_authority_alias}/verification_receipts.jsonl; printf forged > \"\$p\"")"
+assert_contains "T_definition_authority: assigned Bash symlink alias is denied" \
+  '"permissionDecision":"deny"' "${out_authority_alias_assignment}"
+definition_equals_alias="${TEST_HOME}/state=alias"
+ln -s "${definition_authority_dir}" "${definition_equals_alias}"
+out_authority_equals_alias="$(run_guard "t_definition_authority" \
+  "printf forged > ${definition_equals_alias}/verification_receipts.jsonl")"
+assert_contains "T_definition_authority: equals-sign path alias is not mistaken for assignment" \
+  '"permissionDecision":"deny"' "${out_authority_equals_alias}"
+ln -s "${definition_authority_dir}" "${TEST_HOME}/state-glob-alias"
+out_authority_glob_alias="$(run_guard "t_definition_authority" \
+  "printf forged > ${TEST_HOME}/state-*/verification_receipts.jsonl")"
+assert_contains "T_definition_authority: glob-expanded authority alias is denied" \
+  '"permissionDecision":"deny"' "${out_authority_glob_alias}"
+out_authority_alias_interpreter="$(run_guard "t_definition_authority" \
+  "python -c 'open(\"${definition_authority_alias}/verification_receipts.jsonl\",\"w\").write(\"forged\")'")"
+assert_contains "T_definition_authority: inline-code symlink alias is denied" \
+  '"permissionDecision":"deny"' "${out_authority_alias_interpreter}"
+
+definition_authority_space_alias="${TEST_HOME}/definition state link"
+ln -s "${definition_authority_dir}" "${definition_authority_space_alias}"
+out_authority_space_interpreter="$(run_guard "t_definition_authority" \
+  "python -c 'open(\"${definition_authority_space_alias}/verification_receipts.jsonl\",\"w\").write(\"forged\")'")"
+assert_contains "T_definition_authority: inline quoted path with spaces is denied" \
+  '"permissionDecision":"deny"' "${out_authority_space_interpreter}"
+
+out_authority_read_redirect="$(run_guard "t_definition_authority" \
+  "jq . < \"${definition_authority_alias}/session_state.json\" > \"${TEST_HOME}/authority-report.json\"")"
+assert_not_contains_ci "T_definition_authority: input redirect is not misclassified as an authority write" \
+  "authority boundary" "${out_authority_read_redirect}"
+assert_contains "T_definition_authority: external report write still obeys the contract gate" \
+  "pre-mutation block" "${out_authority_read_redirect}"
+out_authority_readwrite_redirect="$(run_guard "t_definition_authority" \
+  "printf x 1<> \"${definition_authority_alias}/verification_receipts.jsonl\"")"
+assert_contains "T_definition_authority: read-write redirect into authority is denied" \
+  '"permissionDecision":"deny"' "${out_authority_readwrite_redirect}"
+
+definition_publisher_alias="${TEST_HOME}/record-verification-alias"
+ln -s "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-verification.sh" \
+  "${definition_publisher_alias}"
+out_authority_publisher_alias="$(run_guard "t_definition_authority" \
+  "bash ${definition_publisher_alias}")"
+assert_contains "T_definition_authority: publisher symlink alias is denied" \
+  '"permissionDecision":"deny"' "${out_authority_publisher_alias}"
+
 write_payload="$(jq -nc --arg sid "t_definition_authority" \
   --arg path "${definition_authority_dir}/quality_contract.json" '{
     session_id:$sid,tool_name:"Write",hook_event_name:"PreToolUse",
@@ -2854,6 +3458,51 @@ out_authority_write="$(printf '%s' "${write_payload}" \
 assert_contains "T_definition_authority: direct Write into session state is denied" \
   '"permissionDecision":"deny"' "${out_authority_write}"
 
+alias_write_payload="$(jq -nc --arg sid "t_definition_authority" \
+  --arg path "${definition_authority_alias}/quality_contract.json" '{
+    session_id:$sid,tool_name:"Edit",hook_event_name:"PreToolUse",
+    tool_input:{file_path:$path,old_string:"{}",new_string:"forged"}
+  }')"
+out_authority_alias_edit="$(printf '%s' "${alias_write_payload}" \
+  | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_definition_authority: Edit symlink alias into session state is denied" \
+  '"permissionDecision":"deny"' "${out_authority_alias_edit}"
+
+definition_authority_hardlink="${TEST_HOME}/definition-state-hardlink.json"
+if ln "${definition_authority_dir}/session_state.json" \
+    "${definition_authority_hardlink}" 2>/dev/null; then
+  hardlink_write_payload="$(jq -nc --arg sid "t_definition_authority" \
+    --arg path "${definition_authority_hardlink}" '{
+      session_id:$sid,tool_name:"Write",hook_event_name:"PreToolUse",
+      tool_input:{file_path:$path,content:"forged"}
+    }')"
+  out_authority_hardlink="$(printf '%s' "${hardlink_write_payload}" \
+    | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+  assert_contains "T_definition_authority: hardlink alias into session state is denied" \
+    '"permissionDecision":"deny"' "${out_authority_hardlink}"
+else
+  pass=$((pass + 1))
+fi
+
+mkdir -p "${definition_authority_dir}/.verification-starts"
+printf '%s\n' '{"authority":"nested"}' \
+  >"${definition_authority_dir}/.verification-starts/snap.json"
+definition_nested_hardlink="${TEST_HOME}/definition-nested-hardlink.json"
+if ln "${definition_authority_dir}/.verification-starts/snap.json" \
+    "${definition_nested_hardlink}" 2>/dev/null; then
+  nested_hardlink_payload="$(jq -nc --arg sid "t_definition_authority" \
+    --arg path "${definition_nested_hardlink}" '{
+      session_id:$sid,tool_name:"Write",hook_event_name:"PreToolUse",
+      tool_input:{file_path:$path,content:"forged"}
+    }')"
+  out_authority_nested_hardlink="$(printf '%s' "${nested_hardlink_payload}" \
+    | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+  assert_contains "T_definition_authority: nested authority hardlink is denied" \
+    '"permissionDecision":"deny"' "${out_authority_nested_hardlink}"
+else
+  pass=$((pass + 1))
+fi
+
 mcp_payload="$(jq -nc --arg sid "t_definition_authority" \
   --arg path "${definition_authority_dir}/quality_frontier.json" '{
     session_id:$sid,tool_name:"mcp__filesystem__write_file",
@@ -2863,6 +3512,27 @@ out_authority_mcp="$(printf '%s' "${mcp_payload}" \
   | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
 assert_contains "T_definition_authority: connector write into session state is denied" \
   '"permissionDecision":"deny"' "${out_authority_mcp}"
+
+nested_mcp_payload="$(jq -nc --arg sid "t_definition_authority" \
+  --arg path "${definition_authority_alias}/quality_frontier.json" '{
+    session_id:$sid,tool_name:"mcp__filesystem__write_file",
+    hook_event_name:"PreToolUse",
+    tool_input:{batch:{files:[{destinationPath:$path}]},content:"{}"}
+  }')"
+out_authority_nested_mcp="$(printf '%s' "${nested_mcp_payload}" \
+  | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_definition_authority: nested camelCase connector path is denied" \
+  '"permissionDecision":"deny"' "${out_authority_nested_mcp}"
+
+generic_mcp_payload="$(jq -nc --arg sid "t_definition_authority" \
+  --arg command "printf forged > ${definition_authority_alias}/verification_receipts.jsonl" '{
+    session_id:$sid,tool_name:"mcp__shell__execute",
+    hook_event_name:"PreToolUse",tool_input:{command:$command}
+  }')"
+out_authority_generic_mcp="$(printf '%s' "${generic_mcp_payload}" \
+  | bash "${HOOK_SCRIPT}" 2>/dev/null || true)"
+assert_contains "T_definition_authority: generic connector command cannot embed authority write" \
+  '"permissionDecision":"deny"' "${out_authority_generic_mcp}"
 
 out_authority_read="$(run_guard "t_definition_authority" \
   "jq . ${definition_authority_dir}/session_state.json")"

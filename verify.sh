@@ -14,6 +14,35 @@
 
 set -euo pipefail
 
+# Disable BASH_ENV-enabled aliases before function bodies are parsed. POSIX
+# special-builtin lookup makes this boundary independent of same-named shell
+# functions; readonly hostile shims fail verification closed.
+_OMC_SHA_ALIAS_POSIX_WAS_SET=0
+_OMC_SHA_ALIAS_POSIX_VAR_WAS_SET=0
+_OMC_SHA_ALIAS_POSIX_VALUE=""
+if [[ -o posix ]]; then
+  _OMC_SHA_ALIAS_POSIX_WAS_SET=1
+fi
+if [[ "${POSIXLY_CORRECT+x}" == "x" ]]; then
+  _OMC_SHA_ALIAS_POSIX_VAR_WAS_SET=1
+  _OMC_SHA_ALIAS_POSIX_VALUE="${POSIXLY_CORRECT}"
+fi
+POSIXLY_CORRECT=1 || \exit 1
+\unset -f shopt unset set || \exit 1
+\shopt -u expand_aliases || \exit 1
+if [[ "${_OMC_SHA_ALIAS_POSIX_VAR_WAS_SET}" == "1" ]]; then
+  POSIXLY_CORRECT="${_OMC_SHA_ALIAS_POSIX_VALUE}" || \exit 1
+else
+  \unset POSIXLY_CORRECT || \exit 1
+fi
+if [[ "${_OMC_SHA_ALIAS_POSIX_WAS_SET}" == "1" ]]; then
+  \set -o posix || \exit 1
+else
+  \set +o posix || \exit 1
+fi
+\unset _OMC_SHA_ALIAS_POSIX_WAS_SET _OMC_SHA_ALIAS_POSIX_VAR_WAS_SET \
+  _OMC_SHA_ALIAS_POSIX_VALUE || \exit 1
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -48,6 +77,19 @@ for arg in "$@"; do
   esac
 done
 
+# jq is a runtime dependency of the installed harness, so verification cannot
+# report healthy when the executable is absent. Admit this dependency before
+# the --health fast path; otherwise a host with no jq can return `OK` merely
+# because no anomaly file happened to require parsing.
+JQ_RUNTIME_AVAILABLE="true"
+if ! command -v jq >/dev/null 2>&1; then
+  JQ_RUNTIME_AVAILABLE="false"
+  if [[ "${HEALTH_MODE}" == "true" ]]; then
+    printf 'FAIL: jq runtime dependency is missing\n'
+    exit 2
+  fi
+fi
+
 # --- Health mode: one-line SLO output ---
 # Converts "is the harness healthy?" from a 200-line full-verify into a
 # greppable line. Designed for `watch -n 60 'bash verify.sh --health'`
@@ -56,18 +98,55 @@ done
 if [[ "${HEALTH_MODE}" == "true" ]]; then
   _state_root="${TARGET_HOME}/.claude/quality-pack/state"
   _hb_dir="${_state_root}/_watchdog"
-  _hb_file="${_hb_dir}/heartbeat"
-  now_ts="$(date +%s)"
+  _hb_file="${_hb_dir}/last_tick_completed_ts"
+  _health_epoch_is_valid() {
+    [[ "${1:-}" =~ ^[1-9][0-9]{0,14}$ ]]
+  }
+
+  # Read an epoch without ever passing unvalidated file bytes through a Bash
+  # variable. Bash command substitution drops NUL bytes, which can normalize
+  # `<valid epoch>\0` into apparent authority. The hex envelope proves the
+  # complete bounded file is canonical ASCII decimal with at most one newline
+  # before `tr` imports it for arithmetic.
+  _health_read_epoch_file() {
+    local path="${1:-}" output_var="${2:-}" size="" hex="" value=""
+    [[ -n "${path}" && -n "${output_var}" \
+        && -f "${path}" && ! -L "${path}" ]] || return 1
+    size="$(wc -c <"${path}" 2>/dev/null | tr -d '[:space:]')"
+    [[ "${size}" =~ ^([1-9]|1[0-6])$ ]] || return 1
+    hex="$(LC_ALL=C od -An -v -tx1 "${path}" 2>/dev/null \
+      | tr -d '[:space:]')" || return 1
+    [[ "${hex}" =~ ^3[1-9](3[0-9]){0,14}(0a)?$ ]] || return 1
+    value="$(tr -d '\n' <"${path}")" || return 1
+    _health_epoch_is_valid "${value}" || return 1
+    printf -v "${output_var}" '%s' "${value}"
+  }
+
+  _clock_capture="$(mktemp "${TMPDIR:-/tmp}/omc-health-clock.XXXXXX" \
+    2>/dev/null || true)"
+  now_ts=""
+  if [[ -z "${_clock_capture}" ]] \
+      || ! date +%s >"${_clock_capture}" 2>/dev/null \
+      || ! _health_read_epoch_file "${_clock_capture}" now_ts; then
+    [[ -n "${_clock_capture}" ]] \
+      && rm -f -- "${_clock_capture}" 2>/dev/null || true
+    printf 'FAIL: watchdog=clock-unreadable sessions=0 anomalies_1h=0\n'
+    exit 2
+  fi
+  rm -f -- "${_clock_capture}" 2>/dev/null || true
 
   # Heartbeat age. Missing heartbeat is acceptable when the watchdog
   # opt-in is off (most users) — reported as `no-watchdog`, not FAIL.
   hb_status="no-watchdog"
   hb_age_secs=""
-  if [[ -f "${_hb_file}" ]]; then
-    _hb_ts="$(cat "${_hb_file}" 2>/dev/null | head -c 32 | tr -dc '0-9' || true)"
-    if [[ -n "${_hb_ts}" ]] && [[ "${_hb_ts}" =~ ^[0-9]+$ ]]; then
+  # Any node at the heartbeat path is an attempted heartbeat. Let the bounded
+  # reader reject symlinks and non-regular nodes so an unsafe/dangling artifact
+  # cannot be misreported as the benign, genuinely absent `no-watchdog` case.
+  if [[ -e "${_hb_file}" || -L "${_hb_file}" ]]; then
+    _hb_ts=""
+    if _health_read_epoch_file "${_hb_file}" _hb_ts \
+        && (( _hb_ts <= now_ts )); then
       hb_age_secs=$(( now_ts - _hb_ts ))
-      if (( hb_age_secs < 0 )); then hb_age_secs=0; fi
       # Watchdog ticks every 60s by default; ≤600s OK, 600-1800s WARN,
       # >1800s FAIL. Tolerant window accommodates the 5-min cooldown
       # buffer + occasional load spikes on a busy host.
@@ -85,22 +164,51 @@ if [[ "${HEALTH_MODE}" == "true" ]]; then
 
   # Active-session count (sessions with state files modified in last 24h).
   active_sessions=0
+  session_scan_failed=0
   if [[ -d "${_state_root}" ]]; then
     # 1440 min = 24h. Counts UUID-shaped session dirs (hex-prefixed)
     # touched in the last 24h.
-    active_sessions="$(find "${_state_root}" -mindepth 1 -maxdepth 1 -type d -name '[a-f0-9]*' -mmin -1440 2>/dev/null | wc -l | tr -d ' ')"
+    if ! active_sessions="$(find "${_state_root}" -mindepth 1 -maxdepth 1 \
+        -type d -name '[a-f0-9]*' -mmin -1440 2>/dev/null \
+        | wc -l | tr -d '[:space:]')" \
+        || [[ ! "${active_sessions}" =~ ^[0-9]{1,6}$ ]]; then
+      active_sessions=0
+      session_scan_failed=1
+    fi
   fi
 
   # Anomaly count in last hour — high counts signal something is
   # repeatedly going wrong (lock contention, corrupt state, etc.).
   anomaly_count=0
-  _anomaly_file="${TARGET_HOME}/.claude/quality-pack/anomaly_log.jsonl"
-  if [[ -f "${_anomaly_file}" ]]; then
-    _cutoff=$(( now_ts - 3600 ))
-    anomaly_count="$(jq -rs --argjson c "${_cutoff}" \
-      'map(select((.ts // 0 | tonumber? // 0) >= $c)) | length' \
-      "${_anomaly_file}" 2>/dev/null || echo 0)"
-    [[ "${anomaly_count}" =~ ^[0-9]+$ ]] || anomaly_count=0
+  anomaly_scan_failed=0
+  _anomaly_file="${_state_root}/hooks.log"
+  if [[ -e "${_anomaly_file}" || -L "${_anomaly_file}" ]]; then
+    if [[ ! -f "${_anomaly_file}" || -L "${_anomaly_file}" ]]; then
+      anomaly_scan_failed=1
+    else
+      if (( now_ts > 3600 )); then
+        _cutoff=$(( now_ts - 3600 ))
+      else
+        _cutoff=0
+      fi
+      _cutoff_text="$(date -r "${_cutoff}" '+%Y-%m-%d %H:%M:%S' \
+        2>/dev/null || date -d "@${_cutoff}" '+%Y-%m-%d %H:%M:%S' \
+        2>/dev/null || true)"
+      if [[ ! "${_cutoff_text}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]][0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
+        anomaly_scan_failed=1
+      # `log_anomaly` writes bounded `[anomaly]` rows to hooks.log and rotates
+      # it at 2,000 lines. Keep an independent byte ceiling here so health
+      # remains cheap even if an out-of-band writer corrupts that invariant.
+      elif ! anomaly_count="$(tail -c 8388608 "${_anomaly_file}" 2>/dev/null \
+          | LC_ALL=C awk -F'  ' -v cut="${_cutoff_text}" '
+              $2 == "[anomaly]" && $1 >= cut { count += 1 }
+              END { print count + 0 }
+            ' 2>/dev/null)" \
+          || [[ ! "${anomaly_count}" =~ ^[0-9]{1,6}$ ]]; then
+        anomaly_count=0
+        anomaly_scan_failed=1
+      fi
+    fi
   fi
 
   # Overall status: FAIL if heartbeat is stale-fail OR anomaly count > 10.
@@ -112,6 +220,10 @@ if [[ "${HEALTH_MODE}" == "true" ]]; then
     fail-*) overall="FAIL"; rc=2 ;;
     warn-*) overall="WARN"; rc=1 ;;
   esac
+  if (( session_scan_failed == 1 || anomaly_scan_failed == 1 )) \
+      && [[ "${overall}" == "OK" ]]; then
+    overall="WARN"; rc=1
+  fi
   if (( anomaly_count > 10 )) && [[ "${overall}" != "FAIL" ]]; then
     overall="FAIL"; rc=2
   elif (( anomaly_count >= 4 )) && [[ "${overall}" == "OK" ]]; then
@@ -130,7 +242,7 @@ fi
 errors=0
 warnings=0
 # v1.36.0 (item #7): split warning total into informational vs actionable.
-# Tool-absence skips (jq missing, sha256sum missing) and optional-config
+# Optional tool/config skips (for example Ghostty config not present) and
 # misses (Ghostty config not present) are info-only and don't gate ship-
 # readiness. Foreign hooks, agent-list mismatches, drift detection
 # fires, and statusline hijacks are actionable — saved to
@@ -173,13 +285,133 @@ info_warn() {
   info_warnings=$(( info_warnings + 1 ))
 }
 
+function sanitize_sha256_authority_shell () {
+  POSIXLY_CORRECT=1 || \return 1
+  \unset -f builtin command printf read local type declare unset cd pwd export \
+    return shasum sha256sum readlink || \return 1
+}
+
+function resolve_trusted_sha256_executable () (
+  \sanitize_sha256_authority_shell || \return 1
+  \local search_path="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+  \local old_ifs="${IFS}" directory="" canonical="" name="" candidate=""
+  \local reader="" resolved=""
+  [[ "${search_path}" != *$'\n'* && "${search_path}" != *$'\r'* ]] \
+    || \return 1
+  for name in shasum sha256sum; do
+    IFS=':'
+    for directory in ${search_path}; do
+      IFS="${old_ifs}"
+      [[ -n "${directory}" && "${directory}" == /* \
+          && "${directory}" != *[[:cntrl:]]* ]] || continue
+      canonical="$(\builtin cd -- "${directory}" 2>/dev/null \
+        && \builtin pwd -P)" || continue
+      case "${canonical}" in
+        /usr/bin|/bin|/usr/sbin|/sbin|/nix/store/*/bin) ;;
+        *) continue ;;
+      esac
+      candidate="${canonical%/}/${name}"
+      [[ -f "${candidate}" && -x "${candidate}" ]] || continue
+      if [[ -L "${candidate}" ]]; then
+        case "${candidate}" in /nix/store/*/bin/*) ;; *) continue ;; esac
+        resolved=""
+        for reader in /usr/bin/readlink /bin/readlink \
+            "${canonical%/}/readlink"; do
+          [[ -x "${reader}" ]] || continue
+          resolved="$(\builtin command -- "${reader}" -f -- \
+            "${candidate}" 2>/dev/null)" || resolved=""
+          case "${resolved}" in /nix/store/*) ;; *) resolved="" ;; esac
+          [[ -n "${resolved}" && -f "${resolved}" \
+              && -x "${resolved}" && ! -L "${resolved}" ]] && break
+          resolved=""
+        done
+        [[ -n "${resolved}" ]] || continue
+        \builtin printf '%s' "${candidate}"
+        IFS="${old_ifs}"
+        \return 0
+      fi
+      [[ ! -L "${candidate}" ]] || continue
+      \builtin printf '%s' "${candidate}"
+      IFS="${old_ifs}"
+      \return 0
+    done
+    IFS="${old_ifs}"
+  done
+  IFS="${old_ifs}"
+  \return 1
+)
+
+function run_trusted_sha256_manifest_check () (
+  \sanitize_sha256_authority_shell || \return 1
+  \local hasher="${1:-}" root="${2:-}" manifest="${3:-}"
+  [[ -n "${hasher}" && -d "${root}" && -f "${manifest}" ]] || \return 1
+  \builtin cd -- "${root}" || \return 1
+  \export LC_ALL=C
+  case "${hasher##*/}" in
+    shasum)
+      \builtin command -- "${hasher}" -a 256 -c "${manifest}"
+      ;;
+    sha256sum)
+      \builtin command -- "${hasher}" -c "${manifest}"
+      ;;
+    *) \return 1 ;;
+  esac
+)
+
+managed_path_components_are_safe() {
+  local path="${1:-}" allow_leaf_symlink="${2:-0}"
+  local relative="" component="${CLAUDE_HOME}" segment=""
+  local index=0 count=0
+  local -a segments=()
+  case "${path}" in
+    "${CLAUDE_HOME}"/*) relative="${path#"${CLAUDE_HOME}"/}" ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${relative}" && "${relative}" != *[[:cntrl:]]* ]] || return 1
+  IFS='/' read -r -a segments <<< "${relative}"
+  count="${#segments[@]}"
+  for segment in "${segments[@]}"; do
+    index=$((index + 1))
+    [[ -n "${segment}" && "${segment}" != "." \
+        && "${segment}" != ".." ]] || return 1
+    component="${component}/${segment}"
+    if [[ -L "${component}" ]]; then
+      [[ "${allow_leaf_symlink}" -eq 1 && "${index}" -eq "${count}" ]] \
+        || return 1
+    elif [[ "${index}" -lt "${count}" && -e "${component}" \
+        && ! -d "${component}" ]]; then
+      return 1
+    fi
+  done
+}
+
 read_conf_value() {
   local key="${1:-}"
   local conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
+  local line="" value="" result="" last_seen="" saw_row=0
   [[ -n "${key}" ]] || return 0
   [[ -f "${conf_path}" ]] || return 0
-  grep -E "^${key}=" "${conf_path}" 2>/dev/null \
-    | tail -n1 | cut -d= -f2- | tr -d '\r' || true
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "${key}="* ]] || continue
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    last_seen="${value}"
+    saw_row=1
+    case "${key}:${value}" in
+      resume_watchdog:on|resume_watchdog:off|\
+      model_tier:quality|model_tier:balanced|model_tier:economy)
+        result="${value}"
+        ;;
+    esac
+  done < "${conf_path}"
+  if [[ -n "${result}" ]]; then
+    printf '%s' "${result}"
+  elif [[ "${saw_row}" -eq 1 && -n "${last_seen}" ]]; then
+    # Keep diagnostics useful when the file contains no valid authority at
+    # all; callers still map this noncanonical value to the runtime default.
+    printf '%s' "${last_seen}"
+  fi
 }
 
 verify_platform() {
@@ -200,14 +432,42 @@ watchdog_resolved_path() {
     fi
   fi
   if [[ -n "${from_shell}" ]]; then
+    from_shell="${from_shell//$'\n'/}"
+    from_shell="${from_shell//$'\r'/}"
     printf '%s' "${from_shell}"
     return 0
   fi
   if [[ -n "${PATH:-}" ]]; then
-    printf '%s' "${PATH}"
+    from_shell="${PATH//$'\n'/}"
+    from_shell="${from_shell//$'\r'/}"
+    printf '%s' "${from_shell}"
     return 0
   fi
   printf '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+}
+
+watchdog_xml_escape() {
+  local value="${1:-}" index=0 character=""
+  while [[ "${index}" -lt "${#value}" ]]; do
+    character="${value:index:1}"
+    case "${character}" in
+      '&') printf '&amp;' ;;
+      '<') printf '&lt;' ;;
+      '>') printf '&gt;' ;;
+      '"') printf '&quot;' ;;
+      "'") printf '&apos;' ;;
+      *) printf '%s' "${character}" ;;
+    esac
+    index=$((index + 1))
+  done
+}
+
+watchdog_systemd_escape() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//%/%%}"
+  printf '%s' "${value}"
 }
 
 render_watchdog_template() {
@@ -215,27 +475,44 @@ render_watchdog_template() {
   local target_home="${2:-${TARGET_HOME}}"
   local claude_home="${target_home}/.claude"
   local log_dir="${claude_home}/quality-pack/state/.watchdog-logs"
-  local user_path=""
-  local user_path_esc=""
+  local user_path="" kind="" home_value="" claude_value=""
+  local log_value="" path_value="" line=""
 
   [[ -f "${template_path}" ]] || return 1
 
   user_path="$(watchdog_resolved_path)"
-  user_path_esc="${user_path//&/\\&}"
-  user_path_esc="${user_path_esc//|/\\|}"
-
-  sed \
-    -e "s|__OMC_HOME__|${claude_home}|g" \
-    -e "s|__OMC_USER_HOME__|${target_home}|g" \
-    -e "s|__OMC_LOG_DIR__|${log_dir}|g" \
-    -e "s|__OMC_PATH__|${user_path_esc}|g" \
-    "${template_path}"
+  case "${template_path}" in
+    *.plist)
+      kind="plist"
+      home_value="$(watchdog_xml_escape "${target_home}")"
+      claude_value="$(watchdog_xml_escape "${claude_home}")"
+      log_value="$(watchdog_xml_escape "${log_dir}")"
+      path_value="$(watchdog_xml_escape "${user_path}")"
+      ;;
+    *.service|*.timer)
+      kind="systemd"
+      home_value="$(watchdog_systemd_escape "${target_home}")"
+      claude_value="$(watchdog_systemd_escape "${claude_home}")"
+      log_value="$(watchdog_systemd_escape "${log_dir}")"
+      path_value="$(watchdog_systemd_escape "${user_path}")"
+      ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${kind}" ]] || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line//__OMC_HOME__/${claude_value}}"
+    line="${line//__OMC_USER_HOME__/${home_value}}"
+    line="${line//__OMC_LOG_DIR__/${log_value}}"
+    line="${line//__OMC_PATH__/${path_value}}"
+    printf '%s\n' "${line}"
+  done < "${template_path}"
 }
 
 render_watchdog_cron_line() {
   local script_path="${CLAUDE_HOME}/quality-pack/scripts/resume-watchdog.sh"
   local quoted_script=""
   printf -v quoted_script '%q' "${script_path}"
+  quoted_script="${quoted_script//%/\\%}"
   printf '*/2 * * * * bash %s >/dev/null 2>&1' "${quoted_script}"
 }
 
@@ -320,6 +597,7 @@ verify_resume_watchdog_scheduler() {
 
   verify_cron_scheduler() {
     local expectation="${1:-forbidden}"
+    local managed_cron_count=0 managed_marker_count=0
     cron_line="$(render_watchdog_cron_line)"
     set +e
     cron_contents="$(read_watchdog_crontab)"
@@ -339,10 +617,14 @@ verify_resume_watchdog_scheduler() {
     fi
 
     if [[ "${expectation}" == "required" ]]; then
-      if printf '%s\n' "${cron_contents}" | grep -Fx "${cron_line}" >/dev/null 2>&1; then
+      managed_cron_count="$(printf '%s\n' "${cron_contents}" \
+        | grep -Fxc -- "${cron_line}" || true)"
+      managed_marker_count="$(printf '%s\n' "${cron_contents}" \
+        | grep -Fxc -- '# oh-my-claude resume-watchdog' || true)"
+      if [[ "${managed_cron_count}" -ge 1 ]]; then
         pass "resume-watchdog cron entry matches installed render"
       else
-        if printf '%s\n' "${cron_contents}" | grep -F "resume-watchdog.sh" >/dev/null 2>&1; then
+        if [[ "${managed_marker_count}" -ge 1 ]]; then
           foreign_report "resume_watchdog=on but cron contains a stale or mismatched resume-watchdog entry"
         else
           foreign_report "resume_watchdog=on but resume-watchdog cron entry is missing"
@@ -350,12 +632,18 @@ verify_resume_watchdog_scheduler() {
         scheduler_issues=$((scheduler_issues + 1))
       fi
 
-      if [[ "$(printf '%s\n' "${cron_contents}" | grep -Fc "resume-watchdog.sh" || true)" -gt 1 ]]; then
+      if [[ "${managed_cron_count}" -gt 1 \
+          || "${managed_marker_count}" -gt 1 ]]; then
         foreign_report "multiple resume-watchdog cron entries are present; expected exactly one managed entry"
         scheduler_issues=$((scheduler_issues + 1))
       fi
     else
-      if printf '%s\n' "${cron_contents}" | grep -F "resume-watchdog.sh" >/dev/null 2>&1; then
+      managed_cron_count="$(printf '%s\n' "${cron_contents}" \
+        | grep -Fxc -- "${cron_line}" || true)"
+      managed_marker_count="$(printf '%s\n' "${cron_contents}" \
+        | grep -Fxc -- '# oh-my-claude resume-watchdog' || true)"
+      if [[ "${managed_cron_count}" -ge 1 \
+          || "${managed_marker_count}" -ge 1 ]]; then
         if [[ "${resume_watchdog}" == "on" ]]; then
           foreign_report "resume_watchdog=on but unexpected resume-watchdog cron entry is present alongside the primary scheduler"
         else
@@ -455,6 +743,21 @@ printf 'Checking installation under %s\n\n' "${CLAUDE_HOME}"
 
 printf '1. Required paths\n'
 
+if [[ "${JQ_RUNTIME_AVAILABLE}" != "true" ]]; then
+  fail "jq runtime dependency is missing; hooks and verifier JSON checks cannot run"
+else
+  pass "jq runtime dependency"
+fi
+
+TRUSTED_SHA256_TOOL=""
+TRUSTED_SHA256_TOOL="$(\resolve_trusted_sha256_executable 2>/dev/null)" \
+  || TRUSTED_SHA256_TOOL=""
+if [[ -n "${TRUSTED_SHA256_TOOL}" ]]; then
+  pass "Trusted SHA-256 authority executable (${TRUSTED_SHA256_TOOL})"
+else
+  fail "No trusted shasum/sha256sum executable; Definition and verification authority cannot be sealed"
+fi
+
 if command -v claude >/dev/null 2>&1; then
   claude_version_raw="$(claude --version 2>/dev/null || true)"
   claude_version="$(printf '%s' "${claude_version_raw}" | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
@@ -526,10 +829,12 @@ required_paths=(
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/posttool-dispatch.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/mark-edit.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/dispatch-recovery-guard.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/pretool-intent-guard.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/quality-constitution-authority-guard.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/state-io.sh"
+  "${CLAUDE_HOME}/skills/autowork/scripts/lib/plan-publication-transaction.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/classifier.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/verification.sh"
   "${CLAUDE_HOME}/skills/autowork/scripts/lib/quality-contract.sh"
@@ -625,10 +930,21 @@ required_paths=(
 )
 
 for path in "${required_paths[@]}"; do
-  if [[ -e "${path}" ]]; then
+  allow_required_leaf_symlink=0
+  [[ "${path}" == "${CLAUDE_HOME}/settings.json" ]] \
+    && allow_required_leaf_symlink=1
+  if ! managed_path_components_are_safe "${path}" \
+      "${allow_required_leaf_symlink}"; then
+    fail "Unsafe symlinked or non-directory managed path: ${path}"
+  elif [[ ! -e "${path}" && ! -L "${path}" ]]; then
+    fail "Missing: ${path}"
+  elif [[ "${path}" == "${CLAUDE_HOME}/settings.json" \
+      && -f "${path}" ]]; then
+    pass "${path}"
+  elif [[ -f "${path}" && ! -L "${path}" ]]; then
     pass "${path}"
   else
-    fail "Missing: ${path}"
+    fail "Non-regular managed file: ${path}"
   fi
 done
 
@@ -697,59 +1013,37 @@ printf '\n'
 
 printf '3. Hook script syntax (bash -n)\n'
 
-hook_scripts=(
-  "${CLAUDE_HOME}/quality-pack/scripts/post-compact-summary.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/pre-compact-snapshot.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/prompt-intent-router.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-handoff.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/session-start-compact-handoff.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/session-start-resume-hint.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/session-start-watchdog-health.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/session-start-drift-check.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/session-start-welcome.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/stop-failure-handler.sh"
-  "${CLAUDE_HOME}/quality-pack/scripts/resume-watchdog.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/common.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/lib/quality-contract.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/lib/quality-constitution-authority.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/mark-edit.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/pretool-intent-guard.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/quality-constitution-authority-guard.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-advisory-verification.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-reviewer.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-subagent-summary.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-pending-agent.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/resolve-agent-model.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-tool-start-revision.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-verification.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-delivery-action.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/circuit-breaker.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/posttool-timing.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/posttool-dispatch.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/reflect-after-agent.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/stop-guard.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/closeout-preflight.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/closeout-display.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/stop-dispatch.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/show-status.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-plan.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-council-coverage.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/ulw-deactivate.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/find-design-contract.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/record-archetype.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/pretool-timing.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/stop-time-summary.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/canary-claim-audit.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/stop-transcript-archive.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/show-time.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/blindspot-inventory.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/check-latency-budgets.sh"
-  "${CLAUDE_HOME}/skills/autowork/scripts/quality-constitution.sh"
-)
+hook_scripts=()
+MANIFEST_PATH="${CLAUDE_HOME}/quality-pack/state/installed-manifest.txt"
+if managed_path_components_are_safe "${MANIFEST_PATH}" 0 \
+    && [[ -f "${MANIFEST_PATH}" && ! -L "${MANIFEST_PATH}" ]]; then
+  while IFS= read -r relative_path || [[ -n "${relative_path}" ]]; do
+    [[ "${relative_path}" == *.sh ]] || continue
+    case "${relative_path}" in
+      /*|*\\*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*//*|*$'\n'*|*$'\r'*)
+        fail "Unsafe shell-script path in installed manifest: ${relative_path}"
+        continue
+        ;;
+    esac
+    script_path="${CLAUDE_HOME}/${relative_path}"
+    if ! managed_path_components_are_safe "${script_path}" 0 \
+        || [[ ! -f "${script_path}" || -L "${script_path}" ]]; then
+      fail "Cannot check (missing, nonregular, or symlinked): ${script_path}"
+      continue
+    fi
+    hook_scripts+=("${script_path}")
+  done < "${MANIFEST_PATH}"
+else
+  fail "installed-manifest.txt missing or unsafe; cannot prove complete shell syntax coverage"
+fi
+
+if [[ "${#hook_scripts[@]}" -eq 0 ]]; then
+  fail "No manifest-owned shell scripts found for syntax checking"
+fi
 
 for script in "${hook_scripts[@]}"; do
-  if [[ ! -f "${script}" ]]; then
-    fail "Cannot check (missing): ${script}"
+  if [[ ! -f "${script}" || -L "${script}" ]]; then
+    fail "Cannot check (missing, nonregular, or symlinked): ${script}"
     continue
   fi
   if bash -n "${script}" 2>/dev/null; then
@@ -818,219 +1112,170 @@ else
     pass "Current project hook kill switch is not enabled"
   fi
 
-  # Each entry: "event_name:command_fragment"
-  required_hooks=(
-    "SessionStart:session-start-resume-handoff.sh"
-    "SessionStart:session-start-compact-handoff.sh"
-    "SessionStart:session-start-resume-hint.sh"
-    "SessionStart:session-start-drift-check.sh"
-    "SessionStart:session-start-welcome.sh"
-    "UserPromptSubmit:prompt-intent-router.sh"
-    "PreToolUse:record-pending-agent.sh"
-    "PreToolUse:pretool-intent-guard.sh"
-    "PreToolUse:quality-constitution-authority-guard.sh"
-    "PreToolUse:record-tool-start-revision.sh"
-    "PostToolUse:mark-edit.sh"
-    "PostToolUseFailure:mark-edit.sh"
-    "PostToolUse:record-verification.sh"
-    "PostToolUseFailure:record-verification.sh"
-    "PostToolUse:reflect-after-agent.sh"
-    "PostToolUse:record-advisory-verification.sh"
-    "PreToolUse:pretool-timing.sh"
-    "PreCompact:pre-compact-snapshot.sh"
-    "PostCompact:post-compact-summary.sh"
-    "StopFailure:stop-failure-handler.sh"
-    "SubagentStart:record-pending-agent.sh"
-    "SubagentStop:record-subagent-summary.sh"
-    "SubagentStop:record-plan.sh"
-    "SubagentStop:record-reviewer.sh"
-    "MessageDisplay:closeout-display.sh"
-    "PostToolBatch:closeout-preflight.sh"
-    "Stop:stop-dispatch.sh"
-    "PostToolUse:posttool-dispatch.sh"
-  )
-
-  # Scoped check: require the command fragment to appear under the correct
-  # event key, not just anywhere in settings.json. The previous substring
-  # grep would have passed even if a hook script had been wired under the
-  # wrong event (e.g. record-pending-agent.sh moved from PreToolUse to
-  # PostToolUse). A jq-scoped query catches that class of regression.
-  for entry in "${required_hooks[@]}"; do
-    event="${entry%%:*}"
-    fragment="${entry##*:}"
-
-    hook_found="false"
-    if command -v jq >/dev/null 2>&1; then
-      hook_found="$(jq -r --arg ev "${event}" --arg frag "${fragment}" '
-        def script_token:
-          def token_basename: split("/") | last;
-          def shell_tokens:
-            [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
-             | if ((startswith("\u0027") and endswith("\u0027")) or
-                   (startswith("\"") and endswith("\"")))
-               then .[1:-1] else . end];
-          tostring | shell_tokens
-          | . as $tokens
-          | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
-             // ($tokens[0] // ""));
-        def script_basename:
-          def token_basename: split("/") | last;
-          script_token | token_basename;
-        def path_owned_closeout:
-          ["closeout-display.sh", "closeout-preflight.sh", "stop-dispatch.sh"];
-        def required_command_matches($frag):
-          . as $command
-          | ($command | script_token) as $token
-          | ($command | script_basename) as $basename
-          | ($basename == $frag)
-            and (if (path_owned_closeout | index($frag)) == null then true
-                 else ($token == (".claude/skills/autowork/scripts/" + $frag))
-                   or ($token | endswith("/.claude/skills/autowork/scripts/" + $frag))
-                 end);
-        (.hooks[$ev] // [])
-        | map(.hooks // [])
-        | flatten
-        | any(.[];
-            ((.type // "") == "command")
-            and ((.command // "") | required_command_matches($frag)))
-      ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
-    else
-      # Fallback: plain substring match when jq is not available.
-      if grep -q "${fragment}" "${CLAUDE_HOME}/settings.json" 2>/dev/null; then
-        hook_found="true"
-      fi
-    fi
-
-    if [[ "${hook_found}" == "true" ]]; then
-      pass "Hook: ${event} -> ${fragment}"
-    else
-      fail "Missing hook: ${event} -> ${fragment}"
-    fi
-  done
-
-  # Event+basename presence is insufficient for mutation coverage: a stale
-  # matcher can keep the command installed while silently excluding the tool
-  # it must observe. Pin the complete edit-clock matcher invariants plus the
-  # successful-Bash dispatcher's universal matcher explicitly.
-  required_hook_matchers=(
-    "PreToolUse^quality-constitution-authority-guard.sh^Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*^exact"
-    "PreToolUse^pretool-intent-guard.sh^Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*^exact"
-    "PreToolUse^record-tool-start-revision.sh^Bash|Read|Grep|mcp__.*^exact"
-    "PostToolUse^mark-edit.sh^Edit|Write|MultiEdit|NotebookEdit|mcp__.*^exact"
-    "PostToolUse^record-verification.sh^mcp__.*^exact"
-    "PostToolUse^record-verification.sh^Read|Grep^exact"
-    "PostToolUseFailure^record-verification.sh^Bash|Read|Grep|mcp__.*^exact"
-    "PostToolUseFailure^mark-edit.sh^Bash|mcp__.*^exact"
-    "PostToolUse^posttool-dispatch.sh^^empty"
-    "MessageDisplay^closeout-display.sh^^empty"
-    "PostToolBatch^closeout-preflight.sh^^empty"
-    "Stop^stop-dispatch.sh^^empty"
-  )
-  for entry in "${required_hook_matchers[@]}"; do
-    IFS='^' read -r event fragment expected_matcher matcher_mode <<<"${entry}"
-    expected_fragment_total=0
-    for required_entry in "${required_hook_matchers[@]}"; do
-      IFS='^' read -r _required_event required_fragment _required_matcher _required_mode <<<"${required_entry}"
-      [[ "${required_fragment}" == "${fragment}" ]] \
-        && expected_fragment_total=$((expected_fragment_total + 1))
-    done
-    matcher_found="false"
-    if command -v jq >/dev/null 2>&1; then
-      matcher_found="$(jq -r \
-        --arg ev "${event}" \
-        --arg frag "${fragment}" \
-        --arg expected "${expected_matcher}" \
-        --arg mode "${matcher_mode}" \
-        --argjson expected_total "${expected_fragment_total}" '
-        def script_token:
-          def token_basename: split("/") | last;
-          def shell_tokens:
-            [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
-             | if ((startswith("\u0027") and endswith("\u0027")) or
-                   (startswith("\"") and endswith("\"")))
-               then .[1:-1] else . end];
-          tostring | shell_tokens
-          | . as $tokens
-          | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
-             // ($tokens[0] // ""));
-        def script_basename:
-          def token_basename: split("/") | last;
-          script_token | token_basename;
-        def path_owned_closeout:
-          ["closeout-display.sh", "closeout-preflight.sh", "stop-dispatch.sh"];
-        def required_command_matches($frag):
-          . as $command
-          | ($command | script_token) as $token
-          | ($command | script_basename) as $basename
-          | ($basename == $frag)
-            and (if (path_owned_closeout | index($frag)) == null then true
-                 else ($token == (".claude/skills/autowork/scripts/" + $frag))
-                   or ($token | endswith("/.claude/skills/autowork/scripts/" + $frag))
-                 end);
+  # settings.patch.json is the single wiring authority. Verify the complete
+  # contract — event, exact entry envelope (all keys except sibling hooks),
+  # and exact hook object — exactly once. Foreign sibling hooks may share the
+  # entry, but modifiers such as timeout/async cannot silently change a
+  # managed hook's behavior. Also reject an allowed managed command observed
+  # under any non-canonical contract. Basename or path-fragment presence cannot
+  # prove that required role arguments and lifecycle selectors are intact.
+  hook_patch_path="${SCRIPT_DIR}/config/settings.patch.json"
+  exact_tuple_report=""
+  exact_tuple_rc=0
+  if [[ ! -f "${hook_patch_path}" ]]; then
+    fail "settings patch missing; cannot verify exact managed hook tuples"
+  elif command -v jq >/dev/null 2>&1; then
+    exact_tuple_report="$(jq -nr \
+      --slurpfile expected "${hook_patch_path}" \
+      --slurpfile actual "${CLAUDE_HOME}/settings.json" '
+      def projected_entries($managed_commands):
         [(.hooks // {}) | to_entries[] as $event
           | ($event.value // [])[]? as $entry
-          | ($entry.hooks // [])[]?
-          | select(type == "object")
-          | select((.command // "") | required_command_matches($frag))
-          | {event: $event.key, matcher: ($entry.matcher // ""), type: (.type // "")}]
-        | (length == $expected_total)
-          and ([.[]
-                | select((.event == $ev)
-                  and (.type == "command")
-                  and (if $mode == "empty"
-                       then (.matcher == "")
-                       else (.matcher == $expected)
-                       end))] | length == 1)
-      ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
-    fi
-    if [[ "${matcher_found}" == "true" ]]; then
-      pass "Hook matcher: ${event} -> ${fragment} is ${expected_matcher:-universal}"
-    else
-      if [[ "${expected_fragment_total}" -eq 1 ]]; then
-        uniqueness="${fragment} must appear exactly once with no duplicates"
-      else
-        uniqueness="${fragment} must appear exactly ${expected_fragment_total} times across its required wirings with no duplicates"
-      fi
-      fail "Missing hook matcher coverage: ${event} -> ${fragment} must use ${expected_matcher:-a universal matcher}; ${uniqueness}"
-    fi
-  done
+          | select(($entry | type) == "object")
+          | {event: $event.key,
+             entry_contract: ($entry | del(.hooks)),
+             managed_hooks:
+               [($entry.hooks // [])[]?
+                | select(type == "object")
+                | . as $hook
+                | select($managed_commands | index($hook.command) != null)]}
+          | select((.managed_hooks | length) > 0)];
+      def field_text:
+        if type == "string" then . else tojson end;
+      ([($expected[0].hooks // {}) | to_entries[] | .value[]?
+        | (.hooks // [])[]? | select(type == "object") | .command]
+        | unique) as $managed_commands
+      | ($expected[0] | projected_entries($managed_commands)) as $wanted
+      | ($actual[0] | projected_entries($managed_commands)) as $observed
+      | (
+          ($wanted | group_by(.)[] | select(length > 1)) as $duplicates
+          | $duplicates[0] as $entry
+          | $entry.managed_hooks[]
+          | ["AUTHORITY_DUP", ($duplicates | length | tostring), $entry.event,
+             (($entry.entry_contract.matcher // "") | field_text),
+             ((.type // "") | field_text),
+             ((.command // "") | field_text)]
+          | join("\u001f")
+        ),
+        (
+          $wanted[] as $entry
+          | ([$observed[] | select(. == $entry)] | length) as $count
+          | $entry.managed_hooks[]
+          | ["EXPECTED", ($count | tostring), $entry.event,
+             (($entry.entry_contract.matcher // "") | field_text),
+             ((.type // "") | field_text),
+             ((.command // "") | field_text)]
+          | join("\u001f")
+        ),
+        (
+          $observed[] as $entry
+          | select(([$wanted[] | select(. == $entry)] | length) == 0)
+          | $entry.managed_hooks[]
+          | ["EXTRA", "1", $entry.event,
+             (($entry.entry_contract.matcher // "") | field_text),
+             ((.type // "") | field_text),
+             ((.command // "") | field_text)]
+          | join("\u001f")
+        )
+    ' 2>/dev/null)" || exact_tuple_rc=$?
+  elif command -v python3 >/dev/null 2>&1; then
+    exact_tuple_report="$(python3 - "${hook_patch_path}" "${CLAUDE_HOME}/settings.json" <<'PY'
+import json
+import sys
 
-  # The dispatcher is the sole oh-my-claude Stop owner. Upgrade pruning must
-  # remove legacy direct children regardless of whatever matcher an older or
-  # hand-edited settings file put them under; foreign co-hooks remain valid.
-  if command -v jq >/dev/null 2>&1; then
-    legacy_stop_count="$(jq -r '
-      def script_token:
-        def token_basename: split("/") | last;
-        def shell_tokens:
-          [scan("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\"|[^[:space:]]+")
-           | if ((startswith("\u0027") and endswith("\u0027")) or
-                 (startswith("\"") and endswith("\"")))
-             then .[1:-1] else . end];
-        tostring | shell_tokens
-        | . as $tokens
-        | ([ $tokens[] | select((token_basename | test("\\.(sh|py)$"))) ][-1]
-           // ($tokens[0] // ""));
-      def script_basename:
-        def token_basename: split("/") | last;
-        script_token | token_basename;
-      def is_managed_legacy_stop_command:
-        . as $command
-        | ($command | script_token) as $token
-        | ($command | script_basename) as $basename
-        | (["stop-guard.sh", "stop-time-summary.sh", "canary-claim-audit.sh", "stop-transcript-archive.sh"] | index($basename)) != null
-          and (($token == (".claude/skills/autowork/scripts/" + $basename))
-               or ($token | endswith("/.claude/skills/autowork/scripts/" + $basename)));
-      [(.hooks.Stop // [])[]? | (.hooks // [])[]?
-       | (.command // "")
-       | select(is_managed_legacy_stop_command)] | length
-    ' "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf '1')"
-    if [[ "${legacy_stop_count}" == "0" ]]; then
-      pass "Stop dispatcher has no legacy direct managed co-hooks"
-    else
-      fail "Stop dispatcher has ${legacy_stop_count} legacy direct managed co-hook(s); reinstall to prune them"
-    fi
+def projected_entries(document, managed_commands):
+    result = []
+    for event, entries in (document.get("hooks") or {}).items():
+        for entry in entries or []:
+            if not isinstance(entry, dict):
+                continue
+            managed_hooks = []
+            for hook in entry.get("hooks") or []:
+                if isinstance(hook, dict) and hook.get("command") in managed_commands:
+                    managed_hooks.append(hook)
+            if managed_hooks:
+                result.append({
+                    "event": event,
+                    "entry_contract": {
+                        key: value for key, value in entry.items()
+                        if key != "hooks"
+                    },
+                    "managed_hooks": managed_hooks,
+                })
+    return result
+
+with open(sys.argv[1]) as source:
+    expected_document = json.load(source)
+managed_commands = {
+    hook.get("command")
+    for entries in (expected_document.get("hooks") or {}).values()
+    for entry in entries or [] if isinstance(entry, dict)
+    for hook in entry.get("hooks") or [] if isinstance(hook, dict)
+}
+wanted = projected_entries(expected_document, managed_commands)
+with open(sys.argv[2]) as source:
+    observed = projected_entries(json.load(source), managed_commands)
+separator = "\x1f"
+def field_text(value):
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+expected_groups = {}
+for item in wanted:
+    key = json.dumps(item, sort_keys=True, separators=(",", ":"))
+    expected_groups.setdefault(key, [item, 0])[1] += 1
+for item, count in expected_groups.values():
+    if count <= 1:
+        continue
+    matcher = item["entry_contract"].get("matcher") or ""
+    for hook in item["managed_hooks"]:
+        print(separator.join(("AUTHORITY_DUP", str(count), item["event"],
+                              field_text(matcher),
+                              field_text(hook.get("type") or ""),
+                              field_text(hook.get("command") or ""))))
+for item in wanted:
+    count = observed.count(item)
+    matcher = item["entry_contract"].get("matcher") or ""
+    for hook in item["managed_hooks"]:
+        print(separator.join(("EXPECTED", str(count), item["event"],
+                              field_text(matcher),
+                              field_text(hook.get("type") or ""),
+                              field_text(hook.get("command") or ""))))
+for item in observed:
+    if item not in wanted:
+        matcher = item["entry_contract"].get("matcher") or ""
+        for hook in item["managed_hooks"]:
+            print(separator.join(("EXTRA", "1", item["event"],
+                                  field_text(matcher),
+                                  field_text(hook.get("type") or ""),
+                                  field_text(hook.get("command") or ""))))
+PY
+    )" || exact_tuple_rc=$?
+  else
+    exact_tuple_rc=1
   fi
+
+  if [[ "${exact_tuple_rc}" -ne 0 ]]; then
+    fail "Could not compare settings.json with the exact managed hook tuple authority"
+  elif [[ -n "${exact_tuple_report}" ]]; then
+    while IFS=$'\x1f' read -r tuple_kind tuple_count tuple_event tuple_matcher tuple_type tuple_command; do
+      if [[ "${tuple_kind}" == "AUTHORITY_DUP" ]]; then
+        fail "Managed hook authority contains ${tuple_count} identical expected entries: ${tuple_event} matcher=${tuple_matcher:-<empty>} type=${tuple_type} command=${tuple_command}"
+      elif [[ "${tuple_kind}" == "EXPECTED" && "${tuple_count}" == "1" ]]; then
+        pass "Hook tuple: ${tuple_event} [${tuple_matcher:-universal}] -> ${tuple_command}"
+      elif [[ "${tuple_kind}" == "EXPECTED" ]]; then
+        fail "Managed hook tuple count is ${tuple_count}, expected 1: ${tuple_event} matcher=${tuple_matcher:-<empty>} type=${tuple_type} command=${tuple_command}"
+      else
+        fail "Managed hook command has non-canonical tuple/object contract: ${tuple_event} matcher=${tuple_matcher:-<empty>} type=${tuple_type} command=${tuple_command}"
+      fi
+    done <<< "${exact_tuple_report}"
+  else
+    fail "Exact managed hook tuple authority is empty"
+  fi
+
+  # The exact patch-derived comparison above is the sole managed-wiring
+  # authority. Foreign hooks are audited separately in Step 8.
 fi
 
 printf '\n'
@@ -1124,23 +1369,37 @@ printf '\n'
 printf '7. Model tier\n'
 
 conf_path="${CLAUDE_HOME}/oh-my-claude.conf"
-if [[ -f "${conf_path}" ]]; then
-  active_tier="$(read_conf_value model_tier)"
-  case "${active_tier:-}" in
+saved_tier=""
+[[ -f "${conf_path}" ]] && saved_tier="$(read_conf_value model_tier)"
+active_tier="${saved_tier}"
+tier_source="saved"
+if [[ -n "${OMC_MODEL_TIER:-}" ]]; then
+  case "${OMC_MODEL_TIER}" in
     quality|balanced|economy)
-      pass "Active model tier: ${active_tier}"
-      ;;
-    "")
-      pass "No model tier set (using default: balanced)"
+      active_tier="${OMC_MODEL_TIER}"
+      tier_source="environment"
       ;;
     *)
-      info_warn "Invalid saved model tier '${active_tier}' ignored; using default: balanced"
-      pass "Active model tier: balanced (default)"
+      info_warn "Invalid OMC_MODEL_TIER='${OMC_MODEL_TIER}' ignored; falling back to saved/default tier"
       ;;
   esac
-else
-  pass "No config file (using default: balanced)"
 fi
+case "${active_tier:-}" in
+  quality|balanced|economy)
+    pass "Active model tier: ${active_tier} (${tier_source})"
+    ;;
+  "")
+    if [[ -f "${conf_path}" ]]; then
+      pass "No model tier set (using default: balanced)"
+    else
+      pass "No config file (using default: balanced)"
+    fi
+    ;;
+  *)
+    info_warn "Invalid saved model tier '${saved_tier}' ignored; using default: balanced"
+    pass "Active model tier: balanced (default)"
+    ;;
+esac
 
 # Count current agent model assignments.
 opus_count=0
@@ -1262,35 +1521,37 @@ else
   # Distinguish jq parse failure from "no foreign entries". A
   # malformed settings.json is itself an A2 indicator that warrants a
   # loud signal — not a silent skip.
-  jq_err="$(jq -r '
-    [
-      (.hooks // {}) | to_entries[] |
-      .value[]? |
-      (.hooks // [])[]? |
-      .command // empty
-    ] | unique | .[]
-  ' "${CLAUDE_HOME}/settings.json" 2>&1)"
-  jq_rc=$?
+  jq_rc=0
+  jq_err="$(jq -r --slurpfile patch "${SCRIPT_DIR}/config/settings.patch.json" '
+    . as $settings
+    |
+    def hook_command:
+      if type == "object" and has("command") and .command != null
+      then .command else "" end;
+    def command_text:
+      if type == "string" then . else tojson end;
+    [($patch[0].hooks // {}) | to_entries[] | .value[]?
+      | (.hooks // [])[]? | select(type == "object")
+      | hook_command] | unique as $allowed
+    | [($settings.hooks // {}) | to_entries[] | .value[]?
+       | (.hooks // [])[]? | select(type == "object")
+       | hook_command] | unique
+    | .[] as $command
+    | select(($allowed | index($command)) == null)
+    | $command | command_text
+  ' "${CLAUDE_HOME}/settings.json" 2>&1)" || jq_rc=$?
 
   if [[ ${jq_rc} -ne 0 ]]; then
     fail "settings.json failed jq parse: ${jq_err}"
   else
-    # FULL-string match; tight character classes for path/args
-    # structurally reject `..` traversal, `;`/`&&`/`|`/newline command
-    # chaining, and command substitution. The optional interpreter
-    # prefix is restricted to known shells/Python tokens (no absolute
-    # interpreter paths — those could be attacker-shimmed without
-    # flagging the path-allowlist). Whitespace pre-normalization
-    # collapses `bash  $HOME` cosmetic variants to `bash $HOME`.
-    bundled_re='^(bash |sh |dash |python3 )?([$]HOME|~)/\.claude/(skills/autowork/scripts/[A-Za-z0-9_-]+\.sh|quality-pack/scripts/[A-Za-z0-9_-]+\.sh|statusline\.py)( [A-Za-z0-9_-]+)*$'
+    # The exact patch command set is the allowlist. A new file under a
+    # managed directory, an omitted role/phase argument, or a command with
+    # altered whitespace is still foreign until the patch explicitly owns it.
     foreign_count=0
     while IFS= read -r cmd; do
       [[ -z "${cmd}" ]] && continue
-      norm="$(printf '%s' "${cmd}" | tr -s '[:space:]' ' ')"
-      if [[ ! "${norm}" =~ ${bundled_re} ]]; then
-        foreign_report "Foreign hook command: ${cmd}"
-        foreign_count=$((foreign_count + 1))
-      fi
+      foreign_report "Foreign hook command: ${cmd}"
+      foreign_count=$((foreign_count + 1))
     done <<< "${jq_err}"
 
     if [[ "${foreign_count}" -eq 0 ]]; then
@@ -1310,12 +1571,18 @@ fi
 if [[ -f "${CLAUDE_HOME}/settings.json" ]] && command -v jq >/dev/null 2>&1; then
   status_cmd="$(jq -r '.statusLine.command // empty' \
     "${CLAUDE_HOME}/settings.json" 2>/dev/null || true)"
+  status_object_matches="$(jq -r --slurpfile patch \
+    "${SCRIPT_DIR}/config/settings.patch.json" \
+    '.statusLine == $patch[0].statusLine' \
+    "${CLAUDE_HOME}/settings.json" 2>/dev/null || printf 'false')"
   # shellcheck disable=SC2088 # comparing unexpanded `~` literal — bundled patch ships the unexpanded form, Claude Code expands at exec time
-  if [[ -n "${status_cmd}" && "${status_cmd}" != "~/.claude/statusline.py" ]]; then
+  if [[ "${status_cmd}" != "~/.claude/statusline.py" ]]; then
     foreign_report ".statusLine.command differs from bundled (got: ${status_cmd}; expected: ~/.claude/statusline.py)"
     if [[ "${STRICT_MODE}" != "true" ]]; then
       printf '  [info] Re-run install.sh to restore the bundled value, or --strict to fail verify on this divergence.\n'
     fi
+  elif [[ "${status_object_matches}" != "true" ]]; then
+    foreign_report ".statusLine object differs from bundled type/command/padding contract"
   fi
 fi
 
@@ -1330,52 +1597,255 @@ printf '\n'
 # replacement (e.g. stop-guard.sh swapped for an exfiltration shim).
 # install.sh writes ${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt
 # with one `<sha256>  <relative-path>` line per bundled file. Step 9
-# re-hashes each tracked path and FAILs on mismatch. An attacker who
-# tampered with installed-hashes.txt itself after editing a script is
-# a more sophisticated case; we don't claim full integrity (that needs
-# OS-level immutability — `chflags uchg` on macOS, `chattr +i` on Linux
-# ext4 — which require root and break legitimate updates). The drift
-# check raises the bar from "passes structural validation" to "matches
-# the bytes that shipped" for 95% of real-world A2 actors.
+# re-hashes each tracked path and FAILs on mismatch. The path-only manifest,
+# checksum manifest, and available source bundle are compared as independent
+# coverage sets, so deleting the same row from both mutable installed ledgers
+# no longer hides a managed file. This still is not OS immutability — a
+# same-user process can rewrite installed files and both ledgers — but verify
+# now detects incomplete ledgers as well as byte drift.
 
 printf '9. Drift detection (SHA-256 manifest)\n'
 
 HASHES_PATH="${CLAUDE_HOME}/quality-pack/state/installed-hashes.txt"
-
-if [[ ! -f "${HASHES_PATH}" ]]; then
-  info_warn "installed-hashes.txt missing (drift detection unavailable; reinstall to generate)"
+if [[ ! -e "${HASHES_PATH}" && ! -L "${HASHES_PATH}" ]]; then
+  fail "installed-hashes.txt missing; complete managed-file coverage cannot be proved (reinstall to generate)"
+elif ! managed_path_components_are_safe "${HASHES_PATH}" 0 \
+    || [[ ! -f "${HASHES_PATH}" || -L "${HASHES_PATH}" ]]; then
+  fail "installed-hashes.txt is not a safe regular file; reinstall to restore integrity checking"
 else
-  hash_check_tool=""
-  if command -v shasum >/dev/null 2>&1; then
-    hash_check_tool="shasum -a 256 -c"
-  elif command -v sha256sum >/dev/null 2>&1; then
-    hash_check_tool="sha256sum -c"
+  hash_manifest_valid="true"
+  installed_manifest_set_valid="true"
+  hash_manifest_count=0
+  hash_paths_tmp="$(mktemp)"
+  manifest_paths_tmp="$(mktemp)"
+
+  # The path-only and checksum manifests are one coverage authority. Validate
+  # every installed-manifest row (not only *.sh rows consumed by Step 3), then
+  # compare exact sorted sets below. A mutable attacker must not be able to
+  # remove the same file from both ledgers and keep `Errors: 0`.
+  if ! managed_path_components_are_safe "${MANIFEST_PATH}" 0 \
+      || [[ ! -f "${MANIFEST_PATH}" || -L "${MANIFEST_PATH}" ]]; then
+    fail "installed-manifest.txt missing or unsafe; managed-file coverage cannot be proved"
+    installed_manifest_set_valid="false"
+  else
+    while IFS= read -r manifest_relative_path \
+        || [[ -n "${manifest_relative_path}" ]]; do
+      case "${manifest_relative_path}" in
+        ""|/*|*\\*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*//*|*$'\n'*|*$'\r'*|*$'\t'*)
+          fail "Unsafe installed manifest path: ${manifest_relative_path:-<empty>}"
+          installed_manifest_set_valid="false"
+          continue
+          ;;
+      esac
+      manifest_installed_path="${CLAUDE_HOME}/${manifest_relative_path}"
+      if ! managed_path_components_are_safe "${manifest_installed_path}" 0 \
+          || [[ ! -f "${manifest_installed_path}" \
+            || -L "${manifest_installed_path}" ]]; then
+        fail "Installed manifest references unsafe, missing, or non-regular managed file: ${manifest_relative_path}"
+        installed_manifest_set_valid="false"
+        continue
+      fi
+      printf '%s\n' "${manifest_relative_path}" >> "${manifest_paths_tmp}"
+    done < "${MANIFEST_PATH}"
   fi
 
-  if [[ -z "${hash_check_tool}" ]]; then
-    info_warn "Neither shasum nor sha256sum available; drift detection skipped"
-  else
-    # The hashes file's paths are relative to the bundle root. After
-    # rsync -a, the same relative paths exist under CLAUDE_HOME. Run the
-    # check from CLAUDE_HOME so each path resolves correctly. Force
-    # `LC_ALL=C` so the `FAILED` token is not localized — the grep
-    # filter relies on the English string emitted by shasum/sha256sum.
-    drift_output=""
-    drift_output="$(cd "${CLAUDE_HOME}" && LC_ALL=C ${hash_check_tool} "${HASHES_PATH}" 2>&1 \
-      | grep -E ': (FAILED|FAILED open or read)$' || true)"
+  installed_manifest_count="$(wc -l < "${manifest_paths_tmp}" 2>/dev/null \
+    | tr -d '[:space:]' || printf '0')"
+  [[ "${installed_manifest_count}" =~ ^[0-9]+$ ]] \
+    || installed_manifest_count=0
+  if [[ "${installed_manifest_count}" -eq 0 ]]; then
+    fail "Installed manifest is empty"
+    installed_manifest_set_valid="false"
+  fi
+  duplicate_manifest_path="$(LC_ALL=C sort "${manifest_paths_tmp}" \
+    | uniq -d | head -n 1 || true)"
+  if [[ -n "${duplicate_manifest_path}" ]]; then
+    fail "Installed manifest contains duplicate path: ${duplicate_manifest_path}"
+    installed_manifest_set_valid="false"
+  fi
+  LC_ALL=C sort -u -o "${manifest_paths_tmp}" "${manifest_paths_tmp}"
 
-    if [[ -z "${drift_output}" ]]; then
-      pass "No drift detected on installed bundle files"
+  while IFS= read -r hash_line || [[ -n "${hash_line}" ]]; do
+    if [[ ! "${hash_line}" =~ ^[0-9A-Fa-f]{64}[[:space:]][[:space:]](.+)$ ]]; then
+      fail "Malformed checksum manifest line: ${hash_line:-<empty>}"
+      hash_manifest_valid="false"
+      continue
+    fi
+    hash_relative_path="${BASH_REMATCH[1]}"
+    case "${hash_relative_path}" in
+      /*|*\\*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*//*|*$'\n'*|*$'\r'*|*$'\t'*)
+        fail "Unsafe checksum manifest path: ${hash_relative_path}"
+        hash_manifest_valid="false"
+        continue
+        ;;
+    esac
+    hash_installed_path="${CLAUDE_HOME}/${hash_relative_path}"
+    if ! managed_path_components_are_safe "${hash_installed_path}" 0 \
+        || [[ ! -f "${hash_installed_path}" \
+          || -L "${hash_installed_path}" ]]; then
+      fail "Checksum manifest references unsafe, missing, or non-regular managed file: ${hash_relative_path}"
+      hash_manifest_valid="false"
+      continue
+    fi
+    hash_manifest_count=$((hash_manifest_count + 1))
+    printf '%s\n' "${hash_relative_path}" >> "${hash_paths_tmp}"
+  done < "${HASHES_PATH}"
+
+  if [[ "${hash_manifest_count}" -eq 0 ]]; then
+    fail "Checksum manifest is empty"
+    hash_manifest_valid="false"
+  fi
+  duplicate_hash_path="$(LC_ALL=C sort "${hash_paths_tmp}" | uniq -d | head -n 1 || true)"
+  if [[ -n "${duplicate_hash_path}" ]]; then
+    fail "Checksum manifest contains duplicate path: ${duplicate_hash_path}"
+    hash_manifest_valid="false"
+  fi
+  LC_ALL=C sort -u -o "${hash_paths_tmp}" "${hash_paths_tmp}"
+
+  if [[ "${installed_manifest_set_valid}" == "true" \
+      && "${hash_manifest_valid}" == "true" ]]; then
+    manifest_only_count="$(LC_ALL=C comm -23 "${manifest_paths_tmp}" \
+      "${hash_paths_tmp}" | wc -l | tr -d '[:space:]')"
+    hashes_only_count="$(LC_ALL=C comm -13 "${manifest_paths_tmp}" \
+      "${hash_paths_tmp}" | wc -l | tr -d '[:space:]')"
+    if [[ "${manifest_only_count}" -ne 0 || "${hashes_only_count}" -ne 0 ]]; then
+      first_manifest_only="$(LC_ALL=C comm -23 "${manifest_paths_tmp}" \
+        "${hash_paths_tmp}" | head -n 1 || true)"
+      first_hashes_only="$(LC_ALL=C comm -13 "${manifest_paths_tmp}" \
+        "${hash_paths_tmp}" | head -n 1 || true)"
+      fail "Installed manifest/checksum path sets differ (manifest-only=${manifest_only_count}${first_manifest_only:+ first=${first_manifest_only}}; hashes-only=${hashes_only_count}${first_hashes_only:+ first=${first_hashes_only}})"
+      hash_manifest_valid="false"
     else
-      drift_lines=0
-      while IFS= read -r line; do
-        [[ -z "${line}" ]] && continue
-        foreign_report "Drift: ${line}"
-        drift_lines=$((drift_lines + 1))
-      done <<< "${drift_output}"
-      if [[ "${drift_lines}" -gt 0 && "${STRICT_MODE}" != "true" ]]; then
-        printf '  [info] Re-run with --strict to fail verify on drift.\n'
+      pass "Installed manifest and checksum coverage sets match exactly"
+    fi
+  fi
+
+  # When verify.sh is run from a source checkout, that checkout supplies the
+  # third independent path authority. `exclude_ios=on` is persisted by the
+  # current installer and removes only the four explicitly optional iOS agent
+  # definitions from admission; every other bundled regular file must appear.
+  source_bundle_root="${SCRIPT_DIR}/bundle/dot-claude"
+  if [[ ! -d "${source_bundle_root}" || -L "${source_bundle_root}" ]]; then
+    fail "Source bundle is missing or unsafe; independent managed-file coverage cannot be proved: ${source_bundle_root}"
+    hash_manifest_valid="false"
+  elif [[ "${installed_manifest_set_valid}" == "true" ]]; then
+    source_paths_tmp="$(mktemp)"
+    source_nodes_tmp="$(mktemp)"
+    source_paths_valid="true"
+    exclude_ios_value="$(awk '
+      index($0, "=") > 0 && substr($0, 1, index($0, "=") - 1) == "exclude_ios" {
+        candidate=substr($0, index($0, "=") + 1)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", candidate)
+        if (candidate == "on" || candidate == "off") value=candidate
+      }
+      END { print value }
+    ' "${CLAUDE_HOME}/oh-my-claude.conf" 2>/dev/null || true)"
+    if ! find "${source_bundle_root}" -mindepth 1 -print0 \
+        > "${source_nodes_tmp}" 2>/dev/null; then
+      fail "Could not enumerate source bundle coverage"
+      source_paths_valid="false"
+    fi
+    while IFS= read -r -d '' source_path; do
+      source_relative_path="${source_path#"${source_bundle_root}"/}"
+      [[ "${source_relative_path}" != "${source_path}" ]] || {
+        source_paths_valid="false"
+        continue
+      }
+      case "${source_relative_path}" in
+        ""|/*|*\\*|.|..|./*|../*|*/./*|*/../*|*/.|*/..|*//*|*$'\n'*|*$'\r'*|*$'\t'*)
+          fail "Unsafe source bundle path: ${source_relative_path:-<empty>}"
+          source_paths_valid="false"
+          continue
+          ;;
+      esac
+      if [[ -L "${source_path}" ]]; then
+        fail "Source bundle contains a symlink: ${source_relative_path}"
+        source_paths_valid="false"
+        continue
+      elif [[ -d "${source_path}" ]]; then
+        continue
+      elif [[ ! -f "${source_path}" ]]; then
+        fail "Source bundle contains a special filesystem node: ${source_relative_path}"
+        source_paths_valid="false"
+        continue
       fi
+      [[ "${source_relative_path##*/}" != ".DS_Store" ]] || continue
+      if [[ "${exclude_ios_value}" == "on" ]]; then
+        case "${source_relative_path}" in
+          agents/ios-*.md)
+            continue
+            ;;
+        esac
+      fi
+      printf '%s\n' "${source_relative_path}" >> "${source_paths_tmp}"
+    done < "${source_nodes_tmp}"
+    LC_ALL=C sort -u -o "${source_paths_tmp}" "${source_paths_tmp}"
+    if [[ "${source_paths_valid}" == "true" ]]; then
+      source_only_count="$(LC_ALL=C comm -23 "${source_paths_tmp}" \
+        "${manifest_paths_tmp}" | wc -l | tr -d '[:space:]')"
+      installed_only_count="$(LC_ALL=C comm -13 "${source_paths_tmp}" \
+        "${manifest_paths_tmp}" | wc -l | tr -d '[:space:]')"
+      if [[ "${source_only_count}" -ne 0 || "${installed_only_count}" -ne 0 ]]; then
+        first_source_only="$(LC_ALL=C comm -23 "${source_paths_tmp}" \
+          "${manifest_paths_tmp}" | head -n 1 || true)"
+        first_installed_only="$(LC_ALL=C comm -13 "${source_paths_tmp}" \
+          "${manifest_paths_tmp}" | head -n 1 || true)"
+        fail "Source bundle/installed manifest path sets differ (source-only=${source_only_count}${first_source_only:+ first=${first_source_only}}; installed-only=${installed_only_count}${first_installed_only:+ first=${first_installed_only}})"
+        hash_manifest_valid="false"
+      else
+        pass "Source bundle and installed manifest coverage sets match exactly"
+      fi
+    fi
+    rm -f "${source_paths_tmp}" "${source_nodes_tmp}"
+  fi
+
+  rm -f "${manifest_paths_tmp}" "${hash_paths_tmp}"
+
+  hash_check_tool_available="false"
+  case "${TRUSTED_SHA256_TOOL##*/}" in
+    shasum|sha256sum) hash_check_tool_available="true" ;;
+  esac
+
+  if [[ "${hash_manifest_valid}" != "true" ]]; then
+    : # Validation already emitted one or more hard failures.
+  elif [[ "${hash_check_tool_available}" != "true" ]]; then
+    fail "Neither shasum nor sha256sum is available; Definition and verification authority cannot be sealed"
+  else
+    # Run from CLAUDE_HOME so relative manifest paths resolve correctly. The
+    # checker status and complete output are authoritative: parse failures,
+    # unreadable files, and incomplete success output all fail closed.
+    hash_check_rc=0
+    drift_output="$(\run_trusted_sha256_manifest_check \
+      "${TRUSTED_SHA256_TOOL}" "${CLAUDE_HOME}" "${HASHES_PATH}" 2>&1)" \
+      || hash_check_rc=$?
+    drift_lines=0
+    hash_ok_lines=0
+    hash_unexpected_lines=0
+    while IFS= read -r line; do
+      [[ -z "${line}" ]] && continue
+      case "${line}" in
+        *': FAILED'|*': FAILED open or read')
+          fail "Drift: ${line}"
+          drift_lines=$((drift_lines + 1))
+          ;;
+        *': OK')
+          hash_ok_lines=$((hash_ok_lines + 1))
+          ;;
+        *)
+          info_warn "Checksum checker output: ${line}"
+          hash_unexpected_lines=$((hash_unexpected_lines + 1))
+          ;;
+      esac
+    done <<< "${drift_output}"
+
+    if [[ "${hash_check_rc}" -ne 0 && "${drift_lines}" -eq 0 ]]; then
+      fail "Checksum verification command failed (exit ${hash_check_rc})"
+    elif [[ "${hash_check_rc}" -eq 0 \
+      && ( "${hash_unexpected_lines}" -ne 0 \
+        || "${hash_ok_lines}" -ne "${hash_manifest_count}" ) ]]; then
+      fail "Checksum verification produced incomplete or malformed output (${hash_ok_lines}/${hash_manifest_count} OK rows)"
+    elif [[ "${hash_check_rc}" -eq 0 && "${drift_lines}" -eq 0 ]]; then
+      pass "No drift detected on installed bundle files"
     fi
   fi
 fi

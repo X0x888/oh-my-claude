@@ -17,6 +17,9 @@
 #   7. Missing STATE_ROOT: returns empty (no error).
 #   8. Dormant resume sources and synthetic watchdog state are never selected.
 #   9. Malformed ownership markers fail open instead of hiding a live session.
+#  10. NUL-bearing candidate state cannot alias the current cwd.
+#  11. Mutating discovery never falls back across projects.
+#  11. Candidate validation cannot perturb the mtime ordering it is reading.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -100,6 +103,8 @@ make_session "second-stranger" "/tmp/repo-y"
 bump_session "second-stranger"
 got="$(PWD=/tmp/repo-elsewhere discover_latest_session)"
 assert_eq "no cwd match: newest-mtime wins (legacy)" "second-stranger" "${got}"
+got="$(PWD=/tmp/repo-elsewhere discover_current_project_session)"
+assert_eq "no cwd match: mutating discovery fails closed" "" "${got}"
 teardown_test
 
 # ---------------------------------------------------------------------
@@ -111,6 +116,8 @@ make_session "new-no-cwd" ""
 bump_session "new-no-cwd"
 got="$(PWD=/tmp/repo-anywhere discover_latest_session)"
 assert_eq "no cwd field on either: newest-mtime wins" "new-no-cwd" "${got}"
+got="$(PWD=/tmp/repo-anywhere discover_current_project_session)"
+assert_eq "legacy no-cwd state grants no mutation authority" "" "${got}"
 teardown_test
 
 # ---------------------------------------------------------------------
@@ -172,6 +179,45 @@ bump_session "newer-malformed-marker"
 got="$(PWD=/tmp/repo-malformed discover_latest_session)"
 assert_eq "malformed fence cannot hide newest live session" \
   "newer-malformed-marker" "${got}"
+teardown_test
+
+# ---------------------------------------------------------------------
+printf "Test 10: NUL-bearing cwd cannot alias a valid project match\n"
+setup_test
+make_session "valid-byte-match" "/tmp/repo-byte-boundary"
+bump_session "valid-byte-match"
+make_session "newer-nul-cwd" "/tmp/placeholder"
+jq '.cwd = ("/tmp/repo-byte-boundary" + "\u0000")' \
+  "${STATE_ROOT}/newer-nul-cwd/${STATE_JSON}" \
+  >"${STATE_ROOT}/newer-nul-cwd/${STATE_JSON}.tmp"
+mv "${STATE_ROOT}/newer-nul-cwd/${STATE_JSON}.tmp" \
+  "${STATE_ROOT}/newer-nul-cwd/${STATE_JSON}"
+bump_session "newer-nul-cwd"
+got="$(PWD=/tmp/repo-byte-boundary discover_latest_session)"
+assert_eq "malformed cwd cannot become the preferred session" \
+  "valid-byte-match" "${got}"
+teardown_test
+
+# ---------------------------------------------------------------------
+printf "Test 11: discovery snapshots do not manufacture session activity\n"
+setup_test
+# Put the newest session first lexically. The old adjacent-snapshot reader
+# touched it during validation, then touched zzz-older and incorrectly made
+# that later-scanned directory win the live `-nt` comparison.
+make_session "zzz-older" "/tmp/repo-stable-order"
+bump_session "zzz-older"
+make_session "aaa-newest" "/tmp/repo-stable-order"
+bump_session "aaa-newest"
+newest_mtime_before="$(_lock_mtime "${STATE_ROOT}/aaa-newest")"
+older_mtime_before="$(_lock_mtime "${STATE_ROOT}/zzz-older")"
+got="$(PWD=/tmp/repo-stable-order discover_latest_session)"
+assert_eq "validation cannot invert pre-scan recency" "aaa-newest" "${got}"
+got="$(PWD=/tmp/repo-stable-order discover_latest_session)"
+assert_eq "repeated discovery remains stable" "aaa-newest" "${got}"
+assert_eq "newest session directory mtime remains read-only" \
+  "${newest_mtime_before}" "$(_lock_mtime "${STATE_ROOT}/aaa-newest")"
+assert_eq "older session directory mtime remains read-only" \
+  "${older_mtime_before}" "$(_lock_mtime "${STATE_ROOT}/zzz-older")"
 teardown_test
 
 # ---------------------------------------------------------------------

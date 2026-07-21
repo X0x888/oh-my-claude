@@ -103,7 +103,11 @@ case "${subcmd}" in
     write_state "goal_last_block_edit_revision" ""
     printf 'goal: ARMED. The relentless driver will re-anchor this objective and block Stop\n'
     printf '      until you (a) achieve it — fresh excellence audit + attest **Goal achieved.** —\n'
-    printf '      or (b) hit a no-progress wall (%s consecutive stalls auto-release with a surface).\n' "${_goal_stuck_threshold}"
+    if [[ "${_goal_stuck_threshold}" -eq 0 ]]; then
+      printf '      with an uncapped drive (goal_stuck_threshold=0: no automatic stuck-wall release).\n'
+    else
+      printf '      or (b) hit a no-progress wall (%s consecutive stalls auto-release with a surface).\n' "${_goal_stuck_threshold}"
+    fi
     printf '  Goal: %s\n' "${objective}"
     printf '  Lifecycle: /goal (status) · /goal pause · /goal resume · /goal clear · /goal done\n'
     # v1.47 honesty fix: the driver lives in stop-guard, which exits before
@@ -147,8 +151,13 @@ case "${subcmd}" in
       printf 'goal: ARMED (driver active — relentless until achieved).\n'
     fi
     printf '  Objective: %s\n' "${objective}"
-    printf '  Driver blocks this session: %s (consecutive no-progress: %s/%s before stuck-wall release)\n' \
-      "${blocks}" "${stuck}" "${_goal_stuck_threshold}"
+    if [[ "${_goal_stuck_threshold}" -eq 0 ]]; then
+      printf '  Driver blocks this session: %s (consecutive no-progress: %s; uncapped, no automatic stuck-wall release)\n' \
+        "${blocks}" "${stuck}"
+    else
+      printf '  Driver blocks this session: %s (consecutive no-progress: %s/%s before stuck-wall release)\n' \
+        "${blocks}" "${stuck}" "${_goal_stuck_threshold}"
+    fi
     ;;
 
   pause)

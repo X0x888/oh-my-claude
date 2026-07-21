@@ -139,6 +139,13 @@ Adaptive activations remain reviewable. Accepting one promotes the existing
 claim instead of duplicating it; rejecting one archives the inferred claim and
 retains the rejection decision in the bounded candidate ledger.
 
+Rejected and explicitly removed learned concepts remain suppressed for
+automatic inference. Explicit curation is the deliberate override: a later
+`remember`, `must`, `must-not`, or `avoid` instruction may create a confirmed
+claim for the same idea without deleting the rejection tombstone. There is no
+separate reopen command because automatic learning should remain suppressed
+while the explicit claim carries authority.
+
 ### Add an exemplar or anti-exemplar
 
 Every reference needs a reason. Record the aspect to learn, not a blanket
@@ -179,6 +186,15 @@ The one-use grant disappears after a successful consume, the next real user
 prompt, accepted Stop, compaction, or resume. A malformed, stale, replayed,
 wrong-project, wrong-session, or semantically altered operation fails before
 the profile lock is acquired.
+
+Every explicit profile mutator—claim/reference addition, acceptance, rejection,
+and removal—retains a bounded pending-operation journal until its profile,
+terminal-decision, and audit effects are durable. The next mutation reconciles
+a proven profile-first partial commit idempotently, including an audit append
+that landed before a crash. It never replays a missing claim/reference mutation
+from the journal alone; a prepared-only operation is abandoned and requires a
+fresh explicit user authorization. `audit` reports a valid pending journal as a
+warning and malformed or oversized journals as an error.
 
 The authority layer is cooperative same-user-process integrity, not an OS
 sandbox. The guard covers ordinary Claude tool calls, forbids direct mutation

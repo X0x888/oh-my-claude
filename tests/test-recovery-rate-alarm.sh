@@ -21,8 +21,8 @@
 #   T3 — third recovery: counter increments to 3 (no upper cap)
 #   T4 — counter sidecar lives in the session dir, not in
 #        session_state.json itself (so it survives the recovery)
-#   T5 — counter file is restored to a sensible state if it carries
-#        non-numeric content (defensive)
+#   T5 — malformed/NUL-bearing counter evidence is preserved and forces the
+#        conservative repeat-recovery alarm count
 #   T6 — gate event emits .details.recovery_count when present
 #        (audit-side validation)
 
@@ -107,12 +107,27 @@ trigger_recovery
 assert_eq "T4: counter == 4 after fourth recovery" "4" "$(cat "${counter_file}")"
 
 # ----------------------------------------------------------------------
-printf 'T5: non-numeric counter content is treated as 0 (defensive)\n'
-printf 'corrupted-counter-content' > "${counter_file}"
+printf 'T5: malformed counter is preserved and forces conservative alarm count\n'
+printf 'corrupted-counter-content' >"${counter_file}"
+malformed_counter_before="$(shasum -a 256 "${counter_file}" | awk '{print $1}')"
 _state_validated=0
 trigger_recovery
-got_count="$(cat "${counter_file}")"
-assert_eq "T5: non-numeric counter resets to 1 on next recovery" "1" "${got_count}"
+assert_eq "T5: malformed counter evidence remains byte-identical" \
+  "${malformed_counter_before}" \
+  "$(shasum -a 256 "${counter_file}" | awk '{print $1}')"
+
+# An otherwise canonical count plus raw NUL and newline must not alias the
+# canonical integer or get overwritten by a normalized increment.
+{
+  printf '4'
+  printf '\0\n'
+} >"${counter_file}"
+nul_counter_before="$(shasum -a 256 "${counter_file}" | awk '{print $1}')"
+_state_validated=0
+trigger_recovery
+assert_eq "T5: raw-NUL counter evidence remains byte-identical" \
+  "${nul_counter_before}" \
+  "$(shasum -a 256 "${counter_file}" | awk '{print $1}')"
 
 # ----------------------------------------------------------------------
 printf 'T6: gate event from prompt-intent-router carries recovery_count\n'

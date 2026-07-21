@@ -22,8 +22,9 @@
 # scope stays bounded and the backtest gate can validate it before
 # expanding.
 #
-# Always exit 0. The canary is INFORMATIONAL — it must never block Stop,
-# even if the audit itself errors out. The dispatcher provides ordering.
+# Standalone invocation is informational and fail-open. An accepted dispatcher
+# child propagates a publication/claim failure so the exact finalizer lease is
+# abandoned and retried; it still never changes the stop-guard disposition.
 
 set -euo pipefail
 
@@ -39,7 +40,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Stop-hook payload includes session_id at the top level.
 HOOK_JSON="$(_omc_read_hook_stdin)"
-SESSION_ID="$(printf '%s' "${HOOK_JSON}" | jq -r '.session_id // empty' 2>/dev/null || true)"
+SESSION_ID="$(json_get '.session_id' 2>/dev/null || true)"
 
 if [[ -z "${SESSION_ID}" ]]; then
   exit 0
@@ -61,25 +62,34 @@ if [[ "${OMC_STOP_ACCEPTED:-0}" != "1" ]] && ! is_ultrawork_mode; then
   exit 0
 fi
 
-# Run the audit. canary_run_audit always returns 0 — even on internal
-# error paths it logs to hooks.log and exits cleanly.
-canary_run_audit "${SESSION_ID}" || true
+# Standalone Stop hooks are informational and remain fail-open. The dispatcher
+# marks accepted children explicitly; there a publish failure must propagate so
+# its finalizer lease is abandoned and retried.
+canary_rc=0
+canary_run_audit "${SESSION_ID}" || canary_rc=$?
+if [[ "${canary_rc}" -ne 0 ]]; then
+  [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] && exit "${canary_rc}"
+fi
 
-# Soft alert: if the per-session unverified count crosses threshold
-# AND the alert has not yet been emitted, output a systemMessage card.
+# Soft alert: atomically claim the one-shot warning after the per-session
+# threshold is crossed, then output a systemMessage card.
 # Exits with the JSON on stdout so Claude Code surfaces it; the alert
 # itself is non-blocking (no decision: "block").
 #
-# One-shot per session: drift_warning_emitted state flag prevents
-# repetition. The flag persists for the lifetime of session_state.json
-# — a fresh session resets it implicitly because it gets a fresh state
-# file. Mirrors the memory_drift_hint_emitted shape; both rely on per-
-# session state file lifetime rather than an explicit clear pass.
-if canary_should_alert "${SESSION_ID}"; then
-  unverified_count="$(canary_session_unverified_count "${SESSION_ID}")"
+# One-shot per session: canary_claim_alert evaluates the threshold and writes
+# drift_warning_emitted in one generation-fenced state critical section. A
+# stale G1 callback or a concurrent Stop therefore cannot emit/claim G2's
+# warning after merely winning an outside-lock check.
+claim_alert_rc=0
+unverified_count="$(canary_claim_alert "${SESSION_ID}" 2>/dev/null)" \
+  || claim_alert_rc=$?
+if [[ "${claim_alert_rc}" -ne 0 && "${claim_alert_rc}" -ne 2 \
+    && "${OMC_STOP_ACCEPTED:-0}" == "1" ]]; then
+  exit "${claim_alert_rc}"
+fi
+if [[ "${unverified_count}" =~ ^[0-9]+$ ]]; then
   alert_text="DRIFT WARNING (model-drift canary, v1.26.0): ${unverified_count} unverified-claim turns this session. **What to do now:** spot-check the claims — pick 2-3 file paths the model named in this session and \`git diff\` / \`Read\` them yourself to confirm the claimed verification actually happened; if the claims match reality, dismiss this warning. **What the canary saw:** the model's prose asserted verification work (\"I read X\", \"I verified Y\", \"I checked Z\") but the turn fired zero verification tool calls (Read/Bash/Grep/Glob/WebFetch/NotebookRead) for those named anchors — the silent-confabulation pattern. **What the model should do for the rest of the session:** define the search universe explicitly, enumerate each candidate, and verify each — do not declare 'verified' / 'checked' / 'read' without naming the tool call that produced the verification. See \`/ulw-report\` for cross-session canary trends."
   emit_stop_message "${alert_text}"
-  write_state "drift_warning_emitted" "1"
   log_hook "canary" "drift warning emitted (count=${unverified_count})"
 fi
 

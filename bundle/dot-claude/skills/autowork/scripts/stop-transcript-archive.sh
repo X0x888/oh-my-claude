@@ -43,8 +43,8 @@
 #   - **Pure bash, zero deps.** jq is preferred for the JSONL → JSON
 #     normalization; falls back to `cp` (preserving .jsonl) when jq is
 #     unavailable.
-#   - **Never blocks Stop.** Any error path exits 0; the archive is
-#     advisory, not load-bearing.
+#   - **Fail-open standalone.** Direct hook errors exit 0. An accepted-Stop
+#     child propagates publication failure so its finalizer lease is retried.
 
 set -euo pipefail
 
@@ -53,6 +53,8 @@ set -euo pipefail
 # particular Stop; only the deterministic dispatcher invokes this script with
 # an explicit accepted disposition after certification.
 [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] || exit 0
+finalizer_claim_id="${OMC_CLOSEOUT_FINALIZATION_CLAIM_ID:-}"
+[[ "${finalizer_claim_id}" =~ ^finalizer-[a-f0-9]{48}$ ]] || exit 1
 
 # v1.27.0 lazy-load gates: archive hook does not need classifier/timing.
 export OMC_LAZY_CLASSIFIER=1
@@ -61,10 +63,52 @@ export OMC_LAZY_TIMING=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=common.sh
 . "${SCRIPT_DIR}/common.sh"
+
+_transcript_archive_required_failure() {
+  [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] && exit 1
+  exit 0
+}
+
+_transcript_archive_record_skip_locked() {
+  local matcher="$1" claim_id="$2"
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
+  record_gate_event "transcript-archive" "skip-fatal-stop" \
+    "matcher=${matcher}" 2>/dev/null || true
+}
+
+# Publish a fully-staged archive while holding the session mutex. Checking the
+# captured generation before either the first-writer test or mkdir/mv is the
+# linearization point: a stale G1 callback cannot create the first archive and
+# thereby make the current G2 callback incorrectly treat the session as done.
+_transcript_archive_publish_locked() {
+  local stage="$1" dest="$2" alternate_dest="$3" dest_dir="$4" format="$5"
+  local claim_id="$6"
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
+  [[ "${OMC_TEST_TRANSCRIPT_ARCHIVE_PUBLISH_FAIL:-0}" != "1" ]] \
+    || return 1
+  [[ -f "${stage}" && ! -L "${stage}" ]] || return 1
+  [[ ! -e "${dest}" && ! -L "${dest}" \
+      && ! -e "${alternate_dest}" && ! -L "${alternate_dest}" ]] \
+    || return 1
+  [[ ! -e "${dest_dir}" || ( -d "${dest_dir}" && ! -L "${dest_dir}" ) ]] \
+    || return 1
+
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
+  mkdir -p "${dest_dir}" || return 1
+  chmod 700 "${dest_dir}" 2>/dev/null || return 1
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
+  mv -f -- "${stage}" "${dest}" || return 1
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}" || return 1
+  record_gate_event "transcript-archive" "captured" \
+    "dest=${dest}" "format=${format}" 2>/dev/null || true
+}
+
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 [[ -z "${SESSION_ID}" ]] && exit 0
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+omc_enforcement_generation_matches_capture || exit 0
 
 # Honor opt-in conf flag.
 if [[ "${OMC_TRANSCRIPT_ARCHIVE:-off}" != "on" ]]; then
@@ -83,14 +127,12 @@ fi
 matcher="$(json_get '.matcher')"
 case "${matcher}" in
   rate_limit|authentication_failed|billing_error|max_output_tokens)
-    record_gate_event "transcript-archive" "skip-fatal-stop" \
-      "matcher=${matcher}" 2>/dev/null || true
+    with_state_lock _transcript_archive_record_skip_locked "${matcher}" \
+      "${finalizer_claim_id}" \
+      2>/dev/null || _transcript_archive_required_failure
     exit 0
     ;;
 esac
-
-ensure_session_dir
-omc_enforcement_generation_matches_capture || exit 0
 
 transcript_path="$(json_get '.transcript_path')"
 if [[ -z "${transcript_path}" || ! -r "${transcript_path}" ]]; then
@@ -113,42 +155,82 @@ dest_fallback="${dest_dir}/transcript.jsonl"
 # Idempotent — if either form already exists, the first Stop already
 # captured. Don't re-archive (preserves mtime; avoids churn on session-
 # stop loops).
-if [[ -e "${dest}" || -e "${dest_fallback}" ]]; then
+if [[ -e "${dest}" || -L "${dest}" \
+    || -e "${dest_fallback}" || -L "${dest_fallback}" ]]; then
+  if { [[ -f "${dest}" && ! -L "${dest}" \
+          && ! -e "${dest_fallback}" && ! -L "${dest_fallback}" ]]; } \
+      || { [[ -f "${dest_fallback}" && ! -L "${dest_fallback}" \
+          && ! -e "${dest}" && ! -L "${dest}" ]]; }; then
+    exit 0
+  fi
+  [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] && exit 1
   exit 0
 fi
 
-mkdir -p "${dest_dir}"
-chmod 700 "${dest_dir}" 2>/dev/null || true
+# Conversion/copy can be large, so stage it before taking the session lock.
+# The staging root shares the archive filesystem, making the locked mv an
+# atomic publication instead of a second large copy inside the critical
+# section.
+archive_root="${HOME}/.claude/quality-pack/state"
+stage_root="${archive_root}/.transcript-archive-staging"
+if [[ -L "${stage_root}" \
+    || ( -e "${stage_root}" && ! -d "${stage_root}" ) ]]; then
+  _transcript_archive_required_failure
+fi
+if ! mkdir -p "${stage_root}" 2>/dev/null; then
+  _transcript_archive_required_failure
+fi
+if ! chmod 700 "${stage_root}" 2>/dev/null; then
+  _transcript_archive_required_failure
+fi
+stage="$(mktemp "${stage_root}/.${SESSION_ID}.XXXXXX" 2>/dev/null || true)"
+if [[ -z "${stage}" ]]; then
+  _transcript_archive_required_failure
+fi
+_transcript_archive_cleanup() {
+  [[ -n "${stage:-}" ]] && rm -f -- "${stage}" 2>/dev/null || true
+}
+trap _transcript_archive_cleanup EXIT
+if [[ "${OMC_TEST_TRANSCRIPT_ARCHIVE_CHMOD_FAIL:-0}" == "1" ]] \
+    || ! chmod 600 "${stage}" 2>/dev/null; then
+  _transcript_archive_required_failure
+fi
 
 if command -v jq >/dev/null 2>&1; then
   # jq -s slurps each non-empty JSONL line into a single JSON array.
-  # 2>/dev/null suppresses jq's parse errors on the last (possibly
-  # incomplete) line — better to ship a partial archive than nothing
-  # when a session ends mid-flush.
-  if jq -s '.' "${transcript_path}" >"${dest}.tmp" 2>/dev/null; then
-    omc_enforcement_generation_matches_capture || {
-      rm -f "${dest}.tmp"
-      exit 0
-    }
-    mv "${dest}.tmp" "${dest}"
-    record_gate_event "transcript-archive" "captured" \
-      "dest=${dest}" "format=json" 2>/dev/null || true
+  if jq -s '.' "${transcript_path}" >"${stage}" 2>/dev/null; then
+    publish_dest="${dest}"
+    alternate_dest="${dest_fallback}"
+    archive_format="json"
   else
-    rm -f "${dest}.tmp"
     # jq failed — fall back to cp so the user still has something to grep.
-    if omc_enforcement_generation_matches_capture \
-        && cp "${transcript_path}" "${dest_fallback}" 2>/dev/null; then
-      record_gate_event "transcript-archive" "captured" \
-        "dest=${dest_fallback}" "format=jsonl-fallback" 2>/dev/null || true
+    if ! : >"${stage}" \
+        || ! cp "${transcript_path}" "${stage}" 2>/dev/null; then
+      _transcript_archive_required_failure
     fi
+    publish_dest="${dest_fallback}"
+    alternate_dest="${dest}"
+    archive_format="jsonl-fallback"
   fi
 else
   # jq missing — copy the raw JSONL.
-  if omc_enforcement_generation_matches_capture \
-      && cp "${transcript_path}" "${dest_fallback}" 2>/dev/null; then
-    record_gate_event "transcript-archive" "captured" \
-      "dest=${dest_fallback}" "format=jsonl-no-jq" 2>/dev/null || true
+  if ! cp "${transcript_path}" "${stage}" 2>/dev/null; then
+    _transcript_archive_required_failure
   fi
+  publish_dest="${dest_fallback}"
+  alternate_dest="${dest}"
+  archive_format="jsonl-no-jq"
+fi
+
+archive_publish_rc=0
+with_state_lock _transcript_archive_publish_locked \
+  "${stage}" "${publish_dest}" "${alternate_dest}" "${dest_dir}" \
+  "${archive_format}" "${finalizer_claim_id}" \
+  2>/dev/null || archive_publish_rc=$?
+
+if [[ "${archive_publish_rc}" -ne 0 \
+    && "${OMC_STOP_ACCEPTED:-0}" == "1" ]]; then
+  exit "${archive_publish_rc}"
 fi
 
 exit 0

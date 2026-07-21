@@ -145,18 +145,46 @@ run_dispatch_auto_version() {
 }
 
 run_finalization_op() {
-  local sid="$1" op="$2"
+  local sid="$1" op="$2" claim_id="${3:-}"
   hook_env SESSION_ID="${sid}" bash -c '
     . "$1"
     case "$2" in
-      claim) if closeout_claim_finalization; then printf claimed; else printf denied; fi ;;
-      abandon) if closeout_abandon_finalization; then printf abandoned; else printf denied; fi ;;
-      complete) if closeout_complete_finalization; then printf completed; else printf denied; fi ;;
+      claim) if ! closeout_claim_finalization; then printf denied; fi ;;
+      abandon) if closeout_abandon_finalization "$3"; then printf abandoned; else printf denied; fi ;;
+      complete) if closeout_complete_finalization "$3"; then printf completed; else printf denied; fi ;;
     esac
-  ' -- "${HOOK_DIR}/common.sh" "${op}"
+  ' -- "${HOOK_DIR}/common.sh" "${op}" "${claim_id}"
 }
 
 printf '\nStop dispatcher:\n'
+
+# Stop is the final certification owner. A decoded NUL cannot alias a
+# malformed lifecycle identity to a real active session before common.sh is
+# even sourced.
+seed_ready "nul-stop-target"
+nul_stop_payload="$(jq -nc --arg msg "$(closeout_message)" '
+  {session_id:("nul-stop-target" + "\u0000"),hook_event_name:"Stop",
+   stop_hook_active:false,last_assistant_message:$msg,
+   background_tasks:[],session_crons:[]}')"
+nul_stop_out="$(run_dispatch_payload "${nul_stop_payload}")"
+assert_contains "NUL-bearing Stop identity is rejected as malformed" \
+  "malformed lifecycle payload" "${nul_stop_out}"
+assert_contains "NUL-bearing Stop identity is blocked" \
+  '"decision":"block"' "${nul_stop_out}"
+
+# State generation is imported before common.sh. Reject malformed string
+# authority in jq rather than letting Bash erase NUL into a live generation.
+seed_ready "nul-stop-state"
+jq '.ulw_enforcement_generation=("1" + "\u0000")' \
+  "${STATE_ROOT}/nul-stop-state/session_state.json" \
+  >"${STATE_ROOT}/nul-stop-state/session_state.json.tmp"
+mv "${STATE_ROOT}/nul-stop-state/session_state.json.tmp" \
+  "${STATE_ROOT}/nul-stop-state/session_state.json"
+nul_stop_state_out="$(run_dispatch "nul-stop-state" "$(closeout_message)")"
+assert_contains "NUL-bearing Stop state is rejected before certification" \
+  "malformed session authority" "${nul_stop_state_out}"
+assert_contains "NUL-bearing Stop state blocks release" \
+  '"decision":"block"' "${nul_stop_state_out}"
 
 # Unsealed work gets one compact authoritative continuation. Timing/canary/
 # archive finalizers do not leak output, and the full provisional candidate is
@@ -255,6 +283,83 @@ assert_contains "dead wait increments exactly one continuation slot" '"1"' \
 assert_empty "dead wait keeps the quality interval nonterminal" \
   "$(jq -r '.session_outcome // empty' "${STATE_ROOT}/wait_dead/session_state.json")"
 
+# Dispatch admission is armed before its pending/start/Council writes. A crash
+# there outranks the WAIT shortcut: Stop must not clear the background marker,
+# record a provisional candidate, consume a continuation, or run certification.
+seed_ready wait_dispatch_txn
+wait_dispatch_dir="${STATE_ROOT}/wait_dispatch_txn"
+jq '.bg_work_dispatched_ts="dispatch-journal-marker"' \
+  "${wait_dispatch_dir}/session_state.json" \
+  >"${wait_dispatch_dir}/session_state.json.tmp"
+mv "${wait_dispatch_dir}/session_state.json.tmp" \
+  "${wait_dispatch_dir}/session_state.json"
+mkdir "${wait_dispatch_dir}/.dispatch-txn.interrupted"
+touch "${wait_dispatch_dir}/.dispatch-txn.interrupted/.ready"
+wait_dispatch_before="$(<"${wait_dispatch_dir}/session_state.json")"
+wait_dispatch_out="$(run_dispatch_payload "$(jq -nc \
+  --arg sid wait_dispatch_txn --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')")"
+assert_single_json "dispatch journal Stop emits one response" \
+  "${wait_dispatch_out}"
+assert_contains "dispatch journal blocks before WAIT recovery" \
+  "prior Agent authorization was interrupted" "${wait_dispatch_out}"
+assert_contains "dispatch journal preserves exact state bytes" \
+  "${wait_dispatch_before}" \
+  "$(<"${wait_dispatch_dir}/session_state.json")"
+[[ ! -e "${wait_dispatch_dir}/provisional_closeouts.jsonl" ]] \
+  && ok || bad "dispatch journal Stop recorded a provisional closeout"
+
+# The dead-wait path may bypass only a live effects-incomplete claim so it can
+# explain that the exact callback is still settling.  Fixed planner/reviewer
+# journals remain stronger publication authority.  A malformed journal must
+# therefore block every false-wait mutation and produce a mutation-free,
+# recovery-pending Stop response instead of consuming a continuation slot.
+for fixed_wal_kind in reviewer plan; do
+  fixed_wal_sid="wait_dead_${fixed_wal_kind}_wal"
+  seed_ready "${fixed_wal_sid}"
+  fixed_wal_dir="${STATE_ROOT}/${fixed_wal_sid}"
+  fixed_wal_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+    "${fixed_wal_dir}/session_state.json")"
+  jq '.bg_work_dispatched_ts="fixed-wal-marker"' \
+    "${fixed_wal_dir}/session_state.json" \
+    >"${fixed_wal_dir}/session_state.json.tmp"
+  mv "${fixed_wal_dir}/session_state.json.tmp" \
+    "${fixed_wal_dir}/session_state.json"
+  jq -nc --argjson objective_ts "${fixed_wal_objective_ts}" '{
+    agent_type:"quality-reviewer",native_agent_id:"fixed-wal-native",ts:1,
+    review_dispatch_abandoned:false,objective_cycle_id:1,
+    objective_prompt_ts:$objective_ts,review_revision:1
+  }' >"${fixed_wal_dir}/pending_agents.jsonl"
+  if [[ "${fixed_wal_kind}" == "reviewer" ]]; then
+    fixed_wal_path="${fixed_wal_dir}/.reviewer-transaction.wal"
+  else
+    fixed_wal_path="${fixed_wal_dir}/.plan-txn.active"
+  fi
+  mkdir "${fixed_wal_path}"
+  printf '{"schema_version":999}\n' >"${fixed_wal_path}/manifest.json"
+  fixed_wal_payload="$(jq -nc --arg sid "${fixed_wal_sid}" \
+    --arg msg "${canonical_wait}" '{
+      session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+      last_assistant_message:$msg,background_tasks:[],session_crons:[]
+    }')"
+  OMC_STOP_FEEDBACK_MODE=modern fixed_wal_out="$(run_dispatch_payload \
+    "${fixed_wal_payload}")"
+  assert_single_json "${fixed_wal_kind} WAL dead wait emits one response" \
+    "${fixed_wal_out}"
+  assert_contains "${fixed_wal_kind} WAL remains a false-wait fence" \
+    "publication transaction still requires recovery" "${fixed_wal_out}"
+  assert_empty "${fixed_wal_kind} WAL consumes no continuation slot" \
+    "$(jq -r '.closeout_dispatch_continuations // empty' \
+      "${fixed_wal_dir}/session_state.json")"
+  assert_contains "${fixed_wal_kind} WAL preserves the wait marker" \
+    '"bg_work_dispatched_ts": "fixed-wal-marker"' \
+    "$(jq . "${fixed_wal_dir}/session_state.json")"
+  [[ -d "${fixed_wal_path}" ]] \
+    && ok || bad "${fixed_wal_kind} false wait removed corrupt WAL authority"
+done
+
 seed_ready wait_claim_settling
 claim_now="$(date +%s)"
 claim_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
@@ -297,8 +402,8 @@ effects_wait_payload="$(jq -nc --arg sid wait_claim_effects_complete \
   }')"
 OMC_STOP_FEEDBACK_MODE=modern effects_wait_out="$(run_dispatch_payload \
   "${effects_wait_payload}")"
-assert_contains "effects-complete dead wait re-evaluates committed state" \
-  "already published its claim-scoped effects" "${effects_wait_out}"
+assert_contains "malformed effects-complete claim remains publication-fenced" \
+  "publication transaction still requires recovery" "${effects_wait_out}"
 assert_not_contains "effects-complete dead wait never resumes native task" \
   "SendMessage" "${effects_wait_out}"
 assert_not_contains "effects-complete dead wait never rebinds" \
@@ -320,12 +425,12 @@ expired_wait_payload="$(jq -nc --arg sid wait_claim_expired \
   }')"
 OMC_STOP_FEEDBACK_MODE=modern expired_wait_out="$(run_dispatch_payload \
   "${expired_wait_payload}")"
-assert_contains "expired-claim dead wait chooses explicit rebind" \
-  "expired incomplete completion claim" "${expired_wait_out}"
-assert_contains "expired-claim dead wait names rebind path" \
-  "explicit rebind path" "${expired_wait_out}"
+assert_contains "malformed expired reviewer claim remains publication-fenced" \
+  "publication transaction still requires recovery" "${expired_wait_out}"
 assert_not_contains "expired-claim dead wait never resumes native task" \
   "SendMessage" "${expired_wait_out}"
+assert_not_contains "expired-claim dead wait cannot invent rebind authority" \
+  "explicit rebind" "${expired_wait_out}"
 
 seed_ready wait_unrelated_task
 wait_unrelated_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
@@ -550,6 +655,238 @@ assert_contains "old guard increments no G2 Stop attempt sequence" \
 assert_contains "old guard consumes no G2 background marker" \
   '"bg_work_dispatched_ts": "777"' \
   "$(jq . "${STATE_ROOT}/stop_cross_interval_callback/session_state.json")"
+
+# Narrow check/use races still exist after the broad capture barrier: a Stop
+# can finish wait correlation or pass the guard, then queue on the state lock
+# while a new interval is activated.  The actual mutation helpers must compare
+# the frozen generation while holding that lock.
+seed_ready wait_mutation_cross_interval
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"1",
+    bg_work_dispatched_ts:"old-marker"}' \
+  "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/wait_mutation_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json"
+wait_mutation_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json")"
+jq -nc --argjson objective_ts "${wait_mutation_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"wait-race-native",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1,
+  ulw_enforcement_generation:"1"
+}' >"${STATE_ROOT}/wait_mutation_cross_interval/pending_agents.jsonl"
+wait_mutation_payload="$(jq -nc --arg sid wait_mutation_cross_interval \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,
+    background_tasks:[{id:"wait-race-native",type:"subagent",
+      status:"running",description:"Wave 3 quality-reviewer",
+      agent_type:"quality-reviewer"}],session_crons:[]
+  }')"
+wait_mutation_ready="${TEST_HOME}/wait-mutation.ready"
+wait_mutation_release="${TEST_HOME}/wait-mutation.release"
+wait_mutation_output="${TEST_HOME}/wait-mutation.output"
+export OMC_TEST_STOP_WAIT_MUTATION_READY_FILE="${wait_mutation_ready}"
+export OMC_TEST_STOP_WAIT_MUTATION_RELEASE_FILE="${wait_mutation_release}"
+run_dispatch_payload "${wait_mutation_payload}" \
+  >"${wait_mutation_output}" 2>&1 &
+wait_mutation_pid=$!
+for _wait_mutation_count in $(seq 1 200); do
+  [[ -f "${wait_mutation_ready}" ]] && break
+  sleep 0.02
+done
+if [[ -f "${wait_mutation_ready}" ]]; then
+  ok
+else
+  bad "old Stop wait callback did not reach mutation barrier"
+fi
+jq '.ulw_enforcement_generation="2"
+    | .ulw_enforcement_active="1"
+    | .bg_work_dispatched_ts="new-interval-marker"' \
+  "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/wait_mutation_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json"
+touch "${wait_mutation_release}"
+wait "${wait_mutation_pid}"
+unset OMC_TEST_STOP_WAIT_MUTATION_READY_FILE \
+  OMC_TEST_STOP_WAIT_MUTATION_RELEASE_FILE
+assert_empty "old wait callback is inert after lock-time generation change" \
+  "$(cat "${wait_mutation_output}")"
+assert_contains "old wait callback preserves G2 background marker" \
+  '"bg_work_dispatched_ts": "new-interval-marker"' \
+  "$(jq . "${STATE_ROOT}/wait_mutation_cross_interval/session_state.json")"
+
+seed_ready auth_clear_remove_failure
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"1"}' \
+  "${STATE_ROOT}/auth_clear_remove_failure/session_state.json" \
+  >"${STATE_ROOT}/auth_clear_remove_failure/session_state.json.tmp"
+mv "${STATE_ROOT}/auth_clear_remove_failure/session_state.json.tmp" \
+  "${STATE_ROOT}/auth_clear_remove_failure/session_state.json"
+run_preflight auth_clear_remove_failure >/dev/null
+mkdir "${STATE_ROOT}/auth_clear_remove_failure/quality_constitution_authorization.json"
+auth_clear_remove_failure_out="$(run_dispatch auth_clear_remove_failure \
+  "$(closeout_message 'Authorization cleanup must be part of accepted Stop.')")"
+assert_contains "non-removable authorization blocks accepted Stop" \
+  "quality-constitution-authorization" "${auth_clear_remove_failure_out}"
+if [[ "$(jq -r '.session_outcome // ""' \
+    "${STATE_ROOT}/auth_clear_remove_failure/session_state.json")" == "" \
+    && "$(jq -r '.ulw_enforcement_active // ""' \
+      "${STATE_ROOT}/auth_clear_remove_failure/session_state.json")" == "1" ]]; then
+  ok
+else
+  bad "authorization removal failure stamped a terminal Stop outcome"
+fi
+if [[ -d "${STATE_ROOT}/auth_clear_remove_failure/quality_constitution_authorization.json" ]]; then
+  ok
+else
+  bad "authorization removal failure laundered the unsafe node"
+fi
+rm -rf "${STATE_ROOT}/auth_clear_remove_failure/quality_constitution_authorization.json"
+
+seed_ready auth_clear_cross_interval
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"1"}' \
+  "${STATE_ROOT}/auth_clear_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/auth_clear_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/auth_clear_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/auth_clear_cross_interval/session_state.json"
+run_preflight auth_clear_cross_interval >/dev/null
+auth_clear_ready="${TEST_HOME}/auth-clear.ready"
+auth_clear_release="${TEST_HOME}/auth-clear.release"
+auth_clear_output="${TEST_HOME}/auth-clear.output"
+auth_clear_payload="$(stop_payload auth_clear_cross_interval \
+  "$(closeout_message 'Old interval candidate must not consume a new grant.')")"
+export OMC_TEST_STOP_AUTH_CLEAR_READY_FILE="${auth_clear_ready}"
+export OMC_TEST_STOP_AUTH_CLEAR_RELEASE_FILE="${auth_clear_release}"
+run_dispatch_payload "${auth_clear_payload}" >"${auth_clear_output}" 2>&1 &
+auth_clear_pid=$!
+for _auth_clear_count in $(seq 1 200); do
+  [[ -f "${auth_clear_ready}" ]] && break
+  sleep 0.02
+done
+if [[ -f "${auth_clear_ready}" ]]; then
+  ok
+else
+  bad "old accepted Stop did not reach authorization-clear barrier"
+fi
+jq '.ulw_enforcement_generation="2"
+    | .ulw_enforcement_active="1"
+    | .session_outcome=""' \
+  "${STATE_ROOT}/auth_clear_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/auth_clear_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/auth_clear_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/auth_clear_cross_interval/session_state.json"
+printf '%s\n' '{"schema_version":1,"grant":"g2"}' \
+  >"${STATE_ROOT}/auth_clear_cross_interval/quality_constitution_authorization.json"
+touch "${auth_clear_release}"
+wait "${auth_clear_pid}"
+unset OMC_TEST_STOP_AUTH_CLEAR_READY_FILE OMC_TEST_STOP_AUTH_CLEAR_RELEASE_FILE
+assert_empty "old accepted Stop is inert after G2 authorization issue" \
+  "$(cat "${auth_clear_output}")"
+if [[ -f "${STATE_ROOT}/auth_clear_cross_interval/quality_constitution_authorization.json" ]]; then
+  ok
+else
+  bad "old accepted Stop deleted the G2 Constitution authorization"
+fi
+
+seed_ready continuation_mutation_cross_interval
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"1",
+    closeout_dispatch_continuations:"0"}' \
+  "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json"
+continuation_mutation_ready="${TEST_HOME}/continuation-mutation.ready"
+continuation_mutation_release="${TEST_HOME}/continuation-mutation.release"
+continuation_mutation_output="${TEST_HOME}/continuation-mutation.output"
+continuation_mutation_payload="$(stop_payload \
+  continuation_mutation_cross_interval \
+  "$(closeout_message 'G1 blocked candidate before a G2 prompt.')")"
+export OMC_TEST_STOP_CONTINUATION_MUTATION_READY_FILE="${continuation_mutation_ready}"
+export OMC_TEST_STOP_CONTINUATION_MUTATION_RELEASE_FILE="${continuation_mutation_release}"
+run_dispatch_payload "${continuation_mutation_payload}" \
+  >"${continuation_mutation_output}" 2>&1 &
+continuation_mutation_pid=$!
+for _continuation_mutation_count in $(seq 1 200); do
+  [[ -f "${continuation_mutation_ready}" ]] && break
+  sleep 0.02
+done
+if [[ -f "${continuation_mutation_ready}" ]]; then
+  ok
+else
+  bad "old blocked Stop did not reach continuation mutation barrier"
+fi
+jq '.ulw_enforcement_generation="2"
+    | .ulw_enforcement_active="1"
+    | .closeout_dispatch_continuations="0"
+    | .session_outcome=""' \
+  "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json"
+touch "${continuation_mutation_release}"
+wait "${continuation_mutation_pid}"
+unset OMC_TEST_STOP_CONTINUATION_MUTATION_READY_FILE \
+  OMC_TEST_STOP_CONTINUATION_MUTATION_RELEASE_FILE
+assert_empty "old blocked Stop emits no continuation after G2 rotation" \
+  "$(cat "${continuation_mutation_output}")"
+assert_contains "old blocked Stop increments no G2 continuation counter" \
+  '"closeout_dispatch_continuations": "0"' \
+  "$(jq . "${STATE_ROOT}/continuation_mutation_cross_interval/session_state.json")"
+
+seed_ready false_wait_context_cross_interval
+jq '. + {ulw_enforcement_active:"1",ulw_enforcement_generation:"1",
+    bg_work_dispatched_ts:"g1-wait-marker"}' \
+  "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/false_wait_context_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json"
+false_wait_objective_ts="$(jq -r '.review_cycle_prompt_ts' \
+  "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json")"
+jq -nc --argjson objective_ts "${false_wait_objective_ts}" '{
+  agent_type:"quality-reviewer",native_agent_id:"false-wait-race",ts:1,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:$objective_ts,review_revision:1,
+  ulw_enforcement_generation:"1"
+}' >"${STATE_ROOT}/false_wait_context_cross_interval/pending_agents.jsonl"
+false_wait_payload="$(jq -nc --arg sid false_wait_context_cross_interval \
+  --arg msg "${canonical_wait}" '{
+    session_id:$sid,hook_event_name:"Stop",stop_hook_active:false,
+    last_assistant_message:$msg,background_tasks:[],session_crons:[]
+  }')"
+false_wait_ready="${TEST_HOME}/false-wait-context.ready"
+false_wait_release="${TEST_HOME}/false-wait-context.release"
+false_wait_output="${TEST_HOME}/false-wait-context.output"
+export OMC_TEST_STOP_FALSE_WAIT_CONTEXT_READY_FILE="${false_wait_ready}"
+export OMC_TEST_STOP_FALSE_WAIT_CONTEXT_RELEASE_FILE="${false_wait_release}"
+OMC_STOP_FEEDBACK_MODE=modern run_dispatch_payload "${false_wait_payload}" \
+  >"${false_wait_output}" 2>&1 &
+false_wait_pid=$!
+for _false_wait_count in $(seq 1 200); do
+  [[ -f "${false_wait_ready}" ]] && break
+  sleep 0.02
+done
+if [[ -f "${false_wait_ready}" ]]; then
+  ok
+else
+  bad "old dead-wait Stop did not reach context barrier"
+fi
+jq '.ulw_enforcement_generation="2"
+    | .ulw_enforcement_active="1"
+    | .bg_work_dispatched_ts="g2-wait-marker"' \
+  "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json" \
+  >"${STATE_ROOT}/false_wait_context_cross_interval/session_state.json.tmp"
+mv "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json.tmp" \
+  "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json"
+touch "${false_wait_release}"
+wait "${false_wait_pid}"
+unset OMC_TEST_STOP_FALSE_WAIT_CONTEXT_READY_FILE \
+  OMC_TEST_STOP_FALSE_WAIT_CONTEXT_RELEASE_FILE
+assert_empty "old dead-wait Stop emits no G1 recovery into G2" \
+  "$(cat "${false_wait_output}")"
+assert_contains "old dead-wait context preserves G2 marker" \
+  '"bg_work_dispatched_ts": "g2-wait-marker"' \
+  "$(jq . "${STATE_ROOT}/false_wait_context_cross_interval/session_state.json")"
 
 generic_wait='⏳ Waiting on npm test — running in the background; I'"'"'ll resume automatically when it finishes. Nothing for you to do.'
 seed_ready wait_generic_live
@@ -788,7 +1125,8 @@ mkdir -p "${STATE_ROOT}/${no_jq_active_sid}"
 touch "${STATE_ROOT}/${no_jq_active_sid}/.ulw_active" "${STATE_ROOT}/.ulw_active"
 no_jq_active_payload="$(stop_payload "${no_jq_active_sid}" 'NO-JQ-CANDIDATE')"
 no_jq_active_out="$(
-  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" PATH="${TEST_HOME}/path-without-jq" \
+  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+    OMC_TEST_STOP_FORCE_JQ_FAILURE=1 PATH="${TEST_HOME}/path-without-jq" \
     /bin/bash "${HOOK_DIR}/stop-dispatch.sh" <<<"${no_jq_active_payload}"
 )"
 assert_single_json "missing jq with exact authority emits one response" "${no_jq_active_out}"
@@ -801,11 +1139,37 @@ fi
 
 no_jq_ordinary_payload="$(stop_payload no_jq_ordinary 'ordinary response')"
 no_jq_ordinary_out="$(
-  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" PATH="${TEST_HOME}/path-without-jq" \
+  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+    OMC_TEST_STOP_FORCE_JQ_FAILURE=1 PATH="${TEST_HOME}/path-without-jq" \
     /bin/bash "${HOOK_DIR}/stop-dispatch.sh" <<<"${no_jq_ordinary_payload}"
 )"
 assert_empty "missing jq plus only a global marker does not capture ordinary Stop" \
   "${no_jq_ordinary_out}"
+
+seed_ready malicious_jq_active
+malicious_path="${TEST_HOME}/malicious-path"
+mkdir -p "${malicious_path}"
+printf '#!/bin/sh\nexit 0\n' >"${malicious_path}/jq"
+chmod +x "${malicious_path}/jq"
+malicious_jq_payload="$(stop_payload malicious_jq_active "$(closeout_message)")"
+malicious_jq_out="$(
+  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" \
+    PATH="${malicious_path}:${PATH}" \
+    /bin/bash "${HOOK_DIR}/stop-dispatch.sh" <<<"${malicious_jq_payload}"
+)"
+assert_contains "caller-PATH jq cannot bypass active Stop certification" \
+  "closeout check" "${malicious_jq_out}"
+
+# Exported Bash functions resolve before PATH.  They must not bypass the same
+# trusted-observer boundary merely because the caller exported a jq function.
+malicious_jq_function_out="$(
+  jq() { return 0; }
+  export -f jq
+  HOME="${TEST_HOME}" STATE_ROOT="${STATE_ROOT}" PATH="${PATH}" \
+    /bin/bash "${HOOK_DIR}/stop-dispatch.sh" <<<"${malicious_jq_payload}"
+)"
+assert_contains "caller-function jq cannot bypass active Stop certification" \
+  "closeout check" "${malicious_jq_function_out}"
 
 jq_parse_sid="jq_parse_active"
 mkdir -p "${STATE_ROOT}/${jq_parse_sid}"
@@ -864,6 +1228,42 @@ assert_contains "pass receipt names harness" "oh-my-claude" "${pass_out}"
 [[ "$(jq -r '.session_outcome' "${STATE_ROOT}/pass/session_state.json")" == "completed" ]] && ok || bad "pass did not stamp completed"
 [[ -n "$(jq -r '.closeout_finalized_token // empty' "${STATE_ROOT}/pass/session_state.json")" ]] && ok || bad "pass did not claim finalization"
 
+# Accepted child publication failure abandons only its exact finalizer claim,
+# retains the provisional candidate, and allows a fresh claimant to retry.
+seed_ready finalizer_publish_retry
+run_preflight finalizer_publish_retry >/dev/null
+finalizer_transcript="${TEST_HOME}/finalizer-publish-retry.jsonl"
+printf '%s\n' '{"type":"user","message":"retry finalizer"}' \
+  >"${finalizer_transcript}"
+finalizer_retry_message="$(closeout_message 'Completed with retryable archive publication.')"
+finalizer_retry_payload="$(stop_payload finalizer_publish_retry \
+  "${finalizer_retry_message}" false \
+  | jq --arg transcript "${finalizer_transcript}" \
+      '. + {transcript_path:$transcript}')"
+OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+  OMC_TEST_TRANSCRIPT_ARCHIVE_PUBLISH_FAIL=1 \
+  run_dispatch_payload "${finalizer_retry_payload}" >/dev/null
+assert_empty "failed accepted child abandons finalizer status" \
+  "$(jq -r '.closeout_finalization_status // empty' \
+    "${STATE_ROOT}/finalizer_publish_retry/session_state.json")"
+assert_empty "failed accepted child clears its claimant identity" \
+  "$(jq -r '.closeout_finalization_claim_id // empty' \
+    "${STATE_ROOT}/finalizer_publish_retry/session_state.json")"
+[[ -s "${STATE_ROOT}/finalizer_publish_retry/provisional_closeouts.jsonl" ]] \
+  && ok || bad "failed accepted child discarded provisional closeout evidence"
+OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+  run_dispatch_payload "${finalizer_retry_payload}" >/dev/null
+[[ "$(jq -r '.closeout_finalization_status // empty' \
+    "${STATE_ROOT}/finalizer_publish_retry/session_state.json")" == "complete" ]] \
+  && ok || bad "fresh finalizer retry did not complete"
+finalizer_archive_count="$(find "${TEST_HOME}/.claude/quality-pack/state" \
+  -path '*/finalizer_publish_retry/transcript.json' -type f \
+  | wc -l | tr -d '[:space:]')"
+[[ "${finalizer_archive_count}" == "1" ]] \
+  && ok || bad "fresh finalizer retry did not publish exactly one archive"
+[[ ! -s "${STATE_ROOT}/finalizer_publish_retry/provisional_closeouts.jsonl" ]] \
+  && ok || bad "successful finalizer retry retained provisional evidence"
+
 # The visible pass receipt is part of accepted-release UX, not a best-effort
 # canary/archive side effect. A live/stuck finalizer lease may suppress duplicate
 # finalizers, but it must not suppress the proof that the guard accepted Stop.
@@ -889,35 +1289,93 @@ seed_ready lease_complete
 jq '.session_outcome="completed"' "${STATE_ROOT}/lease_complete/session_state.json" \
   >"${STATE_ROOT}/lease_complete/session_state.json.tmp"
 mv "${STATE_ROOT}/lease_complete/session_state.json.tmp" "${STATE_ROOT}/lease_complete/session_state.json"
-[[ "$(run_finalization_op lease_complete claim)" == "claimed" ]] && ok || bad "initial finalization lease claim failed"
+lease_complete_claim="$(run_finalization_op lease_complete claim)"
+[[ "${lease_complete_claim}" =~ ^finalizer-[a-f0-9]{48}$ ]] && ok || bad "initial finalization lease claim failed"
 lease_claimed_ts="$(jq -r '.closeout_finalization_claimed_ts // empty' "${STATE_ROOT}/lease_complete/session_state.json")"
 [[ "${lease_claimed_ts}" =~ ^[0-9]+$ ]] && ok || bad "initial finalization claim did not stamp a timestamp"
 [[ "$(run_finalization_op lease_complete claim)" == "denied" ]] && ok || bad "second live finalization claimant was not denied"
-[[ "$(run_finalization_op lease_complete abandon)" == "abandoned" ]] && ok || bad "claimed finalization lease could not be abandoned"
+[[ "$(run_finalization_op lease_complete abandon "${lease_complete_claim}")" == "abandoned" ]] && ok || bad "claimed finalization lease could not be abandoned"
 assert_empty "abandon clears finalization status" \
   "$(jq -r '.closeout_finalization_status // empty' "${STATE_ROOT}/lease_complete/session_state.json")"
-[[ "$(run_finalization_op lease_complete claim)" == "claimed" ]] && ok || bad "abandoned finalization lease was not reclaimable"
-[[ "$(run_finalization_op lease_complete complete)" == "completed" ]] && ok || bad "claimed finalization lease could not complete"
+lease_complete_reclaim="$(run_finalization_op lease_complete claim)"
+[[ "${lease_complete_reclaim}" =~ ^finalizer-[a-f0-9]{48}$ \
+    && "${lease_complete_reclaim}" != "${lease_complete_claim}" ]] \
+  && ok || bad "abandoned finalization lease was not reclaimed with fresh identity"
+[[ "$(run_finalization_op lease_complete complete "${lease_complete_reclaim}")" == "completed" ]] && ok || bad "claimed finalization lease could not complete"
 [[ "$(jq -r '.closeout_finalization_status // empty' "${STATE_ROOT}/lease_complete/session_state.json")" == "complete" ]] \
   && ok || bad "completed finalization lease did not persist terminal status"
 [[ "$(run_finalization_op lease_complete claim)" == "denied" ]] && ok || bad "completed finalization token was claimable again"
+
+# Current-token lease timestamps are durable concurrency authority. Oversized
+# digit strings must fail closed before Bash arithmetic instead of wrapping to
+# an apparently expired value and admitting a second finalizer.
+seed_ready lease_malformed_timestamp
+jq '.session_outcome="completed"
+  | .closeout_finalized_token="1:1:completed"
+  | .closeout_finalization_status="claimed"
+  | .closeout_finalization_claimed_ts="1000000000000000000000000"
+  | .closeout_finalization_claim_id="finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' \
+  "${STATE_ROOT}/lease_malformed_timestamp/session_state.json" \
+  >"${STATE_ROOT}/lease_malformed_timestamp/session_state.json.tmp"
+mv "${STATE_ROOT}/lease_malformed_timestamp/session_state.json.tmp" \
+  "${STATE_ROOT}/lease_malformed_timestamp/session_state.json"
+[[ "$(run_finalization_op lease_malformed_timestamp claim)" == "denied" ]] \
+  && ok || bad "oversized current-token lease admitted a replacement claimant"
+[[ "$(run_finalization_op lease_malformed_timestamp complete \
+    finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)" == "denied" ]] \
+  && ok || bad "oversized lease timestamp authorized finalizer completion"
+[[ "$(run_finalization_op lease_malformed_timestamp abandon \
+    finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)" == "denied" ]] \
+  && ok || bad "oversized lease timestamp authorized finalizer abandonment"
+[[ "$(jq -r '.closeout_finalization_claim_id // empty' \
+    "${STATE_ROOT}/lease_malformed_timestamp/session_state.json")" \
+    == "finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ]] \
+  && ok || bad "malformed lease rejection changed claimant authority"
+
+seed_ready lease_future_timestamp
+future_claimed_ts="$(( $(date +%s) + 86400 ))"
+jq --arg ts "${future_claimed_ts}" '
+  .session_outcome="completed"
+  | .closeout_finalized_token="1:1:completed"
+  | .closeout_finalization_status="claimed"
+  | .closeout_finalization_claimed_ts=$ts
+  | .closeout_finalization_claim_id="finalizer-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' \
+  "${STATE_ROOT}/lease_future_timestamp/session_state.json" \
+  >"${STATE_ROOT}/lease_future_timestamp/session_state.json.tmp"
+mv "${STATE_ROOT}/lease_future_timestamp/session_state.json.tmp" \
+  "${STATE_ROOT}/lease_future_timestamp/session_state.json"
+[[ "$(run_finalization_op lease_future_timestamp claim)" == "denied" ]] \
+  && ok || bad "future-dated current-token lease admitted a replacement claimant"
 
 seed_ready lease_stale
 jq '.session_outcome="completed"' "${STATE_ROOT}/lease_stale/session_state.json" \
   >"${STATE_ROOT}/lease_stale/session_state.json.tmp"
 mv "${STATE_ROOT}/lease_stale/session_state.json.tmp" "${STATE_ROOT}/lease_stale/session_state.json"
-[[ "$(run_finalization_op lease_stale claim)" == "claimed" ]] && ok || bad "stale-lease fixture could not claim initially"
+stale_claim_a="$(run_finalization_op lease_stale claim)"
+[[ "${stale_claim_a}" =~ ^finalizer-[a-f0-9]{48}$ ]] && ok || bad "stale-lease fixture could not claim initially"
 stale_floor="$(( $(date +%s) - 121 ))"
 jq --arg ts "${stale_floor}" '.closeout_finalization_claimed_ts=$ts' \
   "${STATE_ROOT}/lease_stale/session_state.json" >"${STATE_ROOT}/lease_stale/session_state.json.tmp"
 mv "${STATE_ROOT}/lease_stale/session_state.json.tmp" "${STATE_ROOT}/lease_stale/session_state.json"
-[[ "$(run_finalization_op lease_stale claim)" == "claimed" ]] && ok || bad "expired finalization lease was not reclaimable"
+stale_claim_b="$(run_finalization_op lease_stale claim)"
+[[ "${stale_claim_b}" =~ ^finalizer-[a-f0-9]{48}$ \
+    && "${stale_claim_b}" != "${stale_claim_a}" ]] \
+  && ok || bad "expired finalization lease was not reclaimed with fresh identity"
 reclaimed_ts="$(jq -r '.closeout_finalization_claimed_ts // empty' "${STATE_ROOT}/lease_stale/session_state.json")"
 if [[ "${reclaimed_ts}" =~ ^[0-9]+$ ]] && (( reclaimed_ts > stale_floor )); then
   ok
 else
   bad "stale finalization reclaim did not refresh the lease timestamp"
 fi
+[[ "$(run_finalization_op lease_stale complete "${stale_claim_a}")" == "denied" ]] \
+  && ok || bad "expired claimant completed the replacement lease"
+[[ "$(run_finalization_op lease_stale abandon "${stale_claim_a}")" == "denied" ]] \
+  && ok || bad "expired claimant abandoned the replacement lease"
+[[ "$(jq -r '.closeout_finalization_claim_id // empty' \
+    "${STATE_ROOT}/lease_stale/session_state.json")" == "${stale_claim_b}" ]] \
+  && ok || bad "stale ABA operations changed the current claimant identity"
+[[ "$(run_finalization_op lease_stale complete "${stale_claim_b}")" == "completed" ]] \
+  && ok || bad "replacement claimant could not complete its own lease"
 
 # A suppressed rich candidate must not collapse into a thin retry. After a
 # fresh seal, final-closure blocks the short delta and names cumulative repair.
@@ -1025,6 +1483,28 @@ if [[ "${emergency_out}" == *$'\033'* || "${emergency_out}" == *$'\a'* ]]; then
 else
   ok
 fi
+
+# A failure after common.sh loaded has working sanitizers but still precedes
+# the normal continuation renderer. Exercise that narrow emergency branch with
+# a set HOOK_JSON value: `${value:-{}}` appends a literal `}` in Bash/zsh and
+# would make this otherwise valid payload unparsable, silently omitting the
+# candidate.
+seed_ready emergency_after_common
+after_common_candidate='EMERGENCY-AFTER-COMMON-CANDIDATE sk-ant-ABCDEFGHIJKLMNOPQRSTUV'
+after_common_out="$(hook_env OMC_TEST_STOP_FAIL_AFTER_COMMON=1 \
+  /bin/bash "${HOOK_DIR}/stop-dispatch.sh" \
+  <<<"$(stop_payload emergency_after_common \
+    "${after_common_candidate}")")"
+assert_single_json "post-common emergency emits one bounded response" \
+  "${after_common_out}"
+assert_contains "post-common emergency preserves sanitized candidate" \
+  "EMERGENCY-AFTER-COMMON-CANDIDATE" "${after_common_out}"
+assert_contains "post-common emergency labels uncertified candidate" \
+  "UNCERTIFIED CANDIDATE" "${after_common_out}"
+assert_not_contains "post-common emergency redacts candidate secret" \
+  "sk-ant-ABCDEFGHIJKLMNOPQRSTUV" "${after_common_out}"
+assert_not_contains "post-common emergency does not take omitted branch" \
+  "Candidate replay was omitted" "${after_common_out}"
 
 nested_source_dir="${TEST_HOME}/dispatcher-without-state-lib"
 mkdir -p "${nested_source_dir}/lib"

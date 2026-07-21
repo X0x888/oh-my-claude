@@ -2,8 +2,24 @@
 
 set -euo pipefail
 
-# Fast-path: skip if ULW was never activated in this environment
-[[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
+_OMC_HOOK_CALLER_PATH="${PATH:-}"
+# Recovery is an internal lifecycle mode, so parse it before the ordinary
+# global ULW sentinel fast-path. A missing/stale sentinel must never turn an
+# existing fixed WAL into a false-success recovery.
+_reviewer_recover_active_mode=0
+_reviewer_recover_active_session=""
+if [[ "${1:-}" == "--recover-active" ]]; then
+  _reviewer_recover_active_mode=1
+  _reviewer_recover_active_session="${2:-}"
+  REVIEWER_TYPE="standard"
+else
+  REVIEWER_TYPE="${1:-standard}"
+fi
+
+# Fast-path: ordinary hook delivery is irrelevant if ULW was never activated.
+if [[ "${_reviewer_recover_active_mode}" -eq 0 ]]; then
+  [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
+fi
 
 # v1.27.0 (F-020 / F-021): no classifier or timing-lib dependency — opt out
 # of eager source for both libs.
@@ -29,15 +45,26 @@ export OMC_LAZY_TIMING=1
 #   release        — release-reviewer
 #                    → records release-specific state only; does NOT tick
 #                      normal review dimensions or reset quality gates
-REVIEWER_TYPE="${1:-standard}"
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
-HOOK_JSON="$(_omc_read_hook_stdin)"
-
-SESSION_ID="$(json_get '.session_id')"
-AGENT_TYPE="$(json_get '.agent_type')"
-_review_native_agent_id_raw="$(json_get '.agent_id')"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
+unset OMC_PUBLICATION_RECOVERY_INTERNAL
+if [[ "${_reviewer_recover_active_mode}" -eq 1 ]]; then
+  HOOK_JSON='{}'
+  SESSION_ID="${_reviewer_recover_active_session}"
+  AGENT_TYPE=""
+  _review_native_agent_id_raw=""
+else
+  HOOK_JSON="$(_omc_read_hook_stdin)"
+  SESSION_ID="$(json_get '.session_id')"
+  AGENT_TYPE="$(json_get '.agent_type')"
+  _review_native_agent_id_raw="$(json_get '.agent_id')"
+fi
 _review_native_agent_id=""
 _review_native_agent_id_present=0
 _review_native_agent_id_invalid=0
@@ -51,15 +78,160 @@ if [[ -n "${_review_native_agent_id_raw}" ]]; then
 fi
 
 if [[ -z "${SESSION_ID}" ]]; then
+  [[ "${_reviewer_recover_active_mode}" -eq 0 ]] || exit 1
   exit 0
+fi
+if [[ "${_reviewer_recover_active_mode}" -eq 1 ]] \
+    && ! validate_session_id "${SESSION_ID}"; then
+  exit 1
+fi
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  [[ "${_reviewer_recover_active_mode}" -eq 0 ]] && exit 0
+  exit 1
 fi
 
 ensure_session_dir
 
-if ! is_ultrawork_mode; then
-  exit 0
+_reviewer_active_wal="$(session_file ".reviewer-transaction.wal")"
+
+# Admission needs only the WAL owner coordinates, but even that projection
+# must be rejected before Bash can normalize decoded NUL. The full transaction
+# validator below remains the publication authority; this narrow early check
+# exists because ordinary callback admission runs before those function
+# definitions are installed by the shell.
+_reviewer_admission_manifest_owner_safe() {
+  local manifest="${1:-}"
+  [[ -f "${manifest}" && ! -L "${manifest}" ]] || return 1
+  [[ "$(wc -c <"${manifest}" 2>/dev/null || printf 0)" -le 262144 ]] \
+    || return 1
+  jq -e '
+    type == "object"
+    and all(.. | strings; index("\u0000") == null)
+    and (.agent_type | type == "string"
+      and test("^[A-Za-z0-9_.:-]{1,128}$"))
+    and (.native_agent_id | type == "string"
+      and test("^$|^[A-Za-z0-9._:-]{1,128}$"))
+  ' "${manifest}" >/dev/null 2>&1
+}
+
+if [[ "${_reviewer_recover_active_mode}" -eq 1 ]]; then
+  # With no fixed WAL, recovery may still settle a receipt-bound summary
+  # waiter left by death after the receipt/WAL retirement boundary. If a WAL
+  # does exist, however, inactive authority is not permission to ignore it.
+  if { [[ -e "${_reviewer_active_wal}" ]] || [[ -L "${_reviewer_active_wal}" ]]; } \
+      && ! is_ultrawork_mode; then
+    exit 1
+  fi
+else
+  # In the summary-first hook order the universal publisher may already have
+  # committed its effects while retaining the exact pending claim until this
+  # dedicated reviewer publishes the authoritative receipt.  Bind the narrow
+  # process-local fence token only for one effects-complete row whose role,
+  # native ID, and redacted message digest all match this callback.  A stale,
+  # ambiguous, incomplete, or foreign claim therefore remains fenced.
+  _reviewer_preexisting_claim_id=""
+  _reviewer_preexisting_pending="$(session_file "pending_agents.jsonl")"
+  _reviewer_preexisting_agent="${AGENT_TYPE}"
+  if [[ -z "${_reviewer_preexisting_agent}" ]]; then
+    case "${REVIEWER_TYPE}" in
+      excellence) _reviewer_preexisting_agent="excellence-reviewer" ;;
+      prose) _reviewer_preexisting_agent="editor-critic" ;;
+      stress_test) _reviewer_preexisting_agent="metis" ;;
+      traceability) _reviewer_preexisting_agent="briefing-analyst" ;;
+      design_quality) _reviewer_preexisting_agent="design-reviewer" ;;
+      release) _reviewer_preexisting_agent="release-reviewer" ;;
+      *) _reviewer_preexisting_agent="quality-reviewer" ;;
+    esac
+  fi
+  _reviewer_preexisting_message="$(json_get '.last_assistant_message')"
+  if [[ -n "${_review_native_agent_id}" \
+      && -f "${_reviewer_preexisting_pending}" \
+      && ! -L "${_reviewer_preexisting_pending}" ]] \
+      && omc_dispatch_authority_ledger_shell_safe \
+        "${_reviewer_preexisting_pending}"; then
+    _reviewer_preexisting_digest="$(_omc_token_digest \
+      "$(printf '%s' "${_reviewer_preexisting_message}" \
+        | omc_redact_secrets | tr -d '\000')" 2>/dev/null || true)"
+    if [[ "${_reviewer_preexisting_digest}" \
+        =~ ^[A-Fa-f0-9]{16,128}$ ]]; then
+      _reviewer_preexisting_claim_id="$(jq -Rsr \
+        --arg agent "${_reviewer_preexisting_agent}" \
+        --arg native "${_review_native_agent_id}" \
+        --arg digest "${_reviewer_preexisting_digest}" '
+          [split("\n")[] | select(length > 0)
+            | (try fromjson catch null) | select(type == "object")
+            | select(.agent_type == $agent
+              and .native_agent_id == $native
+              and (.completion_claim_digest // "") == $digest
+              and (.completion_claim_effects_complete // false) == true
+              and (.review_dispatch_abandoned // false) != true)
+            | .completion_claim_id] as $matches
+          | if ($matches | length) == 1 then $matches[0] else "" end
+        ' "${_reviewer_preexisting_pending}" 2>/dev/null || true)"
+      if [[ "${_reviewer_preexisting_claim_id}" \
+          =~ ^completion-[A-Za-z0-9._:-]{8,160}$ ]]; then
+        OMC_PUBLICATION_DEDICATED_CLAIM_ID="${_reviewer_preexisting_claim_id}"
+      fi
+    fi
+  fi
+
+  # Another publisher may have died before this ordinary reviewer callback
+  # began. Settle both fixed journals before verdict, Definition, or generation
+  # validation reads their covered artifacts. If the recovered reviewer WAL
+  # belongs to this exact callback, recovery already completed it and this
+  # duplicate delivery must stop; a distinct native sibling may continue only
+  # after both fixed names are proven absent.
+  _reviewer_admission_had_wal=0
+  _reviewer_admission_owner_agent=""
+  _reviewer_admission_owner_native=""
+  if [[ -e "${_reviewer_active_wal}" || -L "${_reviewer_active_wal}" ]]; then
+    _reviewer_admission_had_wal=1
+    if [[ -d "${_reviewer_active_wal}" \
+        && ! -L "${_reviewer_active_wal}" \
+        && -f "${_reviewer_active_wal}/manifest.json" \
+        && ! -L "${_reviewer_active_wal}/manifest.json" ]] \
+        && _reviewer_admission_manifest_owner_safe \
+          "${_reviewer_active_wal}/manifest.json"; then
+      _reviewer_admission_owner_agent="$(jq -r '.agent_type // empty' \
+        "${_reviewer_active_wal}/manifest.json" 2>/dev/null || true)"
+      _reviewer_admission_owner_native="$(jq -r '.native_agent_id // empty' \
+        "${_reviewer_active_wal}/manifest.json" 2>/dev/null || true)"
+    fi
+  fi
+  # Internal callers have already crossed this entry recovery barrier. They
+  # still fail closed on either fixed WAL below, but must not recursively
+  # reinterpret a waiter+receipt pair that appeared after their barrier and
+  # before publication-lock acquisition. The receipt stager re-reads that
+  # waiter authority under the lock.
+  if ! omc_recover_active_publication_transactions "${SESSION_ID}"; then
+    log_anomaly "record-reviewer" \
+      "publication recovery barrier failed before reviewer validation" \
+      2>/dev/null || true
+    # Ordinary SubagentStop recorders reject stale, malformed, or otherwise
+    # unauthorised returns silently.  Recovery failure grants no publication
+    # capability and must preserve that hook contract: a non-zero recorder
+    # exit would turn an inert corrupt sibling ledger into a platform-visible
+    # subagent failure even though no state was accepted.  The explicit
+    # --recover-active entry point remains fail-closed/non-zero above.
+    exit 0
+  fi
+  if [[ -e "${_reviewer_active_wal}" || -L "${_reviewer_active_wal}" \
+      || -e "$(session_file ".plan-txn.active")" \
+      || -L "$(session_file ".plan-txn.active")" ]]; then
+    exit 0
+  fi
+  if [[ "${_reviewer_admission_had_wal}" -eq 1 ]]; then
+    if [[ -z "${_reviewer_admission_owner_native}" ]] \
+        || { [[ "${_reviewer_admission_owner_agent}" == "${AGENT_TYPE}" ]] \
+          && [[ "${_reviewer_admission_owner_native}" == "${_review_native_agent_id}" ]]; }; then
+      exit 0
+    fi
+  fi
+  if ! is_ultrawork_mode; then
+    exit 0
+  fi
+  capture_ulw_enforcement_interval || exit 0
 fi
-capture_ulw_enforcement_interval || exit 0
 
 review_message="$(json_get '.last_assistant_message')"
 
@@ -138,7 +310,8 @@ fi
 # phrase parser under causal identity/generation checks.
 _review_enforced_contract_kind="$(omc_enforced_terminal_contract_kind \
   "${AGENT_TYPE}" 2>/dev/null || true)"
-if [[ -n "${_review_enforced_contract_kind}" ]] \
+if [[ "${_reviewer_recover_active_mode}" -eq 0 \
+    && -n "${_review_enforced_contract_kind}" ]] \
     && ! omc_enforced_terminal_verdict_valid \
     "${AGENT_TYPE}" "${_review_final_line:-}" \
     && { [[ "$(read_state "review_dispatch_tracking_version")" == "1" ]] \
@@ -160,7 +333,8 @@ _quality_review_frontier_contract_revision=""
 _quality_review_frontier_cycle=""
 _quality_review_frontier_status=""
 _quality_review_frontier_materiality=""
-if [[ "${REVIEWER_TYPE}" == "excellence" \
+if [[ "${_reviewer_recover_active_mode}" -eq 0 \
+    && "${REVIEWER_TYPE}" == "excellence" \
     && "${_review_quality_required}" == "1" ]]; then
   if ! _omc_load_quality_contract 2>/dev/null \
     || ! _review_quality_contract="$(quality_contract_validate_current 2>/dev/null)" \
@@ -252,12 +426,30 @@ now_ts="$(now_epoch)"
 # in parallel.
 REVIEW_DISPATCH_CAUSALITY_VERSION=1
 
-_consume_reviewer_dispatch_start_unlocked() {
-  local starts_file tmp line this_type row_id row_native_id selected=""
+_review_legacy_agent_identity_matches() {
+  [[ "$1" == "$2" ]] && return 0
+  # Compatibility for a pre-native external code-reviewer start recorded
+  # before its provider namespace was available. Do not generalize this to
+  # arbitrary matching basenames: custom:quality-reviewer is not a configured
+  # publisher and cannot authorize the bundled quality-reviewer hook.
+  case "$1:$2" in
+    code-reviewer:superpowers:code-reviewer|code-reviewer:feature-dev:code-reviewer|superpowers:code-reviewer:code-reviewer|feature-dev:code-reviewer:code-reviewer)
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_select_reviewer_dispatch_start_unlocked() {
+  local starts_file line this_type row_id row_native_id selected=""
+  local row_lifecycle selected_count=0
+  local binding_json="" binding_kind="" binding_lifecycle=""
+  local binding_review_id="" binding_cycle=0 candidate=0
   starts_file="$(session_file "agent_dispatch_starts.jsonl")"
   _review_dispatch_start_json=""
+  _review_dispatch_pending_json=""
   _review_use_native_agent_id=0
   _review_native_binding_committed=0
+  _review_native_binding_json=""
   _review_native_tracking_version="$(read_state "native_agent_id_tracking_version")"
   [[ "${_review_native_agent_id_invalid}" -eq 0 ]] || return 0
   if [[ "${_review_native_agent_id_present}" -eq 1 \
@@ -265,14 +457,74 @@ _consume_reviewer_dispatch_start_unlocked() {
     local bindings_file
     bindings_file="$(session_file "native_agent_bindings.jsonl")"
     if [[ ! -L "${bindings_file}" && -f "${bindings_file}" ]] \
-        && jq -Rse --arg id "${_review_native_agent_id}" \
-          --arg type "${AGENT_TYPE}" '
+        && binding_json="$(jq -Rsc --arg id "${_review_native_agent_id}" \
+          --arg type "${AGENT_TYPE}" \
+          --arg current "${_review_native_tracking_version}" '
+            def base_valid:
+              type == "object"
+              and (.native_agent_id | type == "string"
+                and test("^[A-Za-z0-9._:-]{1,128}$"))
+              and (.agent_type | type == "string"
+                and test("^[A-Za-z0-9._:-]{1,128}$"));
+            def current_valid:
+              base_valid
+              and (.lifecycle_dispatch_id | type == "string"
+                and test("^dispatch-[A-Za-z0-9._:-]{8,120}$"))
+              and (.review_dispatch_id | type == "string"
+                and test("^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"))
+              and (.objective_cycle_id | type == "number"
+                and floor == . and . >= 0)
+              and (.ts | type == "number" and floor == . and . >= 0);
+            def legacy_valid:
+              base_valid and (has("lifecycle_dispatch_id") | not)
+              and ((has("review_dispatch_id") | not)
+                or (.review_dispatch_id | type == "string"
+                  and test("^$|^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")))
+              and ((has("objective_cycle_id") | not)
+                or (.objective_cycle_id | type == "number"
+                  and floor == . and . >= 0))
+              and ((has("ts") | not)
+                or (.ts | type == "number" and floor == . and . >= 0));
             [split("\n")[] | select(length > 0)
-                | (try fromjson catch {})
-                | select((.native_agent_id // "") == $id
-                  and (.agent_type // "") == $type)] | length > 0
-          ' "${bindings_file}" >/dev/null 2>&1; then
+              | (try fromjson catch null)] as $rows
+            | if any($rows[]; . == null or type != "object") then
+                error("malformed native binding registry")
+              elif any($rows[];
+                  (((. | current_valid) or (. | legacy_valid)) | not)) then
+                error("invalid native binding registry row")
+              else
+                [$rows[] | select((.native_agent_id // "") == $id)] as $matches
+                | if ($matches | length) != 1 then
+                    error("native binding is missing or duplicated")
+                  else $matches[0] as $binding
+                    | (($binding.native_agent_id == $id
+                        and $binding.agent_type == $type)
+                      and ($binding | current_valid)) as $current_ok
+                    | (($binding.native_agent_id == $id
+                        and $binding.agent_type == $type)
+                      and ($binding | legacy_valid)) as $legacy_ok
+                    | if ($current == "1" and ($current_ok | not))
+                        or (($current_ok or $legacy_ok) | not) then
+                        error("native binding has an invalid schema")
+                      elif $current_ok then
+                        if ([$rows[] | select(
+                              (.native_agent_id // "") == $id
+                              or (.lifecycle_dispatch_id // "")
+                                == $binding.lifecycle_dispatch_id
+                              or (($binding.review_dispatch_id // "") != ""
+                                and (.agent_type // "") == $type
+                                and (.review_dispatch_id // "")
+                                  == $binding.review_dispatch_id))] | length) != 1
+                        then error("native binding authority is duplicated")
+                        else $binding + {binding_kind:"current"}
+                        end
+                      else $binding + {binding_kind:"legacy"}
+                      end
+                  end
+              end
+          ' "${bindings_file}" 2>/dev/null)"; then
       _review_native_binding_committed=1
+      _review_native_binding_json="${binding_json}"
     fi
   fi
   if [[ "${_review_native_tracking_version}" == "1" ]]; then
@@ -283,47 +535,109 @@ _consume_reviewer_dispatch_start_unlocked() {
   elif [[ "${_review_native_binding_committed}" -eq 1 ]]; then
     _review_use_native_agent_id=1
   fi
+  if [[ "${_review_use_native_agent_id}" -eq 1 ]]; then
+    binding_kind="$(jq -r '.binding_kind' \
+      <<<"${_review_native_binding_json}")" || return 1
+    if [[ "${binding_kind}" == "current" ]]; then
+      binding_lifecycle="$(jq -r '.lifecycle_dispatch_id' \
+        <<<"${_review_native_binding_json}")" || return 1
+      binding_review_id="$(jq -r '.review_dispatch_id // ""' \
+        <<<"${_review_native_binding_json}")" || return 1
+      binding_cycle="$(jq -r '.objective_cycle_id' \
+        <<<"${_review_native_binding_json}")" || return 1
+    fi
+  fi
+  [[ ! -L "${starts_file}" ]] \
+    && { [[ ! -e "${starts_file}" ]] || [[ -f "${starts_file}" ]]; } \
+    || return 1
   [[ -f "${starts_file}" ]] || return 0
-  tmp="$(mktemp "${starts_file}.XXXXXX")"
+  omc_dispatch_authority_ledger_shell_safe "${starts_file}" || return 1
   while IFS= read -r line || [[ -n "${line}" ]]; do
     [[ -n "${line}" ]] || continue
-    this_type="$(jq -r '.agent_type // empty' <<<"${line}" 2>/dev/null || true)"
-    if [[ -z "${selected}" ]]; then
-      row_id="$(jq -r '.review_dispatch_id // empty' \
-        <<<"${line}" 2>/dev/null || true)"
-      row_native_id="$(jq -r '.native_agent_id // empty' \
-        <<<"${line}" 2>/dev/null || true)"
-      if { [[ "${_review_use_native_agent_id}" -eq 1 ]] \
-            && [[ "${row_native_id}" == "${_review_native_agent_id}" ]] \
-            && [[ "${this_type}" == "${AGENT_TYPE}" ]]; } \
-          || { [[ "${_review_use_native_agent_id}" -eq 0 ]] \
-            && [[ -n "${_review_dispatch_id}" ]] \
-            && [[ "${row_id}" == "${_review_dispatch_id}" ]] \
-            && [[ -z "${row_native_id}" ]] \
-            && { [[ "${this_type}" == "${AGENT_TYPE}" ]] \
-              || [[ "${this_type##*:}" == "${AGENT_TYPE##*:}" ]]; }; } \
-          || { [[ "${_review_use_native_agent_id}" -eq 0 ]] \
-               && [[ -z "${_review_dispatch_id}" ]] \
-               && [[ -z "${row_id}" ]] \
-               && [[ -z "${row_native_id}" ]] \
-               && [[ "${this_type}" == "${AGENT_TYPE}" ]]; }; then
-        selected="${line}"
-        continue
+    if ! jq -e 'type == "object"' <<<"${line}" >/dev/null 2>&1; then
+      if [[ "${binding_kind}" == "current" ]] \
+          && { [[ "${line}" == *"${_review_native_agent_id}"* ]] \
+            || [[ "${line}" == *"${binding_lifecycle}"* ]] \
+            || { [[ -n "${binding_review_id}" ]] \
+              && [[ "${line}" == *"${binding_review_id}"* ]]; }; }; then
+        return 1
       fi
+      continue
     fi
-    printf '%s\n' "${line}" >>"${tmp}"
+    this_type="$(jq -r '.agent_type // empty' <<<"${line}" 2>/dev/null || true)"
+    row_id="$(jq -r '.review_dispatch_id // empty' \
+      <<<"${line}" 2>/dev/null || true)"
+    row_native_id="$(jq -r '.native_agent_id // empty' \
+      <<<"${line}" 2>/dev/null || true)"
+    row_lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+      <<<"${line}" 2>/dev/null || true)"
+    candidate=0
+    if [[ "${_review_use_native_agent_id}" -eq 1 \
+        && "${binding_kind}" == "current" ]] \
+        && { [[ "${row_native_id}" == "${_review_native_agent_id}" ]] \
+          || [[ "${row_lifecycle}" == "${binding_lifecycle}" ]] \
+          || { [[ -n "${binding_review_id}" ]] \
+            && [[ "${row_id}" == "${binding_review_id}" ]] \
+            && [[ "${this_type}" == "${AGENT_TYPE}" ]]; }; }; then
+      candidate=1
+      jq -e --arg native "${_review_native_agent_id}" \
+          --arg type "${AGENT_TYPE}" \
+          --arg lifecycle "${binding_lifecycle}" \
+          --arg review "${binding_review_id}" \
+          --argjson cycle "${binding_cycle}" '
+            type == "object"
+            and (.native_agent_id // "") == $native
+            and (.agent_type // "") == $type
+            and (.lifecycle_dispatch_id // "") == $lifecycle
+            and (.review_dispatch_id // "") == $review
+            and (.objective_cycle_id // -1) == $cycle
+          ' <<<"${line}" >/dev/null 2>&1 || return 1
+    elif [[ "${_review_use_native_agent_id}" -eq 1 \
+        && "${binding_kind}" == "legacy" \
+        && "${row_native_id}" == "${_review_native_agent_id}" ]]; then
+      candidate=1
+      jq -e --arg native "${_review_native_agent_id}" \
+          --arg type "${AGENT_TYPE}" '
+            type == "object"
+            and (.native_agent_id // "") == $native
+            and (.agent_type // "") == $type
+            and (has("lifecycle_dispatch_id") | not)
+          ' <<<"${line}" >/dev/null 2>&1 || return 1
+    fi
+    if [[ "${candidate}" -eq 1 ]] \
+        || { [[ "${_review_use_native_agent_id}" -eq 0 ]] \
+          && [[ -n "${_review_dispatch_id}" ]] \
+          && [[ "${row_id}" == "${_review_dispatch_id}" ]] \
+          && [[ -z "${row_native_id}" ]] \
+          && _review_legacy_agent_identity_matches \
+            "${this_type}" "${AGENT_TYPE}"; } \
+        || { [[ "${_review_use_native_agent_id}" -eq 0 ]] \
+             && [[ -z "${_review_dispatch_id}" ]] \
+             && [[ -z "${row_id}" ]] \
+             && [[ -z "${row_native_id}" ]] \
+             && [[ "${this_type}" == "${AGENT_TYPE}" ]]; }; then
+      selected_count=$((selected_count + 1))
+      selected="${line}"
+    fi
   done <"${starts_file}"
-  if [[ -n "${selected}" ]]; then
-    mv "${tmp}" "${starts_file}"
+  # A binding must name one exact lifecycle. First-match consumption would
+  # make an ambiguous ledger order-dependent and replayable.
+  [[ "${selected_count}" -le 1 ]] || return 1
+  if [[ "${selected_count}" -eq 1 ]]; then
     _review_dispatch_start_json="${selected}"
-    # If record-subagent-summary finished its side effects first, it retained an
-    # effects-complete claimed pending row until this reviewer-only causal start
-    # was consumed. Remove that exact claim now. If summary is still running it
-    # leaves effects_complete=false, and summary removes the row after noticing
-    # that this start is gone.
-    local pending_file pending_tmp pending_line pending_type pending_id pending_native_id
-    local wanted_id wanted_native_id wanted_agent removed_claim=0
+    # Migration compatibility: an in-flight session created before the
+    # receipt/waiter rendezvous may have finished universal effects first and
+    # retained an effects-complete pending claim. Current summary-first returns
+    # have no claim here; they wait for the dedicated receipt and replay later.
+    local pending_file pending_line pending_type pending_id pending_native_id
+    local pending_lifecycle pending_candidate
+    local wanted_id wanted_native_id wanted_agent selected_pending=""
+    local selected_pending_count=0
     pending_file="$(session_file "pending_agents.jsonl")"
+    [[ ! -L "${pending_file}" ]] \
+      && { [[ ! -e "${pending_file}" ]] || [[ -f "${pending_file}" ]]; } \
+      || return 1
+    omc_dispatch_authority_ledger_shell_safe "${pending_file}" || return 1
     wanted_id="$(jq -r '.review_dispatch_id // empty' \
       <<<"${selected}" 2>/dev/null || true)"
     wanted_native_id="$(jq -r '.native_agent_id // empty' \
@@ -331,17 +645,108 @@ _consume_reviewer_dispatch_start_unlocked() {
     wanted_agent="$(jq -r '.agent_type // empty' \
       <<<"${selected}" 2>/dev/null || true)"
     if [[ -s "${pending_file}" ]]; then
-      pending_tmp="$(mktemp "${pending_file}.XXXXXX")"
       while IFS= read -r pending_line || [[ -n "${pending_line}" ]]; do
         [[ -n "${pending_line}" ]] || continue
+        if ! jq -e 'type == "object"' \
+            <<<"${pending_line}" >/dev/null 2>&1; then
+          if [[ "${binding_kind}" == "current" ]] \
+              && { [[ "${pending_line}" == *"${_review_native_agent_id}"* ]] \
+                || [[ "${pending_line}" == *"${binding_lifecycle}"* ]] \
+                || { [[ -n "${binding_review_id}" ]] \
+                  && [[ "${pending_line}" == *"${binding_review_id}"* ]]; }; }; then
+            return 1
+          fi
+          continue
+        fi
         pending_type="$(jq -r '.agent_type // empty' \
           <<<"${pending_line}" 2>/dev/null || true)"
         pending_id="$(jq -r '.review_dispatch_id // empty' \
           <<<"${pending_line}" 2>/dev/null || true)"
         pending_native_id="$(jq -r '.native_agent_id // empty' \
           <<<"${pending_line}" 2>/dev/null || true)"
-        if [[ "${removed_claim}" -eq 0 ]] \
-            && [[ "${pending_type}" == "${wanted_agent}" ]] \
+        pending_lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+          <<<"${pending_line}" 2>/dev/null || true)"
+        pending_candidate=0
+        if [[ "${binding_kind}" == "current" ]] \
+            && { [[ "${pending_native_id}" == "${_review_native_agent_id}" ]] \
+              || [[ "${pending_lifecycle}" == "${binding_lifecycle}" ]] \
+              || { [[ -n "${binding_review_id}" ]] \
+                && [[ "${pending_id}" == "${binding_review_id}" ]] \
+                && [[ "${pending_type}" == "${AGENT_TYPE}" ]]; }; }; then
+          pending_candidate=1
+          jq -e --arg native "${_review_native_agent_id}" \
+              --arg type "${AGENT_TYPE}" \
+              --arg lifecycle "${binding_lifecycle}" \
+              --arg review "${binding_review_id}" \
+              --argjson cycle "${binding_cycle}" '
+                type == "object"
+                and (.native_agent_id // "") == $native
+                and (.agent_type // "") == $type
+                and (.lifecycle_dispatch_id // "") == $lifecycle
+                and (.review_dispatch_id // "") == $review
+                and (.objective_cycle_id // -1) == $cycle
+              ' <<<"${pending_line}" >/dev/null 2>&1 || return 1
+          jq -e --argjson start "${selected}" '
+              def frozen:
+                {ts:(.ts // -1),agent_type:(.agent_type // ""),
+                 description:(.description // ""),
+                 lifecycle_dispatch_id:(.lifecycle_dispatch_id // ""),
+                 review_dispatch_id:(.review_dispatch_id // ""),
+                 native_agent_id:(.native_agent_id // ""),
+                 edit_revision:(.edit_revision // 0),
+                 code_revision:(.code_revision // 0),
+                 doc_revision:(.doc_revision // 0),
+                 bash_revision:(.bash_revision // 0),
+                 ui_revision:(.ui_revision // 0),
+                 plan_revision:(.plan_revision // 0),
+                 review_revision:(.review_revision // 0),
+                 objective_prompt_ts:(.objective_prompt_ts // 0),
+                 objective_prompt_revision:(.objective_prompt_revision // 0),
+                 objective_cycle_id:(.objective_cycle_id // 0),
+                 ulw_enforcement_generation:
+                   (.ulw_enforcement_generation // "migration"),
+                 review_dispatch_causality_version:
+                   (.review_dispatch_causality_version // 0),
+                 review_batch_id:(.review_batch_id // ""),
+                 quality_contract_id:(.quality_contract_id // ""),
+                 quality_contract_revision:
+                   (.quality_contract_revision // 0),
+                 purpose:(.purpose // ""),
+                 council_phase:(.council_phase // ""),
+                 council_selection_agent:
+                   (.council_selection_agent // ""),
+                 council_objective_prompt_ts:
+                   (.council_objective_prompt_ts // 0),
+                 council_objective_prompt_revision:
+                   (.council_objective_prompt_revision // 0),
+                 council_ledger_generation:
+                   (.council_ledger_generation // 0)};
+              frozen == ($start | frozen)
+            ' <<<"${pending_line}" >/dev/null 2>&1 || return 1
+        elif [[ "${binding_kind}" == "legacy" \
+            && "${pending_native_id}" == "${_review_native_agent_id}" ]]; then
+          pending_candidate=1
+          jq -e --arg native "${_review_native_agent_id}" \
+              --arg type "${AGENT_TYPE}" '
+                type == "object"
+                and (.native_agent_id // "") == $native
+                and (.agent_type // "") == $type
+                and (has("lifecycle_dispatch_id") | not)
+              ' <<<"${pending_line}" >/dev/null 2>&1 || return 1
+        elif [[ "${_review_use_native_agent_id}" -eq 0 \
+            && "${pending_type}" == "${wanted_agent}" ]] \
+            && { { [[ -n "${wanted_id}" ]] \
+                   && [[ "${pending_id}" == "${wanted_id}" ]] \
+                   && [[ -z "${pending_native_id}" ]]; } \
+              || { [[ -z "${wanted_id}" ]] \
+                   && [[ -z "${pending_id}" \
+                         && -z "${pending_native_id}" ]]; }; }; then
+          pending_candidate=1
+        fi
+        if [[ "${pending_candidate}" -eq 1 ]]; then
+          selected_pending_count=$((selected_pending_count + 1))
+        fi
+        if [[ "${pending_candidate}" -eq 1 ]] \
             && { { [[ -n "${wanted_native_id}" ]] \
                    && [[ "${pending_native_id}" == "${wanted_native_id}" ]]; } \
                  || { [[ -z "${wanted_native_id}" && -n "${wanted_id}" ]] \
@@ -351,15 +756,20 @@ _consume_reviewer_dispatch_start_unlocked() {
                             && -z "${pending_id}" ]]; }; } \
             && [[ "$(jq -r '.completion_claim_effects_complete // false' \
               <<<"${pending_line}" 2>/dev/null || true)" == "true" ]]; then
-          removed_claim=1
-          continue
+          selected_pending="${pending_line}"
         fi
-        printf '%s\n' "${pending_line}" >>"${pending_tmp}"
       done <"${pending_file}"
-      mv "${pending_tmp}" "${pending_file}"
+      if [[ "${binding_kind}" == "current" ]]; then
+        [[ "${selected_pending_count}" -eq 1 ]] || return 1
+      else
+        [[ "${selected_pending_count}" -le 1 ]] || return 1
+      fi
+      _review_dispatch_pending_json="${selected_pending}"
     fi
-  else
-    rm -f "${tmp}"
+    if [[ "${binding_kind}" == "current" \
+        && "${selected_pending_count}" -ne 1 ]]; then
+      return 1
+    fi
   fi
 }
 
@@ -398,6 +808,1083 @@ _review_current_revision() {
   esac
 }
 
+# Reviewer completion is a multi-artifact authority transfer: one exact
+# lifecycle start (plus any pre-rendezvous migration claim) is consumed while
+# reviewer state and optional Definition evidence are published. A durable
+# roll-forward journal makes that transfer idempotent
+# across write errors and SIGKILL. The journal is deliberately single-flight
+# per session; multiple or malformed journals fail closed instead of guessing
+# an order between reviewer lifecycles.
+_reviewer_transaction_wal_dir() {
+  session_file ".reviewer-transaction.wal"
+}
+
+_reviewer_transaction_committed_prefix() {
+  session_file ".reviewer-transaction.committed."
+}
+
+# Once the fixed WAL has been renamed to this inert prefix, its receipt and
+# every preceding publication are committed. Cleanup must tolerate a prior
+# process dying after deleting any subset of the known files, while refusing
+# to broaden deletion to an unexpected or non-regular entry.
+_remove_reviewer_committed_dir_unlocked() {
+  local dir="${1:-}" prefix suffix entry name retry_temp
+  prefix="$(_reviewer_transaction_committed_prefix)"
+  [[ -n "${dir}" && "${dir}" == "${prefix}"* ]] || return 1
+  suffix="${dir#"${prefix}"}"
+  [[ "${suffix}" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
+  [[ -d "${dir}" && ! -L "${dir}" ]] || return 1
+  for entry in "${dir}"/* "${dir}"/.[!.]* "${dir}"/..?*; do
+    [[ -e "${entry}" || -L "${entry}" ]] || continue
+    [[ -f "${entry}" && ! -L "${entry}" ]] || return 1
+    name="${entry##*/}"
+    case "${name}" in
+      manifest.json|after-quality_evidence.jsonl|after-quality_frontier.json|after-quality_frontier_history.jsonl|after-reviewer_publication_outcomes.jsonl|.summary-retry-count) ;;
+      .summary-retry-count.*)
+        [[ "${name}" =~ ^\.summary-retry-count\.[A-Za-z0-9]{6,64}$ ]] \
+          || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  for retry_temp in "${dir}"/.summary-retry-count.*; do
+    [[ -e "${retry_temp}" || -L "${retry_temp}" ]] || continue
+    name="${retry_temp##*/}"
+    [[ "${name}" =~ ^\.summary-retry-count\.[A-Za-z0-9]{6,64}$ \
+        && -f "${retry_temp}" && ! -L "${retry_temp}" ]] || return 1
+    rm -f -- "${retry_temp}" || return 1
+  done
+  rm -f -- \
+    "${dir}/manifest.json" \
+    "${dir}/after-quality_evidence.jsonl" \
+    "${dir}/after-quality_frontier.json" \
+    "${dir}/after-quality_frontier_history.jsonl" \
+    "${dir}/after-reviewer_publication_outcomes.jsonl" \
+    "${dir}/.summary-retry-count" \
+    || return 1
+  rmdir "${dir}"
+}
+
+_cleanup_reviewer_committed_dirs_unlocked() {
+  local prefix committed_dir
+  prefix="$(_reviewer_transaction_committed_prefix)"
+  for committed_dir in "${prefix}"*; do
+    [[ -e "${committed_dir}" || -L "${committed_dir}" ]] || continue
+    _remove_reviewer_committed_dir_unlocked "${committed_dir}" || return 1
+  done
+}
+
+_reviewer_transaction_boundary() {
+  local boundary="${1:-}"
+  if [[ "${OMC_TEST_REVIEWER_TXN_FAIL_AT:-}" == "${boundary}" ]]; then
+    return 1
+  fi
+  if [[ "${OMC_TEST_REVIEWER_TXN_KILL_AT:-}" == "${boundary}" ]]; then
+    kill -KILL "$$"
+    return 1
+  fi
+}
+
+_reviewer_state_patch_from_args() {
+  local patch='{}' key value
+  [[ $(( $# % 2 )) -eq 0 ]] || return 1
+  while [[ $# -ge 2 ]]; do
+    key="$1"
+    value="$2"
+    shift 2
+    [[ -n "${key}" ]] || return 1
+    patch="$(jq -c --arg key "${key}" --arg value "${value}" \
+      '.[$key] = $value' <<<"${patch}")" || return 1
+  done
+  printf '%s' "${patch}"
+}
+
+_reviewer_state_before_patch_unlocked() {
+  local patch="${1:-}" state_file
+  jq -e 'type == "object"' <<<"${patch}" >/dev/null 2>&1 || return 1
+  state_file="$(session_file "${STATE_JSON}")"
+  [[ ! -L "${state_file}" ]] || return 1
+  _ensure_valid_state
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  jq -c --argjson patch "${patch}" '
+    . as $state
+    | reduce ($patch | keys[]) as $key ({};
+        .[$key] = if ($state | has($key))
+          then {present:true,value:$state[$key]}
+          else {present:false}
+        end)
+  ' "${state_file}"
+}
+
+_reviewer_atomic_copy_file() {
+  local source="${1:-}" target="${2:-}" temp
+  [[ -f "${source}" && ! -L "${source}" ]] || return 1
+  [[ ! -L "${target}" ]] || return 1
+  [[ ! -e "${target}" || -f "${target}" ]] || return 1
+  temp="$(mktemp "${target}.reviewer.XXXXXX")" || return 1
+  chmod 600 "${temp}" 2>/dev/null || true
+  if ! cp "${source}" "${temp}" || ! mv -f "${temp}" "${target}"; then
+    rm -f "${temp}" 2>/dev/null || true
+    return 1
+  fi
+}
+
+_reviewer_transaction_manifest_valid() {
+  local wal="${1:-}" manifest lifecycle
+  [[ -d "${wal}" && ! -L "${wal}" ]] || return 1
+  manifest="${wal}/manifest.json"
+  [[ -f "${manifest}" && ! -L "${manifest}" ]] || return 1
+  [[ "$(wc -c <"${manifest}" 2>/dev/null || printf 0)" -le 262144 ]] || return 1
+  jq -e '
+    . as $manifest
+    | type == "object"
+    and all(.. | strings; index("\u0000") == null)
+    and (keys | sort == ["_v","agent_type","artifacts","frontier_event",
+      "history_line","lifecycle_dispatch_id","native_agent_id","outcome",
+      "pending_line","rejection","reviewer_type","start_line",
+      "state_after","state_before"])
+    and ._v == 1
+    and (.lifecycle_dispatch_id | type == "string"
+      and test("^[A-Za-z0-9._:-]{1,128}$"))
+    and (.reviewer_type | type == "string"
+      and IN("standard","excellence","prose","stress_test",
+        "traceability","design_quality","release"))
+    and (.agent_type | type == "string"
+      and test("^[A-Za-z0-9_.:-]{1,128}$"))
+    and (.native_agent_id | type == "string"
+      and test("^$|^[A-Za-z0-9._:-]{1,128}$"))
+    and (.outcome == "accepted" or .outcome == "rejected")
+    and (.start_line | type == "string" and length > 1 and length <= 131072
+      and (test("[\u0000-\u001f\u007f]") | not))
+    and (.pending_line | type == "string" and length <= 131072
+      and (test("[\u0000-\u001f\u007f]") | not))
+    and (.state_after | type == "object")
+    and (.state_before | type == "object")
+    and ((.state_after | keys | sort) == (.state_before | keys | sort))
+    and all(.state_after[]; type == "string")
+    and all(.state_before[];
+      type == "object"
+      and ((.present == true and (keys | sort == ["present","value"]))
+        or (.present == false and (keys == ["present"]))))
+    and (.artifacts | type == "array" and length <= 4)
+    and (([.artifacts[].name] | unique | length)
+      == ($manifest.artifacts | length))
+    and all(.artifacts[];
+      type == "object"
+      and (keys | sort == ["after_sha","before_kind","before_sha","name"])
+      and (.name == "quality_evidence.jsonl"
+        or .name == "quality_frontier.json"
+        or .name == "quality_frontier_history.jsonl"
+        or .name == "reviewer_publication_outcomes.jsonl")
+      and (.before_kind == "absent" or .before_kind == "file")
+      and (.before_sha | type == "string")
+      and (.after_sha | type == "string" and test("^[0-9a-f]{64}$"))
+      and (if .before_kind == "file"
+        then (.before_sha | test("^[0-9a-f]{64}$"))
+        else .before_sha == ""
+        end))
+    and (.history_line | type == "string" and length <= 131072
+      and (test("[\u0000-\u001f\u007f]") | not))
+    and (.rejection | type == "object")
+    and (.frontier_event | type == "object")
+    and ((.start_line | fromjson | type) == "object")
+    and ((.start_line | fromjson | .lifecycle_dispatch_id // "")
+      == $manifest.lifecycle_dispatch_id)
+    and ((.start_line | fromjson | .agent_type // "")
+      == $manifest.agent_type)
+    and (.pending_line == "" or
+      (((.pending_line | fromjson | type) == "object")
+       and ((.pending_line | fromjson | .lifecycle_dispatch_id // "")
+         == $manifest.lifecycle_dispatch_id)
+       and ((.pending_line | fromjson | .completion_claim_effects_complete // false)
+         == true)))
+    and (if .outcome == "accepted"
+      then (.history_line | length > 1)
+        and ((.history_line | fromjson | .lifecycle_dispatch_id // "")
+          == $manifest.lifecycle_dispatch_id)
+      else .history_line == ""
+      end)
+  ' "${manifest}" >/dev/null 2>&1 || return 1
+  lifecycle="$(jq -r '.lifecycle_dispatch_id' "${manifest}")" || return 1
+  [[ -n "${lifecycle}" ]] || return 1
+}
+
+_reviewer_transaction_capture_artifact_unlocked() {
+  local prepare_dir="${1:-}" name="${2:-}" staged="${3:-}"
+  local target before_kind before_sha="" after_sha after_file descriptor
+  [[ -d "${prepare_dir}" && ! -L "${prepare_dir}" ]] || return 1
+  case "${name}" in
+    quality_evidence.jsonl|quality_frontier.json|quality_frontier_history.jsonl|reviewer_publication_outcomes.jsonl) ;;
+    *) return 1 ;;
+  esac
+  [[ -f "${staged}" && ! -L "${staged}" ]] || return 1
+  target="$(session_file "${name}")"
+  [[ ! -L "${target}" ]] || return 1
+  if [[ -f "${target}" ]]; then
+    before_kind="file"
+    before_sha="$(_omc_digest_file "${target}")" || return 1
+  elif [[ ! -e "${target}" ]]; then
+    before_kind="absent"
+  else
+    return 1
+  fi
+  after_file="${prepare_dir}/after-${name}"
+  cp "${staged}" "${after_file}" || return 1
+  chmod 600 "${after_file}" 2>/dev/null || true
+  after_sha="$(_omc_digest_file "${after_file}")" || return 1
+  [[ "${before_sha}" =~ ^[0-9a-f]{64}$ || "${before_kind}" == "absent" ]] || return 1
+  [[ "${after_sha}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  descriptor="$(jq -cn \
+    --arg name "${name}" --arg before_kind "${before_kind}" \
+    --arg before_sha "${before_sha}" --arg after_sha "${after_sha}" \
+    '{name:$name,before_kind:$before_kind,before_sha:$before_sha,
+      after_sha:$after_sha}')" || return 1
+  printf '%s' "${descriptor}"
+}
+
+_remove_reviewer_prepare_dir_unlocked() {
+  local prepare_dir="${1:-}" prefix entry name
+  prefix="$(session_file ".reviewer-transaction.prepare.")"
+  [[ -n "${prepare_dir}" && "${prepare_dir}" == "${prefix}"* ]] || return 1
+  [[ -d "${prepare_dir}" && ! -L "${prepare_dir}" ]] || return 1
+  # A prepare directory is not publication authority until its validated
+  # manifest is atomically renamed to the fixed WAL name.  Remove only the
+  # exact inert files this hook can create; any unexpected entry fails closed
+  # instead of broadening cleanup into an unsafe recursive delete.
+  for entry in "${prepare_dir}"/*; do
+    [[ -e "${entry}" || -L "${entry}" ]] || continue
+    [[ -f "${entry}" && ! -L "${entry}" ]] || return 1
+    name="${entry##*/}"
+    case "${name}" in
+      manifest.json|after-quality_evidence.jsonl|after-quality_frontier.json|after-quality_frontier_history.jsonl|after-reviewer_publication_outcomes.jsonl) ;;
+      *) return 1 ;;
+    esac
+  done
+  rm -f \
+    "${prepare_dir}/manifest.json" \
+    "${prepare_dir}/after-quality_evidence.jsonl" \
+    "${prepare_dir}/after-quality_frontier.json" \
+    "${prepare_dir}/after-quality_frontier_history.jsonl" \
+    "${prepare_dir}/after-reviewer_publication_outcomes.jsonl" \
+    || return 1
+  rmdir "${prepare_dir}"
+}
+
+_cleanup_reviewer_prepare_dirs_unlocked() {
+  local prefix prepare_dir
+  prefix="$(session_file ".reviewer-transaction.prepare.")"
+  for prepare_dir in "${prefix}"*; do
+    [[ -e "${prepare_dir}" || -L "${prepare_dir}" ]] || continue
+    _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" || return 1
+  done
+}
+
+# Receipt and Definition artifacts are rendered into unique sibling files
+# before their bytes are copied into the fixed reviewer WAL. SIGKILL can leave
+# those pre-WAL files behind, but they never become publication authority. The
+# session mutex proves no live publisher owns an exact candidate here. Validate
+# the whole set before unlinking any entry so a forged symlink, directory, or
+# malformed internal name fails closed without causing a partial reap.
+_cleanup_reviewer_loose_staging_unlocked() {
+  local session_dir candidate name candidate_count=0 candidate_index=0
+  local -a candidates
+  session_dir="$(session_file ".reviewer-transaction.wal")"
+  session_dir="${session_dir%/*}"
+  for candidate in \
+      "$(session_file ".reviewer-publication.stage.")"* \
+      "$(session_file "quality_evidence.jsonl.tmp.")"* \
+      "$(session_file "quality_frontier.json.tmp.")"* \
+      "$(session_file "quality_frontier_history.jsonl.tmp.")"*; do
+    [[ -e "${candidate}" || -L "${candidate}" ]] || continue
+    [[ "${candidate%/*}" == "${session_dir}" ]] || return 1
+    name="${candidate##*/}"
+    case "${name}" in
+      .reviewer-publication.stage.*)
+        [[ "${name}" \
+          =~ ^\.reviewer-publication\.stage\.[A-Za-z0-9]{6}$ ]] \
+          || return 1
+        ;;
+      quality_evidence.jsonl.tmp.*)
+        [[ "${name}" \
+          =~ ^quality_evidence\.jsonl\.tmp\.[A-Za-z0-9]{6}$ ]] \
+          || return 1
+        ;;
+      quality_frontier.json.tmp.*)
+        [[ "${name}" \
+          =~ ^quality_frontier\.json\.tmp\.[A-Za-z0-9]{6}$ ]] \
+          || return 1
+        ;;
+      quality_frontier_history.jsonl.tmp.*)
+        [[ "${name}" \
+          =~ ^quality_frontier_history\.jsonl\.tmp\.[A-Za-z0-9]{6}$ ]] \
+          || return 1
+        ;;
+      *) return 1 ;;
+    esac
+    [[ -f "${candidate}" && ! -L "${candidate}" ]] || return 1
+    candidates[${candidate_count}]="${candidate}"
+    candidate_count=$((candidate_count + 1))
+  done
+  while (( candidate_index < candidate_count )); do
+    rm -f -- "${candidates[${candidate_index}]}" || return 1
+    candidate_index=$((candidate_index + 1))
+  done
+}
+
+_prepare_reviewer_transaction_unlocked() {
+  local outcome="${1:-}" state_after="${2:-}" history_line="${3:-}"
+  local wal prepare_dir manifest lifecycle state_before artifacts='[]' descriptor
+  local frontier_event rejection
+  [[ "${outcome}" == "accepted" || "${outcome}" == "rejected" ]] || return 1
+  [[ -n "${_review_dispatch_start_json:-}" ]] || return 1
+  lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  [[ "${lifecycle}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]] || return 1
+  jq -e --arg lifecycle "${lifecycle}" --arg agent "${AGENT_TYPE}" '
+    type == "object"
+    and (.lifecycle_dispatch_id // "") == $lifecycle
+    and (.agent_type // "") == $agent
+  ' <<<"${_review_dispatch_start_json}" >/dev/null 2>&1 || return 1
+  state_before="$(_reviewer_state_before_patch_unlocked "${state_after}")" || return 1
+  wal="$(_reviewer_transaction_wal_dir)"
+  [[ ! -e "${wal}" && ! -L "${wal}" ]] || return 1
+  prepare_dir="$(mktemp -d "$(session_file ".reviewer-transaction.prepare.XXXXXX")")" \
+    || return 1
+  chmod 700 "${prepare_dir}" 2>/dev/null || true
+
+  if [[ -n "${_quality_review_staged_evidence:-}" ]]; then
+    descriptor="$(_reviewer_transaction_capture_artifact_unlocked \
+      "${prepare_dir}" "quality_evidence.jsonl" \
+      "${_quality_review_staged_evidence}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+    artifacts="$(jq -c --argjson row "${descriptor}" '. + [$row]' \
+      <<<"${artifacts}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+    descriptor="$(_reviewer_transaction_capture_artifact_unlocked \
+      "${prepare_dir}" "quality_frontier.json" \
+      "${_quality_review_staged_frontier}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+    artifacts="$(jq -c --argjson row "${descriptor}" '. + [$row]' \
+      <<<"${artifacts}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+    descriptor="$(_reviewer_transaction_capture_artifact_unlocked \
+      "${prepare_dir}" "quality_frontier_history.jsonl" \
+      "${_quality_review_staged_history}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+    artifacts="$(jq -c --argjson row "${descriptor}" '. + [$row]' \
+      <<<"${artifacts}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+  fi
+  if [[ -n "${_reviewer_receipt_staged:-}" ]]; then
+    descriptor="$(_reviewer_transaction_capture_artifact_unlocked \
+      "${prepare_dir}" "reviewer_publication_outcomes.jsonl" \
+      "${_reviewer_receipt_staged}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+    artifacts="$(jq -c --argjson row "${descriptor}" '. + [$row]' \
+      <<<"${artifacts}")" || {
+      _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+      return 1
+    }
+  fi
+  frontier_event="$(jq -cn \
+    --arg event "${_quality_review_frontier_event:-}" \
+    --arg contract_id "${_quality_review_frontier_contract_id:-}" \
+    --arg contract_revision "${_quality_review_frontier_contract_revision:-}" \
+    --arg cycle "${_quality_review_frontier_cycle:-}" \
+    --arg status "${_quality_review_frontier_status:-}" \
+    --arg materiality "${_quality_review_frontier_materiality:-}" \
+    '{event:$event,contract_id:$contract_id,contract_revision:$contract_revision,
+      cycle:$cycle,status:$status,materiality:$materiality}')" || {
+    _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+    return 1
+  }
+  rejection="$(jq -cn \
+    --arg reason "${_review_rejection_reason:-}" \
+    --arg start "${_review_rejection_start:-}" \
+    --arg current "${_review_rejection_current:-}" \
+    '{reason:$reason,start:$start,current:$current}')" || {
+    _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+    return 1
+  }
+  manifest="$(jq -cnS \
+    --argjson _v 1 \
+    --arg lifecycle_dispatch_id "${lifecycle}" \
+    --arg reviewer_type "${REVIEWER_TYPE}" --arg agent_type "${AGENT_TYPE}" \
+    --arg native_agent_id "${_review_native_agent_id}" --arg outcome "${outcome}" \
+    --arg start_line "${_review_dispatch_start_json}" \
+    --arg pending_line "${_review_dispatch_pending_json:-}" \
+    --argjson state_before "${state_before}" --argjson state_after "${state_after}" \
+    --argjson artifacts "${artifacts}" --arg history_line "${history_line}" \
+    --argjson rejection "${rejection}" --argjson frontier_event "${frontier_event}" \
+    '{_v:$_v,lifecycle_dispatch_id:$lifecycle_dispatch_id,
+      reviewer_type:$reviewer_type,agent_type:$agent_type,
+      native_agent_id:$native_agent_id,outcome:$outcome,start_line:$start_line,
+      pending_line:$pending_line,state_before:$state_before,state_after:$state_after,
+      artifacts:$artifacts,history_line:$history_line,rejection:$rejection,
+      frontier_event:$frontier_event}')" || {
+    _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+    return 1
+  }
+  if ! printf '%s\n' "${manifest}" >"${prepare_dir}/manifest.json" \
+      || ! chmod 600 "${prepare_dir}/manifest.json" 2>/dev/null \
+      || ! _reviewer_transaction_manifest_valid "${prepare_dir}" \
+      || ! _reviewer_transaction_boundary "prepare_complete" \
+      || ! mv "${prepare_dir}" "${wal}"; then
+    _remove_reviewer_prepare_dir_unlocked "${prepare_dir}" 2>/dev/null || true
+    return 1
+  fi
+  _reviewer_transaction_boundary "wal_prepared"
+}
+
+_reviewer_transaction_row_status_unlocked() {
+  local file="${1:-}" selected="${2:-}" lifecycle="${3:-}"
+  local line exact=0 lifecycle_count=0 row_lifecycle
+  if [[ ! -e "${file}" && ! -L "${file}" ]]; then
+    printf absent
+    return 0
+  fi
+  [[ -f "${file}" && ! -L "${file}" ]] || return 1
+  omc_dispatch_authority_ledger_shell_safe "${file}" || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ "${line}" == "${selected}" ]] && exact=$((exact + 1))
+    row_lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+      <<<"${line}" 2>/dev/null || true)"
+    [[ "${row_lifecycle}" == "${lifecycle}" ]] \
+      && lifecycle_count=$((lifecycle_count + 1))
+  done <"${file}"
+  if [[ "${exact}" -eq 1 && "${lifecycle_count}" -eq 1 ]]; then
+    printf present
+  elif [[ "${exact}" -eq 0 && "${lifecycle_count}" -eq 0 ]]; then
+    printf absent
+  else
+    return 1
+  fi
+}
+
+_reviewer_transaction_apply_artifact_unlocked() {
+  local wal="${1:-}" descriptor="${2:-}" name before_kind before_sha after_sha
+  local source target current_sha="" current_kind boundary
+  name="$(jq -r '.name' <<<"${descriptor}")" || return 1
+  before_kind="$(jq -r '.before_kind' <<<"${descriptor}")" || return 1
+  before_sha="$(jq -r '.before_sha' <<<"${descriptor}")" || return 1
+  after_sha="$(jq -r '.after_sha' <<<"${descriptor}")" || return 1
+  source="${wal}/after-${name}"
+  target="$(session_file "${name}")"
+  [[ -f "${source}" && ! -L "${source}" ]] || return 1
+  [[ "$(_omc_digest_file "${source}")" == "${after_sha}" ]] || return 1
+  [[ ! -L "${target}" ]] || return 1
+  if [[ -f "${target}" ]]; then
+    current_kind="file"
+    current_sha="$(_omc_digest_file "${target}")" || return 1
+  elif [[ ! -e "${target}" ]]; then
+    current_kind="absent"
+  else
+    return 1
+  fi
+  if [[ "${current_kind}" == "file" && "${current_sha}" == "${after_sha}" ]]; then
+    :
+  elif [[ "${current_kind}" == "${before_kind}" ]] \
+      && { [[ "${current_kind}" == "absent" ]] \
+        || [[ "${current_sha}" == "${before_sha}" ]]; }; then
+    _reviewer_atomic_copy_file "${source}" "${target}" || return 1
+  else
+    return 1
+  fi
+  case "${name}" in
+    quality_evidence.jsonl) boundary="evidence_published" ;;
+    quality_frontier.json) boundary="frontier_published" ;;
+    quality_frontier_history.jsonl) boundary="frontier_history_published" ;;
+    reviewer_publication_outcomes.jsonl) boundary="receipt_published" ;;
+    *) return 1 ;;
+  esac
+  _reviewer_transaction_boundary "${boundary}"
+}
+
+_reviewer_transaction_apply_state_unlocked() {
+  local state_before="${1:-}" state_after="${2:-}" state_file temp
+  state_file="$(session_file "${STATE_JSON}")"
+  [[ ! -L "${state_file}" ]] || return 1
+  _ensure_valid_state
+  [[ -f "${state_file}" && ! -L "${state_file}" ]] || return 1
+  jq -e --argjson before "${state_before}" --argjson after "${state_after}" '
+    . as $state
+    | ($after | keys) as $keys
+    | all($keys[];
+        . as $key
+        |
+        (($state | has($key)) and $state[$key] == $after[$key])
+        or (($before[$key].present == true)
+          and ($state | has($key)) and $state[$key] == $before[$key].value)
+        or (($before[$key].present == false) and (($state | has($key)) | not)))
+  ' "${state_file}" >/dev/null 2>&1 || return 1
+  temp="$(mktemp "${state_file}.reviewer.XXXXXX")" || return 1
+  chmod 600 "${temp}" 2>/dev/null || true
+  if ! jq --argjson after "${state_after}" '. + $after' \
+      "${state_file}" >"${temp}" || ! mv -f "${temp}" "${state_file}"; then
+    rm -f "${temp}" 2>/dev/null || true
+    return 1
+  fi
+  _reviewer_transaction_boundary "state_published"
+}
+
+_reviewer_transaction_apply_history_unlocked() {
+  local history_line="${1:-}" lifecycle="${2:-}" history_file line
+  local lifecycle_count=0 exact=0 row_lifecycle
+  [[ -n "${history_line}" ]] || return 0
+  history_file="$(session_file "review_history.jsonl")"
+  [[ ! -L "${history_file}" ]] || return 1
+  [[ ! -e "${history_file}" || -f "${history_file}" ]] || return 1
+  if [[ -f "${history_file}" ]]; then
+    omc_dispatch_authority_ledger_shell_safe "${history_file}" || return 1
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      [[ "${line}" == "${history_line}" ]] && exact=$((exact + 1))
+      row_lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+        <<<"${line}" 2>/dev/null || true)"
+      [[ "${row_lifecycle}" == "${lifecycle}" ]] \
+        && lifecycle_count=$((lifecycle_count + 1))
+    done <"${history_file}"
+  fi
+  if [[ "${exact}" -eq 1 && "${lifecycle_count}" -eq 1 ]]; then
+    :
+  elif [[ "${exact}" -eq 0 && "${lifecycle_count}" -eq 0 ]]; then
+    _append_limited_state_locked "${history_file}" "${history_line}" "32" \
+      || return 1
+  else
+    return 1
+  fi
+  _reviewer_transaction_boundary "history_published"
+}
+
+_apply_reviewer_transaction_unlocked() {
+  local wal manifest lifecycle outcome start_line pending_line state_before state_after
+  local history_line descriptor status artifact_count=0 receipt_descriptor=""
+  local committed_dir
+  wal="$(_reviewer_transaction_wal_dir)"
+  _reviewer_transaction_manifest_valid "${wal}" || return 1
+  manifest="${wal}/manifest.json"
+  lifecycle="$(jq -r '.lifecycle_dispatch_id' "${manifest}")" || return 1
+  outcome="$(jq -r '.outcome' "${manifest}")" || return 1
+  start_line="$(jq -r '.start_line' "${manifest}")" || return 1
+  pending_line="$(jq -r '.pending_line' "${manifest}")" || return 1
+  state_before="$(jq -c '.state_before' "${manifest}")" || return 1
+  state_after="$(jq -c '.state_after' "${manifest}")" || return 1
+  history_line="$(jq -r '.history_line' "${manifest}")" || return 1
+
+  # Consume causal rows first. The WAL remains the replay authority until all
+  # publications land, so a killed process cannot turn an absent start into an
+  # untracked completion. Existing rewrite fault selectors remain supported.
+  if [[ -n "${pending_line}" ]]; then
+    status="$(_reviewer_transaction_row_status_unlocked \
+      "$(session_file "pending_agents.jsonl")" "${pending_line}" "${lifecycle}")" \
+      || return 1
+    if [[ "${status}" == "present" ]]; then
+      rewrite_jsonl_line_atomic "$(session_file "pending_agents.jsonl")" \
+        "${pending_line}" "" "${OMC_TEST_REVIEWER_PENDING_REWRITE_FAULT:-}" \
+        || return 1
+    fi
+    _reviewer_transaction_boundary "pending_consumed" || return 1
+  fi
+  status="$(_reviewer_transaction_row_status_unlocked \
+    "$(session_file "agent_dispatch_starts.jsonl")" "${start_line}" "${lifecycle}")" \
+    || return 1
+  if [[ "${status}" == "present" ]]; then
+    rewrite_jsonl_line_atomic "$(session_file "agent_dispatch_starts.jsonl")" \
+      "${start_line}" "" "${OMC_TEST_REVIEWER_START_REWRITE_FAULT:-}" \
+      || return 1
+  fi
+  _reviewer_transaction_boundary "start_consumed" || return 1
+
+  while IFS= read -r descriptor; do
+    [[ -n "${descriptor}" ]] || continue
+    artifact_count=$((artifact_count + 1))
+    if [[ "$(jq -r '.name' <<<"${descriptor}")" \
+        == "reviewer_publication_outcomes.jsonl" ]]; then
+      [[ -z "${receipt_descriptor}" ]] || return 1
+      receipt_descriptor="${descriptor}"
+      continue
+    fi
+    _reviewer_transaction_apply_artifact_unlocked "${wal}" "${descriptor}" \
+      || return 1
+  done < <(jq -c '.artifacts[]' "${manifest}")
+  [[ "${artifact_count}" -eq "$(jq -r '.artifacts | length' "${manifest}")" ]] \
+    || return 1
+  _reviewer_transaction_apply_state_unlocked "${state_before}" "${state_after}" \
+    || return 1
+  if [[ "${outcome}" == "accepted" ]]; then
+    _reviewer_transaction_apply_history_unlocked "${history_line}" "${lifecycle}" \
+      || return 1
+  fi
+  # The receipt is the universal summary hook's rendezvous authority, so it is
+  # deliberately the last publication. Observing `accepted` therefore proves
+  # that evidence/frontier, reviewer state, and history already landed.
+  [[ -n "${receipt_descriptor}" ]] || return 1
+  _reviewer_transaction_apply_artifact_unlocked \
+    "${wal}" "${receipt_descriptor}" || return 1
+
+  # Export recovered outcome for the current hook before atomically retiring
+  # the fixed WAL name. Receipt publication above is the final logical commit;
+  # fixed-name absence is the crash-atomic retirement marker that lets summary
+  # waiter recovery proceed without mistaking partial cleanup for corruption.
+  _reviewer_recovered_lifecycle_id="${lifecycle}"
+  _reviewer_recovered_agent_type="$(jq -r '.agent_type' "${manifest}")"
+  _reviewer_recovered_reviewer_type="$(jq -r '.reviewer_type' "${manifest}")"
+  _reviewer_recovered_native_agent_id="$(jq -r '.native_agent_id' "${manifest}")"
+  _reviewer_recovered_outcome="${outcome}"
+  _reviewer_recovered_start_line="${start_line}"
+  _reviewer_recovered_rejection="$(jq -c '.rejection' "${manifest}")"
+  _reviewer_recovered_frontier_event="$(jq -c '.frontier_event' "${manifest}")"
+  committed_dir="$(_reviewer_transaction_committed_prefix)$$.${RANDOM}"
+  [[ ! -e "${committed_dir}" && ! -L "${committed_dir}" ]] || return 1
+  mv "${wal}" "${committed_dir}" || return 1
+  _reviewer_transaction_boundary "wal_retired" || return 1
+  _remove_reviewer_committed_dir_unlocked "${committed_dir}" \
+    2>/dev/null || true
+}
+
+_recover_reviewer_transaction_unlocked() {
+  local wal current_match=0
+  wal="$(_reviewer_transaction_wal_dir)"
+  _reviewer_recovery_satisfied_current=0
+  _reviewer_recovered_lifecycle_id=""
+  # SIGKILL before the atomic prepare-dir rename leaves no publication
+  # authority, only inert loose files and staged bytes. Reap those exact
+  # validated remnants before interpreting (or creating) the one fixed WAL. A
+  # committed directory is likewise inert after the fixed-name rename and may
+  # be only partially cleaned after process death.
+  _cleanup_reviewer_loose_staging_unlocked || return 1
+  _cleanup_reviewer_prepare_dirs_unlocked || return 1
+  _cleanup_reviewer_committed_dirs_unlocked || return 1
+  [[ ! -L "${wal}" ]] || return 1
+  [[ ! -e "${wal}" ]] && return 0
+  [[ -d "${wal}" ]] || return 1
+  _apply_reviewer_transaction_unlocked || return 1
+  if [[ "${_reviewer_recovered_agent_type}" == "${AGENT_TYPE}" \
+      && "${_reviewer_recovered_reviewer_type}" == "${REVIEWER_TYPE}" ]]; then
+    if [[ -n "${_reviewer_recovered_native_agent_id}" ]]; then
+      [[ "${_reviewer_recovered_native_agent_id}" == "${_review_native_agent_id}" ]] \
+        && current_match=1
+    elif [[ -n "${_review_dispatch_id}" ]] \
+        && [[ "$(jq -r '.review_dispatch_id // empty' \
+          <<<"${_reviewer_recovered_start_line}")" == "${_review_dispatch_id}" ]]; then
+      current_match=1
+    elif [[ -z "${_review_dispatch_id}" \
+        && -z "$(jq -r '.review_dispatch_id // empty' \
+          <<<"${_reviewer_recovered_start_line}")" \
+        && -z "$(jq -r '.native_agent_id // empty' \
+          <<<"${_reviewer_recovered_start_line}")" ]]; then
+      # Pre-native current clients can only have one in-flight gate reviewer of
+      # a role; the single WAL plus exact agent/reviewer match is therefore the
+      # same compatibility identity used by start selection.
+      current_match=1
+    fi
+  fi
+  if [[ "${current_match}" -eq 1 ]]; then
+    _reviewer_recovery_satisfied_current=1
+    _review_dispatch_start_json="${_reviewer_recovered_start_line}"
+    if [[ "${_reviewer_recovered_outcome}" == "accepted" ]]; then
+      _review_commit_accepted=1
+      _review_rejection_reason=""
+    else
+      _review_commit_accepted=0
+      _review_rejection_reason="$(jq -r '.reason' \
+        <<<"${_reviewer_recovered_rejection}")"
+      _review_rejection_start="$(jq -r '.start' \
+        <<<"${_reviewer_recovered_rejection}")"
+      _review_rejection_current="$(jq -r '.current' \
+        <<<"${_reviewer_recovered_rejection}")"
+    fi
+    _quality_review_frontier_event="$(jq -r '.event' \
+      <<<"${_reviewer_recovered_frontier_event}")"
+    _quality_review_frontier_contract_id="$(jq -r '.contract_id' \
+      <<<"${_reviewer_recovered_frontier_event}")"
+    _quality_review_frontier_contract_revision="$(jq -r '.contract_revision' \
+      <<<"${_reviewer_recovered_frontier_event}")"
+    _quality_review_frontier_cycle="$(jq -r '.cycle' \
+      <<<"${_reviewer_recovered_frontier_event}")"
+    _quality_review_frontier_status="$(jq -r '.status' \
+      <<<"${_reviewer_recovered_frontier_event}")"
+    _quality_review_frontier_materiality="$(jq -r '.materiality' \
+      <<<"${_reviewer_recovered_frontier_event}")"
+  fi
+}
+
+_collect_reviewer_summary_replays_unlocked() {
+  local waiters_file receipts_file pending_file outcomes_file
+  local waiters receipts pending outcomes settled_ids temp
+  _reviewer_summary_replays='[]'
+  waiters_file="$(session_file "reviewer_summary_waiters.jsonl")"
+  receipts_file="$(session_file "reviewer_publication_outcomes.jsonl")"
+  pending_file="$(session_file "pending_agents.jsonl")"
+  outcomes_file="$(session_file "agent_completion_outcomes.jsonl")"
+  for _reviewer_rendezvous_file in "${waiters_file}" "${receipts_file}" \
+      "${pending_file}" "${outcomes_file}"; do
+    [[ ! -L "${_reviewer_rendezvous_file}" ]] || return 1
+    [[ ! -e "${_reviewer_rendezvous_file}" \
+        || -f "${_reviewer_rendezvous_file}" ]] || return 1
+  done
+  [[ -s "${waiters_file}" && -s "${receipts_file}" ]] || return 0
+  waiters="$(omc_summary_waiter_ledger_json_unlocked \
+    reviewer "${waiters_file}")" || return 1
+  receipts="$(_omc_strict_jsonl_array_unlocked \
+    "${receipts_file}" 4194304 128)" || return 1
+  jq -e '
+    type == "array"
+    and all(.[];
+      type == "object" and .schema_version == 1
+      and (keys | sort == ["agent_type","completion_digest","decided_at",
+        "lifecycle_dispatch_id","native_agent_id","reason",
+        "result_review_revision","reviewer_type","schema_version",
+        "start_review_revision","status","verdict"])
+      and all(.. | strings; index("\u0000") == null)
+      and (.decided_at | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .)
+      and (.lifecycle_dispatch_id | type == "string"
+        and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+      and (.agent_type | type == "string" and length > 0
+        and length <= 128)
+      and (.reviewer_type | type == "string" and length > 0
+        and length <= 64)
+      and (.native_agent_id | type == "string" and length <= 128
+        and test("^[A-Za-z0-9._:-]*$"))
+      and (.completion_digest | type == "string"
+        and test("^[A-Fa-f0-9]{16,128}$"))
+      and (.status | IN("accepted","rejected"))
+      and (.reason | type == "string" and length <= 256)
+      and (.verdict | type == "string" and length <= 32
+        and test("^[A-Z_]*$"))
+      and (.start_review_revision | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .)
+      and (.result_review_revision | type == "number" and . >= 0
+        and . <= 999999999999999 and floor == .))
+    and (([.[].lifecycle_dispatch_id] | unique | length) == length)
+  ' <<<"${receipts}" >/dev/null 2>&1 || return 1
+  if [[ -s "${pending_file}" ]]; then
+    _omc_publication_claim_timestamps_valid_unlocked \
+      "${pending_file}" || return 1
+    pending="$(jq -Rsc '
+      [split("\n")[] | select(length > 0)
+        | (try fromjson catch null) | select(type == "object")]
+    ' "${pending_file}" 2>/dev/null)" || return 1
+  else
+    pending='[]'
+  fi
+  if [[ -s "${outcomes_file}" ]]; then
+    outcomes="$(omc_causal_completion_outcomes_json_unlocked \
+      "${outcomes_file}")" || return 1
+  else
+    outcomes='[]'
+  fi
+
+  # If accepted or rejected outcome publication committed and the pending row
+  # was consumed before process death, the remaining exact waiter is only
+  # cleanup debt. Receipt+outcome is the roll-forward journal; accepted maps to
+  # accepted and rejected maps to ignored. Retire only the singular exact
+  # identity pair so future admissions cannot wedge on a stale waiter.
+  settled_ids="$(jq -cn \
+    --argjson waiters "${waiters}" --argjson receipts "${receipts}" \
+    --argjson pending "${pending}" --argjson outcomes "${outcomes}" '
+      [$waiters[] as $waiter
+        | select($waiter.schema_version == 1)
+        | select([$waiters[] | select(
+            .lifecycle_dispatch_id == $waiter.lifecycle_dispatch_id)]
+          | length == 1)
+        | ([$receipts[] | select(
+              .schema_version == 1
+              and (.status == "accepted" or .status == "rejected")
+              and .lifecycle_dispatch_id == $waiter.lifecycle_dispatch_id
+              and .agent_type == $waiter.agent_type
+              and .native_agent_id == $waiter.native_agent_id
+              and .completion_digest == $waiter.completion_digest)]
+            ) as $matching_receipts
+        | select(($matching_receipts | length) == 1)
+        | $matching_receipts[0] as $receipt
+        | select([$pending[] | select(
+            .lifecycle_dispatch_id == $waiter.lifecycle_dispatch_id)]
+          | length == 0)
+        | select([$outcomes[] | select(
+            .lifecycle_dispatch_id == $waiter.lifecycle_dispatch_id
+            and .agent_type == $waiter.agent_type
+            and .native_agent_id == $waiter.native_agent_id
+            and .status == (if $receipt.status == "accepted"
+                            then "accepted" else "ignored" end))]
+          | length == 1)
+        | $waiter.lifecycle_dispatch_id] | unique
+    ')" || return 1
+  if [[ "$(jq -r 'length' <<<"${settled_ids}")" -gt 0 ]]; then
+    temp="$(mktemp "${waiters_file}.XXXXXX")" || return 1
+    if ! jq -cn --argjson waiters "${waiters}" \
+        --argjson settled "${settled_ids}" '
+          $waiters[]
+          | select(.lifecycle_dispatch_id as $id
+            | ($settled | index($id)) == null)
+        ' >"${temp}" || ! mv -f "${temp}" "${waiters_file}"; then
+      rm -f "${temp}" 2>/dev/null || true
+      return 1
+    fi
+    waiters="$(omc_summary_waiter_ledger_json_unlocked \
+      reviewer "${waiters_file}")" || return 1
+  fi
+  [[ "$(jq -r 'length' <<<"${waiters}")" -gt 0 \
+      && "$(jq -r 'length' <<<"${pending}")" -gt 0 ]] || return 0
+  _reviewer_summary_replays="$(jq -cn \
+    --argjson waiters "${waiters}" --argjson receipts "${receipts}" \
+    --argjson pending "${pending}" '
+      [$waiters[] as $waiter
+        | select($waiter.schema_version == 1)
+        | select([$receipts[] | select(
+            .schema_version == 1
+            and .lifecycle_dispatch_id == $waiter.lifecycle_dispatch_id
+            and .agent_type == $waiter.agent_type
+            and .native_agent_id == $waiter.native_agent_id
+            and .completion_digest == $waiter.completion_digest
+          )] | length == 1)
+        | ([$pending[] | select(
+            .lifecycle_dispatch_id == $waiter.lifecycle_dispatch_id
+            and .agent_type == $waiter.agent_type
+            and (.native_agent_id // "") == $waiter.native_agent_id
+            and (.review_dispatch_abandoned // false) != true
+          )]) as $matching_pending
+        | select(($matching_pending | length) == 1)
+        | $matching_pending[0] as $pending_row
+        | $waiter
+          + if (($pending_row.completion_claim_id // "") | length) > 0
+            then {completion_claim_id:$pending_row.completion_claim_id}
+            else {} end]
+    ')" || return 1
+}
+
+_cleanup_quality_review_staging() {
+  local staged
+  for staged in \
+      "${_quality_review_staged_evidence:-}" \
+      "${_quality_review_staged_frontier:-}" \
+      "${_quality_review_staged_history:-}" \
+      "${_reviewer_receipt_staged:-}"; do
+    [[ -n "${staged}" ]] || continue
+    rm -f -- "${staged}" 2>/dev/null || true
+  done
+  _quality_review_staged_evidence=""
+  _quality_review_staged_frontier=""
+  _quality_review_staged_history=""
+  _reviewer_receipt_staged=""
+}
+
+_quality_frontier_history_appendable() {
+  local history_file="$1" raw parsed
+  [[ ! -e "${history_file}" && ! -L "${history_file}" ]] && return 0
+  [[ -f "${history_file}" && ! -L "${history_file}" \
+      && -r "${history_file}" ]] || return 1
+  if [[ -s "${history_file}" ]]; then
+    cmp -s <(tail -c 1 "${history_file}") <(printf '\n') || return 1
+  fi
+  raw="$(_quality_contract_read_jsonl_array \
+    "${history_file}" 2097152 64)" || return 1
+  parsed="$(_quality_frontier_history_parse "${history_file}")" || return 1
+  jq -e --argjson raw "${raw}" '
+    .invalid_rows == 0 and (.rows | length) == ($raw | length)
+  ' <<<"${parsed}" >/dev/null 2>&1
+}
+
+_build_reviewer_history_entry() {
+  local history_verdict="${1:-}" findings='[]' rows revision objective_ts
+  local objective_revision cycle lifecycle
+  if [[ -n "${review_message}" ]]; then
+    rows="$(extract_findings_json "${review_message}" 2>/dev/null || true)"
+    if [[ -n "${rows}" ]]; then
+      findings="$(printf '%s\n' "${rows}" | jq -sc '.')" || return 1
+    fi
+  fi
+  revision="$(jq -r '.review_revision // .code_revision // .edit_revision // 0' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  [[ "${revision}" =~ ^[0-9]+$ ]] || revision=0
+  objective_ts="$(jq -r '.objective_prompt_ts // 0' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  [[ "${objective_ts}" =~ ^[0-9]+$ ]] || objective_ts=0
+  objective_revision="$(jq -r '.objective_prompt_revision // 0' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  [[ "${objective_revision}" =~ ^[0-9]+$ ]] || objective_revision=0
+  cycle="$(jq -r '.objective_cycle_id // 0' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  [[ "${cycle}" =~ ^[0-9]+$ ]] || cycle=0
+  lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  _review_history_entry_staged="$(jq -nc \
+    --argjson ts "${now_ts}" --argjson objective_prompt_ts "${objective_ts}" \
+    --argjson objective_prompt_revision "${objective_revision}" \
+    --argjson objective_cycle_id "${cycle}" \
+    --arg reviewer_type "${REVIEWER_TYPE}" --arg agent_type "${AGENT_TYPE}" \
+    --arg verdict "${history_verdict}" --argjson revision "${revision}" \
+    --arg lifecycle_dispatch_id "${lifecycle}" --argjson findings "${findings}" \
+    '{ts:$ts,objective_prompt_ts:$objective_prompt_ts,
+      objective_prompt_revision:$objective_prompt_revision,
+      objective_cycle_id:$objective_cycle_id,reviewer_type:$reviewer_type,
+      agent_type:$agent_type,verdict:$verdict,revision:$revision,
+      lifecycle_dispatch_id:$lifecycle_dispatch_id,findings:$findings}')" || return 1
+}
+
+_reviewer_completion_digest() {
+  local safe_message
+  safe_message="$(printf '%s' "${review_message}" \
+    | omc_redact_secrets | tr -d '\000')" || return 1
+  _omc_token_digest "${safe_message}"
+}
+
+_stage_reviewer_publication_receipt_unlocked() {
+  local status="${1:-}" reason="${2:-}" result_revision="${3:-}"
+  local lifecycle native start_revision completion_digest terminal_verdict
+  local receipts_file source temp live_ids='[]' ledger entry
+  local pending_ledger starts_ledger waiters_ledger waiters waiter_ids
+  [[ "${status}" == "accepted" || "${status}" == "rejected" ]] || return 1
+  lifecycle="$(jq -r '.lifecycle_dispatch_id // empty' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  native="$(jq -r '.native_agent_id // empty' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  start_revision="$(jq -r '.review_revision // empty' \
+    <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  completion_digest="$(_reviewer_completion_digest)" || return 1
+  terminal_verdict=""
+  if [[ "${_review_final_line:-}" =~ ^VERDICT:[[:space:]]*([A-Z_]+) ]]; then
+    terminal_verdict="${BASH_REMATCH[1]}"
+  fi
+  [[ "${lifecycle}" =~ ^dispatch-[A-Za-z0-9._:-]{8,80}$ \
+      && "${native}" =~ ^[A-Za-z0-9._:-]{0,128}$ \
+      && "${start_revision}" =~ ^[0-9]+$ \
+      && "${result_revision}" =~ ^[0-9]+$ \
+      && "${completion_digest}" =~ ^[A-Fa-f0-9]{16,128}$ \
+      && "${terminal_verdict}" =~ ^[A-Z_]{0,32}$ ]] || return 1
+  receipts_file="$(session_file "reviewer_publication_outcomes.jsonl")"
+  [[ ! -L "${receipts_file}" ]] \
+    && { [[ ! -e "${receipts_file}" ]] || [[ -f "${receipts_file}" ]]; } \
+    || return 1
+  pending_ledger="$(session_file "pending_agents.jsonl")"
+  starts_ledger="$(session_file "agent_dispatch_starts.jsonl")"
+  for ledger in "${pending_ledger}" "${starts_ledger}"; do
+    [[ ! -L "${ledger}" ]] || return 1
+    if [[ -f "${ledger}" ]]; then
+      if [[ "${ledger}" == "${pending_ledger}" ]]; then
+        # pending_agents is a compatibility queue, not receipt authority.
+        # Preserve unrelated malformed legacy noise while deriving live IDs
+        # from exact object rows; the stateful start ledger below remains
+        # strict and keeps every reviewer receipt correlation fail-closed.
+        live_ids="$(jq -Rsc --argjson prior "${live_ids}" '
+          ($prior + [split("\n")[] | select(length > 0)
+            | (try fromjson catch null) | select(type == "object")
+            | .lifecycle_dispatch_id // empty])
+          | map(select(type == "string" and length > 0)) | unique
+        ' "${ledger}")" || return 1
+      else
+        jq -Rse '
+          [split("\n")[] | select(length > 0)
+            | (try fromjson catch null)] | all(.[]; type == "object")
+        ' "${ledger}" >/dev/null 2>&1 || return 1
+        live_ids="$(jq -Rsc --argjson prior "${live_ids}" '
+          ($prior + [split("\n")[] | select(length > 0)
+            | fromjson | .lifecycle_dispatch_id // empty])
+          | map(select(type == "string" and length > 0)) | unique
+        ' "${ledger}")" || return 1
+      fi
+    fi
+  done
+  # Re-check summary-waiter authority under the publication lock. A sibling
+  # callback can pass its entry recovery barrier, then lose a race to another
+  # process that consumes its causal rows and dies after leaving an exact
+  # waiter+receipt pair. That receipt remains roll-forward authority even
+  # though it no longer appears in pending/start.
+  waiters_ledger="$(session_file "reviewer_summary_waiters.jsonl")"
+  [[ ! -L "${waiters_ledger}" ]] \
+    && { [[ ! -e "${waiters_ledger}" ]] || [[ -f "${waiters_ledger}" ]]; } \
+    || return 1
+  if [[ -s "${waiters_ledger}" ]]; then
+    waiters="$(omc_summary_waiter_ledger_json_unlocked \
+      reviewer "${waiters_ledger}")" || return 1
+    waiter_ids="$(jq -c '[.[].lifecycle_dispatch_id] | unique' \
+      <<<"${waiters}" 2>/dev/null)" || return 1
+    live_ids="$(jq -cn --argjson prior "${live_ids}" \
+      --argjson waiters "${waiter_ids}" '
+        ($prior + $waiters) | unique
+      ')" || return 1
+  fi
+  entry="$(jq -cnS \
+    --argjson schema_version 1 --argjson decided_at "${now_ts}" \
+    --arg lifecycle_dispatch_id "${lifecycle}" --arg agent_type "${AGENT_TYPE}" \
+    --arg reviewer_type "${REVIEWER_TYPE}" --arg native_agent_id "${native}" \
+    --arg completion_digest "${completion_digest}" --arg status "${status}" \
+    --arg reason "${reason}" --arg verdict "${terminal_verdict}" \
+    --argjson start_review_revision "${start_revision}" \
+    --argjson result_review_revision "${result_revision}" '
+      {schema_version:$schema_version,decided_at:$decided_at,
+       lifecycle_dispatch_id:$lifecycle_dispatch_id,agent_type:$agent_type,
+       reviewer_type:$reviewer_type,native_agent_id:$native_agent_id,
+       completion_digest:$completion_digest,status:$status,reason:$reason,
+       verdict:$verdict,start_review_revision:$start_review_revision,
+       result_review_revision:$result_review_revision}
+    ')" || return 1
+  source="${receipts_file}"
+  [[ -f "${source}" ]] || source="/dev/null"
+  temp="$(mktemp "$(session_file ".reviewer-publication.stage.XXXXXX")")" \
+    || return 1
+  chmod 600 "${temp}" 2>/dev/null || {
+    rm -f "${temp}" 2>/dev/null || true
+    return 1
+  }
+  if ! jq -Rsr --argjson entry "${entry}" --argjson live "${live_ids}" '
+      def valid:
+        type == "object" and .schema_version == 1
+        and (keys | sort == ["agent_type","completion_digest","decided_at",
+          "lifecycle_dispatch_id","native_agent_id","reason",
+          "result_review_revision","reviewer_type","schema_version",
+          "start_review_revision","status","verdict"])
+        and (.decided_at | type == "number" and . >= 0
+          and . <= 999999999999999 and floor == .)
+        and (.lifecycle_dispatch_id | type == "string"
+          and test("^dispatch-[A-Za-z0-9._:-]{8,80}$"))
+        and (.agent_type | type == "string" and length > 0 and length <= 128)
+        and (.reviewer_type | type == "string" and length > 0 and length <= 64)
+        and (.native_agent_id | type == "string" and length <= 128
+          and test("^[A-Za-z0-9._:-]*$"))
+        and (.completion_digest | type == "string"
+          and test("^[A-Fa-f0-9]{16,128}$"))
+        and (.status | IN("accepted","rejected"))
+        and (.reason | type == "string" and length <= 256)
+        and (.verdict | type == "string" and length <= 32
+          and test("^[A-Z_]*$"))
+        and (.start_review_revision | type == "number" and . >= 0
+          and . <= 999999999999999 and floor == .)
+        and (.result_review_revision | type == "number" and . >= 0
+          and . <= 999999999999999 and floor == .);
+      [split("\n")[] | select(length > 0)
+        | (try fromjson catch null)] as $rows
+      | if all($rows[]; valid) | not then error("invalid receipt ledger")
+        elif any($rows[];
+          .lifecycle_dispatch_id == $entry.lifecycle_dispatch_id) then
+          error("duplicate lifecycle receipt")
+        else
+          ([$rows[] | select(.lifecycle_dispatch_id as $id
+              | ($live | index($id)) != null)] + [$entry]) as $kept
+          | if ($kept | length) > 128 then error("live receipt cap")
+            else $kept[] | @json end
+        end
+    ' "${source}" >"${temp}"; then
+    rm -f "${temp}" 2>/dev/null || true
+    return 1
+  fi
+  _reviewer_receipt_staged="${temp}"
+}
+
 # Publish one current, artifact-grounded evidence row per reviewer reference
 # and a translated frontier receipt. This runs only after causal reviewer
 # validation, under the session lock. The surrounding transaction snapshots
@@ -409,6 +1896,7 @@ _publish_quality_review_unlocked() {
   local receipts_file receipts receipt used_receipts='[]' used_proofs='[]' threshold
   local assessment criterion_id criterion axis criterion_class status result kind basis
   local ref ref_index evidence_id receipt_id proof_identity matching_criterion_ids
+  local expected_proof_identity=""
   local receipt_outcome receipt_tool observation_bearing
   local evidence_row all_evidence_ids='[]'
   local review_open material bar materiality weakest_axis required_count current_count
@@ -420,11 +1908,15 @@ _publish_quality_review_unlocked() {
   local prior_review_receipt_ids='[]' prior_criterion_receipts='{}'
   local prior_receipt_ids='[]' prior_receipt_id="" prior_receipt=""
   local prior_proof_identity="" new_receipt_id="" new_receipt=""
-  local new_proof_identity="" prior_receipt_index=-1 new_receipt_index=-1
+  local new_proof_identity=""
+  local prior_receipt_index=-1 new_receipt_index=-1
 
   [[ "${REVIEWER_TYPE}" == "excellence" \
       && "${_review_quality_required}" == "1" ]] || {
     _quality_review_state_args=()
+    _quality_review_staged_evidence=""
+    _quality_review_staged_frontier=""
+    _quality_review_staged_history=""
     return 0
   }
   [[ -n "${_review_quality_payload}" && -n "${_review_quality_contract}" ]] || return 1
@@ -455,7 +1947,8 @@ _publish_quality_review_unlocked() {
   _quality_contract_receipts_schema_valid "${receipts}" || {
     _quality_review_receipt_failure="receipt-ledger-schema-invalid"; return 1;
   }
-  threshold="${OMC_VERIFY_CONFIDENCE_THRESHOLD:-40}"
+  threshold="$(jq -r '.verification_threshold // 40' \
+    <<<"${_review_quality_contract}" 2>/dev/null || printf '40')"
   [[ "${threshold}" =~ ^[0-9]+$ && "${threshold}" -le 100 ]] || threshold=40
   evidence_tmp="$(mktemp "${evidence_file}.tmp.XXXXXX")" || return 1
   frontier_tmp="$(mktemp "${frontier_file}.tmp.XXXXXX")" || {
@@ -538,8 +2031,16 @@ _publish_quality_review_unlocked() {
         _quality_review_receipt_failure="receipt-criterion-ambiguous:${ref}:${criterion_id}"
         rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1
       fi
-      quality_contract_receipt_matches_criterion "${receipt}" "${criterion}" || {
+      quality_contract_receipt_matches_criterion \
+        "${receipt}" "${criterion}" "${threshold}" || {
         _quality_review_receipt_failure="receipt-does-not-match-criterion:${ref}:${criterion_id}"
+        rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
+      }
+      expected_proof_identity="$(_quality_contract_receipt_expected_proof_identity_for_contract \
+        "${receipt}" "${_review_quality_contract}" 2>/dev/null || true)"
+      [[ -n "${expected_proof_identity}" \
+          && "${proof_identity}" == "${expected_proof_identity}" ]] || {
+        _quality_review_receipt_failure="receipt-proof-identity-mismatch:${ref}:${criterion_id}"
         rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
       }
       receipt_id="${ref}"
@@ -883,8 +2384,16 @@ _publish_quality_review_unlocked() {
             || ! "${new_receipt_index}" =~ ^[0-9]+$ \
             || "${new_receipt_index}" -le "${prior_receipt_index}" \
             || -z "${prior_proof_identity}" \
-            || -z "${new_proof_identity}" \
-            || "${new_proof_identity}" == "${prior_proof_identity}" ]]; then
+            || -z "${new_proof_identity}" ]] \
+            || ! _quality_contract_counterproof_is_distinct \
+              "${prior_receipt}" "${new_receipt}"; then
+          # A fresh tool ID alone is not counterevidence. A rerun of the
+          # frozen semantic surface is eligible only for observation-bearing
+          # tools whose content-bearing artifact and full observed result both
+          # changed. Assertion-bearing proof must use a genuinely different
+          # semantic surface. This preserves canonical proof authority without
+          # letting receipt-ID churn or incidental test chatter clear a
+          # material frontier.
           _quality_review_receipt_failure="open-frontier-counterproof-not-new:${criterion_id}"
           rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
           return 1
@@ -894,20 +2403,37 @@ _publish_quality_review_unlocked() {
   fi
 
   if [[ -f "${history_file}" ]]; then
+    # Validate history only at its publication boundary. The current
+    # frontier/evidence pair remains primary causal authority after additive
+    # re-contracting, so it must first be able to reject same-proof clearance
+    # with actionable retained-call feedback even when this redundant audit
+    # sidecar is malformed. A valid clearance still fails closed here before
+    # any staged artifact can be published.
+    if ! _quality_frontier_history_appendable "${history_file}"; then
+      rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+      return 1
+    fi
     _history_frontier_status="$(quality_frontier_history_last_status_for_cycle \
       "${history_file}" "${cycle}" 2>/dev/null || true)"
     [[ -n "${_history_frontier_status}" ]] \
       && prior_frontier_status="${_history_frontier_status}"
-    tail -n 63 "${history_file}" >"${history_tmp}" 2>/dev/null || true
+    if [[ "${OMC_TEST_REVIEWER_HISTORY_TAIL_FAULT:-0}" == "1" ]] \
+        || ! tail -n 63 "${history_file}" \
+          >"${history_tmp}" 2>/dev/null; then
+      rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"
+      return 1
+    fi
   fi
   printf '%s\n' "${frontier_json}" >>"${history_tmp}" || {
     rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
   }
-  mv -f "${evidence_tmp}" "${evidence_file}" \
-    && mv -f "${frontier_tmp}" "${frontier_file}" \
-    && mv -f "${history_tmp}" "${history_file}" || {
-      rm -f "${evidence_tmp}" "${frontier_tmp}" "${history_tmp}"; return 1;
-    }
+  # Do not publish here. The caller first seals these exact bytes into the
+  # lifecycle-bound reviewer WAL, then the idempotent roll-forward path lands
+  # evidence, frontier, history, state, and causal-ledger consumption. A killed
+  # hook can therefore resume without regenerating timestamps or proof IDs.
+  _quality_review_staged_evidence="${evidence_tmp}"
+  _quality_review_staged_frontier="${frontier_tmp}"
+  _quality_review_staged_history="${history_tmp}"
 
   # Release-visible taxonomy: classify the accepted frontier transition only
   # after every authoritative artifact landed. The caller emits the event
@@ -964,17 +2490,21 @@ _commit_reviewer_result() {
   _review_rejection_reason=""
   _review_rejection_start=""
   _review_rejection_current=""
-  _consume_reviewer_dispatch_start_unlocked
+  _select_reviewer_dispatch_start_unlocked || return 1
   local _current_revision _start_revision="" _tracking_version=""
   local _row_version="" _strict_tracking=0 _rejection_reason=""
   local _current_objective_ts="" _start_objective_ts=""
   local _start_objective_revision=""
   local _current_cycle_id=0 _start_cycle_id=0
-  local _stale_count=""
+  local _stale_count="" _lifecycle_id=""
   _current_revision="$(_review_current_revision)"
   _tracking_version="$(read_state "review_dispatch_tracking_version")"
   local _native_tracking_version=""
   _native_tracking_version="${_review_native_tracking_version:-$(read_state "native_agent_id_tracking_version")}"
+  if [[ -n "${_review_dispatch_start_json}" ]]; then
+    _lifecycle_id="$(jq -r '.lifecycle_dispatch_id // empty' \
+      <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
+  fi
 
   if [[ -n "${_tracking_version}" || "${_native_tracking_version}" == "1" \
       || "${_review_use_native_agent_id:-0}" -eq 1 \
@@ -1034,7 +2564,8 @@ _commit_reviewer_result() {
       _current_cycle_id="$(read_state "review_cycle_id")"
       [[ "${_current_cycle_id}" =~ ^[0-9]+$ ]] || _current_cycle_id=0
       [[ "${_start_cycle_id}" =~ ^[0-9]+$ ]] || _start_cycle_id=0
-      if [[ ! "${_start_revision}" =~ ^[0-9]+$ \
+      if [[ ! "${_lifecycle_id}" =~ ^[A-Za-z0-9._:-]{1,128}$ \
+          || ! "${_start_revision}" =~ ^[0-9]+$ \
           || ! "${_start_objective_ts}" =~ ^[0-9]+$ \
           || ! "${_start_objective_revision}" =~ ^[0-9]+$ ]]; then
         _rejection_reason="invalid_start_snapshot"
@@ -1096,16 +2627,42 @@ _commit_reviewer_result() {
   if [[ -n "${_rejection_reason}" ]]; then
     _stale_count="$(read_state "stale_reviewer_count")"
     [[ "${_stale_count}" =~ ^[0-9]+$ ]] || _stale_count=0
-    _write_state_batch_unlocked \
+    _review_rejection_reason="${_rejection_reason}"
+    _review_rejection_start="${_start_revision}"
+    _review_rejection_current="${_current_revision}"
+    local _rejection_state_args=(
       "last_stale_reviewer_type" "${REVIEWER_TYPE}" \
       "last_stale_reviewer_ts" "${now_ts}" \
       "last_stale_reviewer_reason" "${_rejection_reason}" \
       "last_stale_reviewer_start_revision" "${_start_revision}" \
       "last_stale_reviewer_current_revision" "${_current_revision}" \
       "stale_reviewer_count" "$((_stale_count + 1))"
-    _review_rejection_reason="${_rejection_reason}"
-    _review_rejection_start="${_start_revision}"
-    _review_rejection_current="${_current_revision}"
+    )
+    if [[ "${_lifecycle_id}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+      local _rejection_patch
+      _stage_reviewer_publication_receipt_unlocked \
+        "rejected" "${_rejection_reason}" "${_current_revision}" || return 1
+      _rejection_patch="$(_reviewer_state_patch_from_args \
+        "${_rejection_state_args[@]}")" || {
+        _cleanup_quality_review_staging
+        return 1
+      }
+      if ! _prepare_reviewer_transaction_unlocked \
+          "rejected" "${_rejection_patch}" ""; then
+        _cleanup_quality_review_staging
+        return 1
+      fi
+      _cleanup_quality_review_staging
+      _apply_reviewer_transaction_unlocked || return 1
+    else
+      _write_state_batch_unlocked "${_rejection_state_args[@]}" || return 1
+      # Legacy compatibility rows predate lifecycle IDs. Preserve their old
+      # completion semantics, but still make the exact deletion atomic.
+      if [[ -n "${_review_dispatch_start_json}" ]]; then
+        rewrite_jsonl_line_atomic "$(session_file "agent_dispatch_starts.jsonl")" \
+          "${_review_dispatch_start_json}" "" || return 1
+      fi
+    fi
     return 0
   fi
 
@@ -1143,110 +2700,107 @@ _commit_reviewer_result() {
   if (( ${#_quality_review_state_args[@]} > 0 )); then
     _all_state_args+=("${_quality_review_state_args[@]}")
   fi
-  _write_state_batch_unlocked "${_all_state_args[@]}"
+  _build_reviewer_history_entry "${dimension_verdict}" || {
+    _cleanup_quality_review_staging
+    return 1
+  }
+  if [[ "${_lifecycle_id}" =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+    local _accepted_patch
+    _stage_reviewer_publication_receipt_unlocked \
+      "accepted" "" "${_current_revision}" || {
+      _cleanup_quality_review_staging
+      return 1
+    }
+    _accepted_patch="$(_reviewer_state_patch_from_args \
+      "${_all_state_args[@]}")" || {
+      _cleanup_quality_review_staging
+      return 1
+    }
+    if ! _prepare_reviewer_transaction_unlocked \
+        "accepted" "${_accepted_patch}" "${_review_history_entry_staged}"; then
+      _cleanup_quality_review_staging
+      return 1
+    fi
+    _cleanup_quality_review_staging
+    _apply_reviewer_transaction_unlocked || return 1
+  else
+    # No tracked start is the explicit legacy migration path. Armed
+    # Definition reviews are never allowed here because their evidence must be
+    # bound to a real lifecycle_dispatch_id.
+    if [[ -n "${_quality_review_staged_evidence:-}" ]]; then
+      _cleanup_quality_review_staging
+      return 1
+    fi
+    _write_state_batch_unlocked "${_all_state_args[@]}" || return 1
+    _append_limited_state_locked "$(session_file "review_history.jsonl")" \
+      "${_review_history_entry_staged}" "32" || return 1
+    if [[ -n "${_review_dispatch_start_json}" ]]; then
+      rewrite_jsonl_line_atomic "$(session_file "agent_dispatch_starts.jsonl")" \
+        "${_review_dispatch_start_json}" "" || return 1
+    fi
+  fi
   _review_commit_accepted=1
 }
 
-_quality_review_transaction_artifacts() {
-  printf '%s\n' \
-    session_state.json \
-    pending_agents.jsonl \
-    agent_dispatch_starts.jsonl \
-    quality_evidence.jsonl \
-    quality_frontier.json \
-    quality_frontier_history.jsonl
-}
-
-_snapshot_quality_review_transaction_unlocked() {
-  local dir="$1" artifact path
-  while IFS= read -r artifact; do
-    [[ -n "${artifact}" ]] || continue
-    path="$(session_file "${artifact}")"
-    if [[ -L "${path}" ]]; then
-      : >"${dir}/${artifact}.other" || return 1
-    elif [[ -f "${path}" ]]; then
-      cp "${path}" "${dir}/${artifact}.file" || return 1
-    elif [[ ! -e "${path}" ]]; then
-      : >"${dir}/${artifact}.absent" || return 1
-    else
-      : >"${dir}/${artifact}.other" || return 1
-    fi
-  done < <(_quality_review_transaction_artifacts)
-}
-
-_validate_quality_review_transaction_targets_unlocked() {
-  local artifact path
-  while IFS= read -r artifact; do
-    [[ -n "${artifact}" ]] || continue
-    path="$(session_file "${artifact}")"
-    if [[ -L "${path}" ]] \
-      || { [[ -e "${path}" ]] && [[ ! -f "${path}" ]]; }; then
-      log_anomaly "record-reviewer" \
-        "refusing non-regular Definition transaction artifact at ${path}"
-      return 1
-    fi
-  done < <(_quality_review_transaction_artifacts)
-}
-
-_restore_quality_review_transaction_unlocked() {
-  local dir="$1" artifact path tmp rc=0
-  while IFS= read -r artifact; do
-    [[ -n "${artifact}" ]] || continue
-    path="$(session_file "${artifact}")"
-    if [[ -f "${dir}/${artifact}.file" ]]; then
-      if [[ -L "${path}" ]] \
-        || { [[ -e "${path}" ]] && [[ ! -f "${path}" ]]; }; then
-        rc=1
-        continue
-      fi
-      tmp="$(mktemp "${path}.restore.XXXXXX")" || { rc=1; continue; }
-      chmod 600 "${tmp}" 2>/dev/null || true
-      if ! cp "${dir}/${artifact}.file" "${tmp}" \
-        || ! mv -f "${tmp}" "${path}"; then
-        rm -f "${tmp}" 2>/dev/null || true
-        rc=1
-      fi
-    elif [[ -f "${dir}/${artifact}.absent" ]]; then
-      if [[ -L "${path}" ]]; then
-        rc=1
-      elif [[ -f "${path}" ]]; then
-        rm -f "${path}" || rc=1
-      elif [[ -e "${path}" ]]; then
-        rc=1
-      fi
-    else
-      rc=1
-    fi
-  done < <(_quality_review_transaction_artifacts)
-  return "${rc}"
-}
-
 _commit_reviewer_transaction_unlocked() {
-  # Existing reviewers retain their lean single-file path. Only an armed
-  # excellence return owns the multi-artifact Definition transaction.
-  if [[ "${REVIEWER_TYPE}" != "excellence" \
-      || "${_review_quality_required}" != "1" ]]; then
-    _commit_reviewer_result "$@"
-    return
+  # Recover the one durable in-flight lifecycle before admitting another. If
+  # this callback is a replay of that same native completion, recovery itself
+  # satisfies the callback and must not write a second verdict/history row.
+  _recover_reviewer_transaction_unlocked || return 1
+  if [[ "${_reviewer_recovery_satisfied_current:-0}" -eq 1 ]]; then
+    _collect_reviewer_summary_replays_unlocked || return 1
+    return 0
   fi
-  local snapshot_dir rc=0 restore_rc=0
-  _validate_quality_review_transaction_targets_unlocked || return 1
-  snapshot_dir="$(mktemp -d "$(session_file ".quality-review-txn.XXXXXX")")" \
-    || return 1
-  if ! _snapshot_quality_review_transaction_unlocked "${snapshot_dir}"; then
-    rm -f "${snapshot_dir}"/* 2>/dev/null || true
-    rmdir "${snapshot_dir}" 2>/dev/null || true
-    return 1
-  fi
-  _commit_reviewer_result "$@" || rc=$?
-  if [[ "${rc}" -ne 0 ]]; then
-    _restore_quality_review_transaction_unlocked "${snapshot_dir}" || restore_rc=$?
-  fi
-  rm -f "${snapshot_dir}"/* 2>/dev/null || true
-  rmdir "${snapshot_dir}" 2>/dev/null || true
-  [[ "${restore_rc}" -eq 0 ]] || return "${restore_rc}"
-  return "${rc}"
+  _commit_reviewer_result "$@" || return 1
+  # Receipt/WAL retirement and universal-summary replay are deliberately two
+  # phases. Inject this boundary so process-death tests prove the next
+  # lifecycle reconciliation can settle a summary-first waiter even though no
+  # active WAL remains to trigger the ordinary recovery guard.
+  _reviewer_transaction_boundary "transaction_committed" || return 1
+  _collect_reviewer_summary_replays_unlocked
 }
+
+if [[ "${_reviewer_recover_active_mode}" -eq 1 ]]; then
+  _recover_active_reviewer_unlocked() {
+    _recover_reviewer_transaction_unlocked || return 1
+    _collect_reviewer_summary_replays_unlocked
+  }
+  with_state_lock_publication_recovery \
+    _recover_active_reviewer_unlocked || exit 1
+  # Defense in depth for every lifecycle caller: a successful internal
+  # recovery means the fixed publication authority is actually retired.
+  [[ ! -e "${_reviewer_active_wal}" \
+      && ! -L "${_reviewer_active_wal}" ]] || exit 1
+  while IFS= read -r _reviewer_replay_row; do
+    [[ -n "${_reviewer_replay_row}" ]] || continue
+    _reviewer_replay_agent="$(jq -r '.agent_type // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    _reviewer_replay_native_id="$(jq -r '.native_agent_id // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    _reviewer_replay_message="$(jq -r '.message // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    _reviewer_replay_claim="$(jq -r '.completion_claim_id // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    [[ -n "${_reviewer_replay_agent}" \
+        && -n "${_reviewer_replay_message}" ]] || continue
+    [[ -z "${_reviewer_replay_claim}" \
+        || "${_reviewer_replay_claim}" \
+          =~ ^completion-[A-Za-z0-9._:-]{8,160}$ ]] || exit 1
+    jq -nc \
+      --arg sid "${SESSION_ID}" --arg agent "${_reviewer_replay_agent}" \
+      --arg native_id "${_reviewer_replay_native_id}" \
+      --arg message "${_reviewer_replay_message}" '
+        {session_id:$sid,agent_type:$agent,
+         last_assistant_message:$message,stop_hook_active:false}
+        + if $native_id == "" then {} else {agent_id:$native_id} end
+      ' | OMC_REVIEWER_SUMMARY_REPLAY=1 \
+        OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+        OMC_PUBLICATION_RECOVERY_CLAIM_ID="${_reviewer_replay_claim}" \
+        bash "${SCRIPT_DIR}/record-subagent-summary.sh" \
+        >/dev/null 2>&1 || exit 1
+  done < <(jq -c '.[]' <<<"${_reviewer_summary_replays}" 2>/dev/null || true)
+  exit 0
+fi
 
 dimension_verdict="FINDINGS"
 [[ "${has_findings}" == "false" ]] && dimension_verdict="CLEAN"
@@ -1333,6 +2887,47 @@ else
     "dimension_guard_blocks" "0"
 fi
 
+# Summary-first order leaves a redacted lifecycle waiter and no universal side
+# effects. Once the dedicated reviewer receipt is the last WAL publication,
+# replay only the exact lifecycle/native/message digest. The summary hook's
+# durable pending claim makes concurrent platform delivery and replay one-shot.
+if [[ "${OMC_REVIEWER_SUMMARY_REPLAY:-0}" != "1" \
+    && "${_reviewer_summary_replays:-[]}" != "[]" ]]; then
+  while IFS= read -r _reviewer_replay_row; do
+    [[ -n "${_reviewer_replay_row}" ]] || continue
+    _reviewer_replay_agent="$(jq -r '.agent_type // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    _reviewer_replay_native_id="$(jq -r '.native_agent_id // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    _reviewer_replay_message="$(jq -r '.message // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    _reviewer_replay_claim="$(jq -r '.completion_claim_id // empty' \
+      <<<"${_reviewer_replay_row}" 2>/dev/null || true)"
+    [[ -n "${_reviewer_replay_agent}" \
+        && -n "${_reviewer_replay_message}" ]] || continue
+    if [[ -n "${_reviewer_replay_claim}" \
+        && ! "${_reviewer_replay_claim}" \
+          =~ ^completion-[A-Za-z0-9._:-]{8,160}$ ]]; then
+      log_anomaly "record-reviewer" \
+        "invalid deferred summary claim agent=${_reviewer_replay_agent}"
+      continue
+    fi
+    jq -nc \
+      --arg sid "${SESSION_ID}" --arg agent "${_reviewer_replay_agent}" \
+      --arg native_id "${_reviewer_replay_native_id}" \
+      --arg message "${_reviewer_replay_message}" '
+        {session_id:$sid,agent_type:$agent,
+         last_assistant_message:$message,stop_hook_active:false}
+        + if $native_id == "" then {} else {agent_id:$native_id} end
+      ' | OMC_REVIEWER_SUMMARY_REPLAY=1 \
+        OMC_PUBLICATION_RECOVERY_INTERNAL=1 \
+        OMC_PUBLICATION_RECOVERY_CLAIM_ID="${_reviewer_replay_claim}" \
+        bash "${SCRIPT_DIR}/record-subagent-summary.sh" \
+        >/dev/null 2>&1 || log_anomaly "record-reviewer" \
+          "deferred reviewer summary replay failed agent=${_reviewer_replay_agent}"
+  done < <(jq -c '.[]' <<<"${_reviewer_summary_replays}" 2>/dev/null || true)
+fi
+
 if [[ "${_review_commit_accepted:-0}" -ne 1 ]]; then
   log_hook "record-reviewer" \
     "discarded ${REVIEWER_TYPE} result reason=${_review_rejection_reason:-unknown} start_revision=${_review_rejection_start:-missing} current_revision=${_review_rejection_current:-missing}"
@@ -1358,53 +2953,10 @@ if [[ "${REVIEWER_TYPE}" == "excellence" \
     2>/dev/null || true
 fi
 
-# Keep bounded, structured evidence for reporting and future role-aware
-# consumers. quality-reviewer currently has the explicit remediation contract:
-# it may read its newest same-role row on re-dispatch, prove each prior finding
-# fixed, and focus on the remediation hunks before widening when contracts or
-# surfaces changed. Other reviewers (especially prose-native editor-critic) are
-# not instructed to consume this sidecar. History never ticks a dimension.
-_review_history_findings="[]"
-if [[ -n "${review_message}" ]]; then
-  _review_history_rows="$(extract_findings_json "${review_message}" 2>/dev/null || true)"
-  if [[ -n "${_review_history_rows}" ]]; then
-    _review_history_findings="$(printf '%s\n' "${_review_history_rows}" | jq -sc '.')"
-  fi
-fi
-_review_history_revision="$(jq -r \
-  '.review_revision // .code_revision // .edit_revision // 0' \
-  <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
-[[ "${_review_history_revision}" =~ ^[0-9]+$ ]] || _review_history_revision=0
-_review_history_objective_ts="$(jq -r '.objective_prompt_ts // 0' \
-  <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
-[[ "${_review_history_objective_ts}" =~ ^[0-9]+$ ]] || _review_history_objective_ts=0
-_review_history_objective_revision="$(jq -r '.objective_prompt_revision // 0' \
-  <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
-[[ "${_review_history_objective_revision}" =~ ^[0-9]+$ ]] \
-  || _review_history_objective_revision=0
-_review_history_cycle_id="$(jq -r '.objective_cycle_id // 0' \
-  <<<"${_review_dispatch_start_json}" 2>/dev/null || true)"
-[[ "${_review_history_cycle_id}" =~ ^[0-9]+$ ]] || _review_history_cycle_id=0
-_review_history_entry="$(jq -nc \
-  --argjson ts "${now_ts}" \
-  --argjson objective_prompt_ts "${_review_history_objective_ts}" \
-  --argjson objective_prompt_revision "${_review_history_objective_revision}" \
-  --argjson objective_cycle_id "${_review_history_cycle_id}" \
-  --arg reviewer_type "${REVIEWER_TYPE}" \
-  --arg agent_type "${AGENT_TYPE}" \
-  --arg verdict "${dimension_verdict}" \
-  --argjson revision "${_review_history_revision}" \
-  --argjson findings "${_review_history_findings}" \
-  '{ts:$ts,objective_prompt_ts:$objective_prompt_ts,
-    objective_prompt_revision:$objective_prompt_revision,
-    objective_cycle_id:$objective_cycle_id,
-    reviewer_type:$reviewer_type,agent_type:$agent_type,
-    verdict:$verdict,revision:$revision,findings:$findings}')"
-_append_review_history_unlocked() {
-  append_limited_state "review_history.jsonl" "${_review_history_entry}" "32"
-}
-with_state_lock _append_review_history_unlocked || \
-  log_hook "record-reviewer" "review history append failed type=${REVIEWER_TYPE}"
+# The lifecycle-bound transaction has already appended the structured reviewer
+# history row (with its lifecycle_dispatch_id) exactly once. Keeping history in
+# the same WAL prevents a replay after SIGKILL from duplicating remediation
+# evidence or leaving an accepted dimension without its audit row.
 
 # --- Agent performance metric recording ---
 # Verdict only (v1.48 W3.5): the old third argument was a fabricated

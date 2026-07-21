@@ -28,14 +28,17 @@ _stop_dispatch_fail_closed() {
     # Shared state/locking failed to load, so mutating session_state.json here
     # would be an unlocked last-writer-wins overwrite. End this turn visibly,
     # preserve the addressed interval as active, and let the next prompt retry.
-    local candidate="" emergency_message
+    local candidate="" emergency_message emergency_hook_json
     # The outer trap may run before shared sanitizers were sourced. Never
     # replay terminal-controlled/model text raw merely to preserve a candidate;
     # omit it until the normal, sanitized continuation path is available.
     if declare -F omc_redact_secrets >/dev/null 2>&1 \
         && declare -F _omc_strip_render_unsafe >/dev/null 2>&1; then
+      emergency_hook_json="${HOOK_JSON:-}"
+      [[ -n "${emergency_hook_json}" ]] || emergency_hook_json='{}'
       candidate="$(
-        jq -r '.last_assistant_message // ""' <<<"${HOOK_JSON:-{}}" 2>/dev/null \
+        jq -r '.last_assistant_message // ""' \
+          <<<"${emergency_hook_json}" 2>/dev/null \
           | omc_redact_secrets \
           | _omc_strip_render_unsafe \
           || true
@@ -73,8 +76,59 @@ SCRIPT_DIR="${_omc_dispatch_source%/*}"
 [[ "${SCRIPT_DIR}" == "${_omc_dispatch_source}" ]] && SCRIPT_DIR="."
 SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
 unset _omc_dispatch_source
+
+# Bootstrap PATH before the first jq/state read. Caller PATH is repository-
+# influenced in common development shells; trusting a fake jq here can turn an
+# addressed active ULW Stop into an empty successful return before common.sh
+# has a chance to pin its observer path. Preserve only immutable Nix-store bins
+# (including trusted profile symlink resolutions) in addition to system bins.
+_dispatch_observer_path="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin"
+_OMC_HOOK_CALLER_PATH="${PATH:-}"
+export _OMC_HOOK_CALLER_PATH
+_dispatch_caller_path="${_OMC_HOOK_CALLER_PATH}"
+_dispatch_old_ifs="${IFS}"
+IFS=':'
+for _dispatch_path_entry in ${_dispatch_caller_path}; do
+  case "${_dispatch_path_entry}" in
+    /run/current-system/sw/bin|/nix/store/*/bin|\
+    "${HOME}"/.nix-profile/bin|"${HOME}"/.local/state/nix/profiles/*/bin|\
+    /etc/profiles/per-user/*/bin)
+      [[ -d "${_dispatch_path_entry}" ]] || continue
+      _dispatch_path_canonical="$(
+        cd "${_dispatch_path_entry}" 2>/dev/null && pwd -P
+      )" || continue
+      case "${_dispatch_path_canonical}" in
+        /nix/store/*/bin)
+          _dispatch_store_object="${_dispatch_path_canonical#/nix/store/}"
+          _dispatch_store_object="${_dispatch_store_object%/bin}"
+          [[ -n "${_dispatch_store_object}" \
+              && "${_dispatch_store_object}" != */* ]] || continue
+          case ":${_dispatch_observer_path}:" in
+            *":${_dispatch_path_canonical}:"*) ;;
+            *) _dispatch_observer_path="${_dispatch_observer_path}:${_dispatch_path_canonical}" ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+done
+IFS="${_dispatch_old_ifs}"
+PATH="${_dispatch_observer_path}"
+export PATH
+unset _dispatch_caller_path _dispatch_old_ifs _dispatch_path_entry \
+  _dispatch_path_canonical _dispatch_store_object
+
+# Imported functions resolve before PATH, and a BASH_ENV-provided alias can do
+# the same in shells that enable alias expansion.  Remove both before trusting
+# the pinned observer path.  The test-only switch exercises the dependency-
+# failure branch on developer machines where a trusted jq is always present;
+# forcing this branch can only make an active Stop fail closed.
+unset -f jq 2>/dev/null || true
+unalias jq 2>/dev/null || true
 HOOK_JSON="$(/bin/cat 2>/dev/null || true)"
-if ! command -v jq >/dev/null 2>&1 || ! jq -e . <<<"${HOOK_JSON}" >/dev/null 2>&1; then
+if [[ "${OMC_TEST_STOP_FORCE_JQ_FAILURE:-0}" == "1" ]] \
+    || ! command -v jq >/dev/null 2>&1 \
+    || ! jq -e . <<<"${HOOK_JSON}" >/dev/null 2>&1; then
   _dispatch_sid_pattern='"session_id"[[:space:]]*:[[:space:]]*"([a-zA-Z0-9_.-]{1,128})"'
   _dispatch_fallback_sid=""
   if [[ "${HOOK_JSON}" =~ ${_dispatch_sid_pattern} ]]; then
@@ -89,6 +143,17 @@ if ! command -v jq >/dev/null 2>&1 || ! jq -e . <<<"${HOOK_JSON}" >/dev/null 2>&
   fi
   exit 0
 fi
+# A syntactically valid JSON string may still decode to NUL. Reject the whole
+# Stop envelope before jq -r/Bash projection so an invalid identity cannot
+# address another session and malformed completion prose cannot be certified.
+if ! jq -e '
+    type == "object"
+    and all(.. | strings; index("\u0000") == null)
+  ' <<<"${HOOK_JSON}" >/dev/null 2>&1; then
+  printf '%s\n' \
+    '{"decision":"block","reason":"oh-my-claude Stop certification refused a malformed lifecycle payload containing a decoded NUL or non-object envelope; no session or completion authority was trusted."}'
+  exit 0
+fi
 SESSION_ID="$(jq -r '.session_id // ""' <<<"${HOOK_JSON}" 2>/dev/null || true)"
 [[ "${SESSION_ID:-}" =~ ^[a-zA-Z0-9_.-]{1,128}$ ]] || exit 0
 [[ "${SESSION_ID}" != *".."* && ! "${SESSION_ID}" =~ ^\.+$ ]] || exit 0
@@ -96,22 +161,29 @@ _dispatch_state_root="${STATE_ROOT:-${HOME}/.claude/quality-pack/state}"
 _dispatch_state_file="${_dispatch_state_root}/${SESSION_ID}/session_state.json"
 _dispatch_session_marker="${_dispatch_state_root}/${SESSION_ID}/.ulw_active"
 _dispatch_snapshot_valid=0
-_dispatch_snapshot="$(jq -r '
-  . as $state
-  | (($state.ulw_enforcement_active // "") | tostring) as $active
-  | (if ($state.workflow_mode // "") == "ultrawork" then
-      if $active == "1" then "on"
+_dispatch_snapshot="$(jq -er '
+  if type != "object"
+      or (all(.. | strings; index("\u0000") == null) | not) then
+    ["invalid", "migration"]
+  else
+    . as $state
+    | (($state.ulw_enforcement_active // "") | tostring) as $active
+    | (if ($state.workflow_mode // "") == "ultrawork" then
+        if $active == "1" then "on"
+        elif $active == "0" then "off"
+        elif ($state.session_outcome // "") == "" then "on"
+        else "off"
+        end
       elif $active == "0" then "off"
-      elif ($state.session_outcome // "") == "" then "on"
+      elif ($state.workflow_mode // "") == ""
+          and ($state.session_outcome // "") == "" then "unknown"
       else "off"
-      end
-    elif $active == "0" then "off"
-    elif ($state.workflow_mode // "") == ""
-        and ($state.session_outcome // "") == "" then "unknown"
-    else "off"
-    end) as $authority
-  | [$authority,
-     (($state.ulw_enforcement_generation // "migration") | tostring)]
+      end) as $authority
+    | (($state.ulw_enforcement_generation // "migration") | tostring) as $generation
+    | if ($generation | test("^(migration|0|[1-9][0-9]{0,17})$")) then
+        [$authority, $generation]
+      else ["invalid", "migration"] end
+  end
   | @tsv
 ' "${_dispatch_state_file}" 2>/dev/null \
   || printf '__OMC_INVALID_STATE__')"
@@ -123,6 +195,11 @@ fi
 IFS=$'\t' read -r _dispatch_authority _dispatch_initial_generation \
   <<<"${_dispatch_snapshot}"
 _dispatch_initial_generation="${_dispatch_initial_generation:-migration}"
+if [[ "${_dispatch_authority}" == "invalid" ]]; then
+  printf '%s\n' \
+    '{"decision":"block","reason":"oh-my-claude Stop certification refused malformed session authority containing decoded NUL data or an invalid enforcement generation; no completion was released."}'
+  exit 0
+fi
 if [[ "${_dispatch_authority}" == "on" \
     || ("${_dispatch_authority}" == "unknown" && -f "${_dispatch_session_marker}") ]]; then
   _OMC_DISPATCH_ULW=1
@@ -154,8 +231,30 @@ for _dispatch_bootstrap_file in "${_dispatch_bootstrap_files[@]}"; do
     _stop_dispatch_fail_closed 2
   fi
 done
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
+# Any retained Agent-admission transaction intent predates every Stop-side
+# write; `.ready` says only that its rollback snapshot finished copying.
+# Check it before `ensure_session_dir`: even state repair or a verified WAIT
+# marker update would advance authority around an admission whose pending/start
+# ledgers may be only partially committed. This response is deliberately
+# mutation-free; the exact /ulw-off lifecycle is the sole convergence path.
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  log_anomaly "stop-dispatch" \
+    "interrupted Agent admission journal blocks Stop dispatcher" \
+    2>/dev/null || true
+  jq -nc \
+    --arg reason "oh-my-claude Stop certification is paused because a prior Agent authorization was interrupted mid-transaction. No wait, continuation, provisional-closeout, or release state was committed. Run the exact /ulw-off reset, reactivate /ulw, and dispatch only the still-required role with a fresh identity." \
+    --arg message "oh-my-claude paused closeout while interrupted Agent admission remains unresolved." '
+      {decision:"block",reason:$reason,systemMessage:$message}
+    '
+  exit 0
+fi
 ensure_session_dir
+if [[ "${OMC_TEST_STOP_FAIL_AFTER_COMMON:-0}" == "1" ]]; then
+  false
+fi
 if [[ "${_dispatch_authority}" == "unknown" ]]; then
   # The exact per-session marker authorizes fail-closed recovery, but a
   # missing/corrupt/recovered metadata object is not authority to bind this old
@@ -212,11 +311,12 @@ _run_stop_child() {
 }
 
 _run_accepted_stop_child() {
-  local script="$1"
-  shift
+  local script="$1" claim_id="$2"
+  shift 2
   printf '%s' "${HOOK_JSON}" \
     | _OMC_ULW_CAPTURED_GENERATION="${_OMC_ULW_CAPTURED_GENERATION}" \
       OMC_STOP_ACCEPTED=1 \
+      OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${claim_id}" \
     bash "${SCRIPT_DIR}/${script}" "$@"
 }
 
@@ -237,6 +337,16 @@ _dispatch_remove_provisional_unlocked() {
   omc_enforcement_generation_matches_capture || return 1
   rm -f "$(session_file "provisional_closeouts.jsonl")" \
     2>/dev/null || true
+}
+
+# Stop payloads can remain queued while a prior ULW interval closes and a new
+# interval starts in the same session.  Every wait-path state mutation must
+# therefore compare the frozen interval again *after* acquiring the session
+# lock.  An unlocked `is_ultrawork_mode` check followed by `write_state` leaves
+# a check/use gap where an old Stop can clear the new interval's marker.
+_dispatch_clear_background_marker_unlocked() {
+  omc_enforcement_generation_matches_capture || return 1
+  _write_state_batch_unlocked "bg_work_dispatched_ts" ""
 }
 
 _stop_modern_feedback_supported() {
@@ -261,15 +371,33 @@ _stop_modern_feedback_supported() {
   (( patch >= 163 ))
 }
 
-_emit_compact_continuation() {
+_emit_compact_continuation_unlocked() {
   local full_reason="$1" candidate_policy="${2:-preserve}" context_override="${3:-}" user_message="${4:-}"
   local compact context continuation_result continuation_count continuation_status continuation_rc=0
   local degraded_candidate exhausted_message current_candidate latest_candidate platform_cap terminal_at expected_generation
+  # The complete continuation decision, including provisional capture and
+  # stdout publication, runs while the session lock excludes prompt rotation.
+  # Recheck the frozen interval at entry for re-entrant/error-path callers.
+  omc_enforcement_generation_matches_capture || return 0
   current_candidate=""
   if [[ "${candidate_policy}" == "preserve" ]]; then
     current_candidate="$(json_get '.last_assistant_message')"
     closeout_record_provisional "${current_candidate}" "1" || true
   fi
+  # Deterministic regression barrier after the first mutation-capable helper.
+  # A test may rotate the state file directly while paused; production prompt
+  # transitions cannot acquire this function's outer lock.
+  if [[ -n "${OMC_TEST_STOP_CONTINUATION_MUTATION_READY_FILE:-}" \
+      && -n "${OMC_TEST_STOP_CONTINUATION_MUTATION_RELEASE_FILE:-}" ]]; then
+    printf 'ready\n' >"${OMC_TEST_STOP_CONTINUATION_MUTATION_READY_FILE}"
+    _dispatch_continuation_mutation_test_count=0
+    while [[ ! -f "${OMC_TEST_STOP_CONTINUATION_MUTATION_RELEASE_FILE}" \
+        && "${_dispatch_continuation_mutation_test_count}" -lt 200 ]]; do
+      sleep 0.05
+      _dispatch_continuation_mutation_test_count=$((_dispatch_continuation_mutation_test_count + 1))
+    done
+  fi
+  omc_enforcement_generation_matches_capture || return 0
   expected_generation="$(closeout_readiness_fingerprint 2>/dev/null || true)"
   platform_cap="${CLAUDE_CODE_STOP_HOOK_BLOCK_CAP:-8}"
   if [[ "${platform_cap}" =~ ^[0-9]+$ ]]; then
@@ -356,6 +484,58 @@ _emit_compact_continuation() {
   fi
 }
 
+_emit_compact_continuation() {
+  local rc=0 full_reason="${1:-Closeout is not ready.}"
+  local candidate_policy="${2:-preserve}" current_candidate="" degraded_candidate
+  local exhausted_message
+  # Holding the state lock through the tiny stdout emission is intentional:
+  # otherwise G2 can begin after the last check but before Claude Code receives
+  # a stale G1 continuation. Re-entrant callers are handled by with_state_lock.
+  with_state_lock _emit_compact_continuation_unlocked "$@" || rc=$?
+  [[ "${rc}" -ne 0 ]] || return 0
+  omc_enforcement_generation_matches_capture || return 0
+  is_ultrawork_mode || return 0
+  if omc_publication_recovery_needed "${SESSION_ID}"; then
+    _emit_publication_recovery_pending
+    return 0
+  fi
+  # The mutex itself was unavailable, so continuation/provisional accounting
+  # cannot be committed. Preserve the current candidate in a mutation-free
+  # degraded receipt instead of losing it to the outer ERR fallback.
+  if [[ "${candidate_policy}" == "preserve" ]]; then
+    current_candidate="$(json_get '.last_assistant_message')"
+  fi
+  degraded_candidate="$(_closeout_degraded_candidate_block \
+    "${current_candidate}")"
+  printf -v exhausted_message '%s\n%s\n%s' \
+    "oh-my-claude · closeout paused because continuation accounting failed" \
+    "Unresolved: $(closeout_compact_gate_feedback "${full_reason}")" \
+    "The active quality interval was not closed. ${degraded_candidate:-No completion candidate was available to replay.}"
+  emit_stop_message "$(truncate_chars 9800 "${exhausted_message}")"
+}
+
+# A corrupt or otherwise unrecoverable publication journal must remain the
+# authority for its overlapping state.  The ordinary continuation helper
+# cannot be used in that case because it intentionally mutates provisional and
+# continuation accounting under the same publication fence.  Emit a small,
+# mutation-free Stop response so the active interval remains visibly closed
+# while the next lifecycle hook retries journal recovery.
+_emit_publication_recovery_pending() {
+  local context user_message
+  context="oh-my-claude closeout is paused because a subagent completion is still publishing evidence or its publication transaction still requires recovery. No wait recovery or continuation state was committed. Retry after the publication journal is repaired; do not abandon, rebind, or treat the pending evidence as accepted."
+  user_message="oh-my-claude paused closeout while subagent publication recovery remains pending."
+  if _stop_modern_feedback_supported; then
+    jq -nc --arg ctx "${context}" --arg msg "${user_message}" '
+      {hookSpecificOutput:{hookEventName:"Stop",additionalContext:$ctx},
+       systemMessage:$msg}
+    '
+  else
+    jq -nc --arg reason "${context}" --arg msg "${user_message}" '
+      {decision:"block",reason:$reason,systemMessage:$msg}
+    '
+  fi
+}
+
 # Claude Code terminates a turn after a bounded run of consecutive Stop
 # continuations. End one attempt earlier with an explicit, visible degraded
 # receipt so a display-suppressed candidate can never disappear behind the
@@ -367,6 +547,10 @@ _closeout_increment_dispatch_continuations_unlocked() {
   if [[ "${platform_cap}" =~ ^[0-9]+$ ]]; then platform_cap=$((10#${platform_cap})); else platform_cap=8; fi
   (( terminal_at > 0 )) || terminal_at=7
   (( platform_cap > 0 )) || platform_cap=8
+  if ! omc_enforcement_generation_matches_capture; then
+    printf '0|interval-changed'
+    return 0
+  fi
   if ! is_ultrawork_mode; then
     printf '0|interval-changed'
     return 0
@@ -442,6 +626,9 @@ _false_wait_recovery_context() {
   local wait_kind="$1" wait_message="${2:-}" pending_file pending_row="" agent_type="" native_id=""
   local claim_id="" claim_ts=0 claim_effects_complete=false now label="the required worker"
   local current_cycle_id current_objective_ts
+  # Called under the session lock. The payload's captured interval, not merely
+  # the currently active mode, owns pending-row interpretation and guidance.
+  omc_enforcement_generation_matches_capture || return 1
   is_ultrawork_mode || return 1
   if [[ "${wait_kind}" == "scheduled" ]]; then
     printf 'Claude Code reports no scheduled wake matching the promised check, so this session will not resume on that schedule. Continue now by running the check or registering the intended wake. Do not wait, poll, resume an unrelated agent, or ask the user to intervene.'
@@ -710,17 +897,47 @@ if [[ -n "${_wait_claim_kind}" ]]; then
   # mutation; a stale callback is inert in the newer interval.
   is_ultrawork_mode || exit 0
   if [[ "${_wait_runtime_state}" == "live" ]]; then
-    write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
+    # Deterministic regression barrier: the old callback has completed its
+    # unlocked correlation/check, but has not acquired the mutation lock yet.
+    if [[ -n "${OMC_TEST_STOP_WAIT_MUTATION_READY_FILE:-}" \
+        && -n "${OMC_TEST_STOP_WAIT_MUTATION_RELEASE_FILE:-}" ]]; then
+      printf 'ready\n' >"${OMC_TEST_STOP_WAIT_MUTATION_READY_FILE}"
+      _dispatch_wait_mutation_test_count=0
+      while [[ ! -f "${OMC_TEST_STOP_WAIT_MUTATION_RELEASE_FILE}" \
+          && "${_dispatch_wait_mutation_test_count}" -lt 200 ]]; do
+        sleep 0.05
+        _dispatch_wait_mutation_test_count=$((_dispatch_wait_mutation_test_count + 1))
+      done
+    fi
+    if ! with_state_lock _dispatch_clear_background_marker_unlocked \
+        >/dev/null 2>&1; then
+      omc_enforcement_generation_matches_capture || exit 0
+    fi
     record_gate_event "stop-wait" "verified-live" \
       "kind=${_wait_claim_kind}" 2>/dev/null || true
     # First-class WAIT: no quality gates, prompt-end accounting, continuation
     # slot, finalizer, provisional closeout, or terminal outcome runs here.
     exit 0
   elif [[ "${_wait_runtime_state}" == "empty" ]]; then
-    write_state "bg_work_dispatched_ts" "" 2>/dev/null || true
-    if ! _false_wait_context="$(with_state_lock \
+    if ! with_state_lock _dispatch_clear_background_marker_unlocked \
+        >/dev/null 2>&1; then
+      omc_enforcement_generation_matches_capture || exit 0
+    fi
+    if [[ -n "${OMC_TEST_STOP_FALSE_WAIT_CONTEXT_READY_FILE:-}" \
+        && -n "${OMC_TEST_STOP_FALSE_WAIT_CONTEXT_RELEASE_FILE:-}" ]]; then
+      printf 'ready\n' >"${OMC_TEST_STOP_FALSE_WAIT_CONTEXT_READY_FILE}"
+      _dispatch_false_wait_test_count=0
+      while [[ ! -f "${OMC_TEST_STOP_FALSE_WAIT_CONTEXT_RELEASE_FILE}" \
+          && "${_dispatch_false_wait_test_count}" -lt 200 ]]; do
+        sleep 0.05
+        _dispatch_false_wait_test_count=$((_dispatch_false_wait_test_count + 1))
+      done
+    fi
+    if ! _false_wait_context="$(OMC_PUBLICATION_STOP_WAIT_INTERNAL=1 \
+        with_state_lock \
         _false_wait_recovery_context \
         "${_wait_claim_kind}" "${_wait_claim_line}")"; then
+      omc_enforcement_generation_matches_capture || exit 0
       is_ultrawork_mode || exit 0
       _false_wait_context="Claude Code reports no matching live wake, but oh-my-claude could not acquire the session-state lock to resolve the retained worker safely. Do not wait, poll, integrate an unverified result, or ask the user to intervene. Re-evaluate the current gate after the lock clears."
     fi
@@ -731,10 +948,14 @@ if [[ -n "${_wait_claim_kind}" ]]; then
     fi
     record_gate_event "stop-wait" "dead-wait-recovered" \
       "kind=${_wait_claim_kind}" 2>/dev/null || true
-    _emit_compact_continuation \
-      "[Dead wait] no live ${_wait_claim_kind} wake source exists." \
-      "discard" "${_false_wait_context}" \
-      "${_false_wait_system_message}"
+    if ! OMC_PUBLICATION_STOP_WAIT_INTERNAL=1 _emit_compact_continuation \
+        "[Dead wait] no live ${_wait_claim_kind} wake source exists." \
+        "discard" "${_false_wait_context}" \
+        "${_false_wait_system_message}"; then
+      omc_enforcement_generation_matches_capture || exit 0
+      is_ultrawork_mode || exit 0
+      _emit_publication_recovery_pending
+    fi
     exit 0
   fi
 fi
@@ -792,10 +1013,32 @@ outcome="$(read_state "session_outcome" 2>/dev/null || true)"
 # The guard accepted this Stop. Unused durable-taste authority belongs only to
 # the turn that just ended; a later wake/resume needs a fresh user command.
 _dispatch_clear_quality_constitution_authorization_unlocked() {
-  rm -f "$(session_file "quality_constitution_authorization.json")" 2>/dev/null || true
+  omc_enforcement_generation_matches_capture || return 1
+  omc_clear_quality_constitution_authorization_unlocked
 }
-with_state_lock _dispatch_clear_quality_constitution_authorization_unlocked \
-  >/dev/null 2>&1 || true
+# Deterministic regression barrier for the guard-pass/check-to-lock window.
+# The test changes interval authority and issues a new grant while the old Stop
+# is paused here; the under-lock generation check must preserve that grant.
+if [[ -n "${OMC_TEST_STOP_AUTH_CLEAR_READY_FILE:-}" \
+    && -n "${OMC_TEST_STOP_AUTH_CLEAR_RELEASE_FILE:-}" ]]; then
+  printf 'ready\n' >"${OMC_TEST_STOP_AUTH_CLEAR_READY_FILE}"
+  _dispatch_auth_clear_test_count=0
+  while [[ ! -f "${OMC_TEST_STOP_AUTH_CLEAR_RELEASE_FILE}" \
+      && "${_dispatch_auth_clear_test_count}" -lt 200 ]]; do
+    sleep 0.05
+    _dispatch_auth_clear_test_count=$((_dispatch_auth_clear_test_count + 1))
+  done
+fi
+if ! with_state_lock _dispatch_clear_quality_constitution_authorization_unlocked \
+    >/dev/null 2>&1; then
+  omc_enforcement_generation_matches_capture || exit 0
+  log_anomaly "stop-dispatch" \
+    "accepted Stop authorization invalidation failed; finalization refused" \
+    2>/dev/null || true
+  _emit_compact_continuation \
+    "[Quality Constitution authority] the unused one-turn authorization could not be invalidated safely, so accepted-Stop finalization was refused. Resolve the session-state lock or unsafe authorization node, then re-run the closeout check; do not reuse the old apply-authorized command."
+  exit 0
+fi
 
 guard_message=""
 if [[ -n "${guard_out}" ]]; then
@@ -840,23 +1083,32 @@ if [[ "${_ulw_before}" -eq 1 ]]; then
     receipt="oh-my-claude · closeout released with unresolved gate gaps"
   fi
 fi
-if [[ "${_ulw_before}" -eq 1 ]] && closeout_claim_finalization 2>/dev/null; then
+finalizer_claim_id=""
+if [[ "${_ulw_before}" -eq 1 ]]; then
+  finalizer_claim_id="$(closeout_claim_finalization 2>/dev/null)" \
+    || finalizer_claim_id=""
+fi
+if [[ -n "${finalizer_claim_id}" ]]; then
   finalizer_rc=0
   canary_rc=0
-  canary_out="$(_run_accepted_stop_child "canary-claim-audit.sh" 2>/dev/null)" || canary_rc=$?
+  canary_out="$(_run_accepted_stop_child "canary-claim-audit.sh" \
+    "${finalizer_claim_id}" 2>/dev/null)" || canary_rc=$?
   if [[ -n "${canary_out}" ]] && jq -e 'type == "object"' <<<"${canary_out}" >/dev/null 2>&1; then
     canary_message="$(jq -r '.systemMessage // empty' <<<"${canary_out}" 2>/dev/null || true)"
   fi
   archive_rc=0
-  _run_accepted_stop_child "stop-transcript-archive.sh" >/dev/null 2>&1 || archive_rc=$?
+  _run_accepted_stop_child "stop-transcript-archive.sh" \
+    "${finalizer_claim_id}" >/dev/null 2>&1 || archive_rc=$?
   if [[ "${canary_rc}" -eq 0 && "${archive_rc}" -eq 0 ]]; then
-    closeout_complete_finalization 2>/dev/null || finalizer_rc=1
+    closeout_complete_finalization "${finalizer_claim_id}" \
+      2>/dev/null || finalizer_rc=1
   else
     finalizer_rc=1
   fi
   if [[ "${finalizer_rc}" -ne 0 ]]; then
-    closeout_abandon_finalization 2>/dev/null || true
-    log_anomaly "stop-dispatch" "accepted-release best-effort finalizer incomplete canary_rc=${canary_rc} archive_rc=${archive_rc}; provisional evidence retained until fresh execution" 2>/dev/null || true
+    closeout_abandon_finalization "${finalizer_claim_id}" \
+      2>/dev/null || true
+    log_anomaly "stop-dispatch" "accepted-release finalizer publication incomplete canary_rc=${canary_rc} archive_rc=${archive_rc}; exact claim abandoned and provisional evidence retained until fresh execution" 2>/dev/null || true
   fi
   if [[ "${outcome}" == "completed" && "${finalizer_rc}" -eq 0 ]]; then
     with_state_lock _dispatch_remove_provisional_unlocked \

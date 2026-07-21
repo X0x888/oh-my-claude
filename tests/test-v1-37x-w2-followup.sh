@@ -64,8 +64,10 @@ assert_not_contains() {
 # ----------------------------------------------------------------------
 printf '\n--- F-002: drift-check downgrades message when CWD is in repo_path ---\n'
 
-f002_repo="${TEST_TMP}/f002-repo"
-mkdir -p "${f002_repo}"
+f002_repo="${TEST_TMP}/f002  repo's source"
+f002_stale_repo="${TEST_TMP}/f002-stale-repo"
+f002_padding="  "
+mkdir -p "${f002_repo}" "${f002_stale_repo}"
 echo '1.99.0' > "${f002_repo}/VERSION"
 
 f002_home="${TEST_TMP}/f002-home"
@@ -74,7 +76,8 @@ ln -sf "${REPO_ROOT}/bundle/dot-claude/skills" "${f002_home}/.claude/skills"
 ln -sf "${REPO_ROOT}/bundle/dot-claude/quality-pack" "${f002_home}/.claude/quality-pack"
 cat > "${f002_home}/.claude/oh-my-claude.conf" <<EOF
 installed_version=1.36.0
-repo_path=${f002_repo}
+repo_path=${f002_stale_repo}
+repo_path=${f002_padding}${f002_repo}${f002_padding}
 EOF
 
 f002_state="${TEST_TMP}/f002-state"
@@ -111,6 +114,27 @@ assert_contains "F-002: outside repo keeps urgent 'Bundle drift detected' framin
   "Bundle drift detected" "${outside_msg}"
 assert_not_contains "F-002: outside repo does NOT use 'working in source repo'" \
   "working in source repo" "${outside_msg}"
+
+# Case B2: a raw-NUL config value cannot normalize into source-repo authority.
+# Keep the drift warning, but fail closed to the urgent outside-repo framing.
+mkdir -p "${f002_state}/sid-002c"
+echo '{}' >"${f002_state}/sid-002c/session_state.json"
+hook_stdin_c="$(jq -nc --arg sid sid-002c --arg src startup \
+  '{session_id:$sid,source:$src}')"
+{
+  printf 'installed_version=1.36.0\nrepo_path=%s' "${f002_repo}"
+  printf '\0\n'
+} >"${f002_home}/.claude/oh-my-claude.conf"
+nul_conf_out="$(cd "${f002_repo}" && \
+  HOME="${f002_home}" STATE_ROOT="${f002_state}" \
+  bash "${REPO_ROOT}/bundle/dot-claude/quality-pack/scripts/session-start-drift-check.sh" \
+    <<<"${hook_stdin_c}" 2>/dev/null || true)"
+nul_conf_msg="$(printf '%s' "${nul_conf_out}" \
+  | jq -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null || true)"
+assert_contains "F-002: NUL config keeps urgent drift framing" \
+  "Bundle drift detected" "${nul_conf_msg}"
+assert_not_contains "F-002: NUL config grants no source-repo downgrade" \
+  "working in source repo" "${nul_conf_msg}"
 
 # Case C: gate event records in_source_repo flag (stored as numeric 1
 # by record_gate_event when the value is digits; check both shapes for

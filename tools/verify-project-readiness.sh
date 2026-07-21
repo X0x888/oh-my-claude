@@ -29,6 +29,7 @@ ATTESTATION_POLL_ATTEMPTS=""
 ATTESTATION_POLL_INTERVAL=""
 ATTESTATION_RUN_LIMIT=""
 PAIRWISE_RECEIPTS=()
+PAIRWISE_CAMPAIGN_RECEIPT=""
 SKIP_PROFESSIONAL=0
 SKIP_INSTALL=0
 SKIP_DISTRIBUTION=0
@@ -83,8 +84,12 @@ Options:
   --attestation-poll-attempts <N>   Passed through to distribution audit.
   --attestation-poll-interval <N>   Passed through to distribution audit.
   --attestation-run-limit <N>       Passed through to distribution audit.
-  --pairwise-receipt <file>         Pass one sealed raw pair receipt to the
-                                    professional claim gate. Repeat per pair.
+  --pairwise-receipt <file>         Pass one sealed schema-v7 causal-generation
+                                    pair receipt to the professional claim gate.
+                                    Repeat per pair.
+  --pairwise-campaign-receipt <file>
+                                    Pass the single sealed campaign receipt that
+                                    binds the complete first-attempt roster.
   --skip-professional               Skip the product-readiness surface.
   --skip-install                    Skip the install/onboarding surface.
   --skip-distribution               Skip the distribution-readiness surface.
@@ -347,6 +352,15 @@ while [[ $# -gt 0 ]]; do
       PAIRWISE_RECEIPTS+=("$2")
       shift 2
       ;;
+    --pairwise-campaign-receipt)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { usage >&2; exit 2; }
+      [[ -z "${PAIRWISE_CAMPAIGN_RECEIPT}" ]] || {
+        printf 'verify-project-readiness: --pairwise-campaign-receipt may be supplied only once\n' >&2
+        exit 2
+      }
+      PAIRWISE_CAMPAIGN_RECEIPT="$2"
+      shift 2
+      ;;
     --pairwise-report)
       printf 'verify-project-readiness: aggregate reports are not evidence; pass raw --pairwise-receipt files\n' >&2
       exit 2
@@ -396,9 +410,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 && -z "${PAIRWISE_CAMPAIGN_RECEIPT}" ]]; then
+  printf 'verify-project-readiness: raw --pairwise-receipt evidence requires --pairwise-campaign-receipt\n' >&2
+  exit 2
+fi
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -eq 0 && -n "${PAIRWISE_CAMPAIGN_RECEIPT}" ]]; then
+  printf 'verify-project-readiness: --pairwise-campaign-receipt requires at least one --pairwise-receipt\n' >&2
+  exit 2
+fi
+
 if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
   [[ "${SKIP_PROFESSIONAL}" -eq 0 ]] || {
-    printf 'verify-project-readiness: --pairwise-receipt cannot be combined with --skip-professional\n' >&2
+    printf 'verify-project-readiness: pairwise receipt evidence cannot be combined with --skip-professional\n' >&2
     exit 2
   }
   for pairwise_index in "${!PAIRWISE_RECEIPTS[@]}"; do
@@ -409,6 +432,13 @@ if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
     }
     PAIRWISE_RECEIPTS[pairwise_index]="$(cd "$(dirname "${pairwise_receipt}")" && pwd -P)/$(basename "${pairwise_receipt}")"
   done
+  [[ -f "${PAIRWISE_CAMPAIGN_RECEIPT}" ]] || {
+    printf 'verify-project-readiness: pairwise campaign receipt not found: %s\n' \
+      "${PAIRWISE_CAMPAIGN_RECEIPT}" >&2
+    exit 2
+  }
+  PAIRWISE_CAMPAIGN_RECEIPT="$(cd "$(dirname "${PAIRWISE_CAMPAIGN_RECEIPT}")" \
+    && pwd -P)/$(basename "${PAIRWISE_CAMPAIGN_RECEIPT}")"
 fi
 
 if [[ "${SKIP_PROFESSIONAL}" -eq 1 ]]; then
@@ -419,6 +449,7 @@ else
     for pairwise_receipt in "${PAIRWISE_RECEIPTS[@]}"; do
       professional_cmd+=" --pairwise-receipt $(printf '%q' "${pairwise_receipt}")"
     done
+    professional_cmd+=" --pairwise-campaign-receipt $(printf '%q' "${PAIRWISE_CAMPAIGN_RECEIPT}")"
   fi
   if [[ "${JSON_MODE}" -eq 1 ]]; then
     professional_cmd+=" --json"

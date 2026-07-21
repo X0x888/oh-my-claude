@@ -117,6 +117,21 @@ case "$(goal_state goal_objective)" in
   *redacted*) pass ;;
   *) fail "S1: objective secret not redacted" ;;
 esac
+
+# goal_stuck_threshold=0 is the documented uncapped posture, never an
+# immediate "zero stalls" release. Both arm and status copy must say so.
+_s1_zero_set="$(HOME="${s1_root}" STATE_ROOT="${s1_root}" \
+  SESSION_ID="goal-test-s1" OMC_GOAL_STUCK_THRESHOLD=0 \
+  bash "${GOAL_SH}" set "keep driving without an automatic wall" 2>&1)"
+printf '%s' "${_s1_zero_set}" | grep -qi 'uncapped' \
+  && pass || fail "S1: threshold=0 set copy must say uncapped"
+printf '%s' "${_s1_zero_set}" | grep -qi 'no automatic stuck-wall release' \
+  && pass || fail "S1: threshold=0 set copy must deny automatic release"
+_s1_zero_status="$(HOME="${s1_root}" STATE_ROOT="${s1_root}" \
+  SESSION_ID="goal-test-s1" OMC_GOAL_STUCK_THRESHOLD=0 \
+  bash "${GOAL_SH}" status 2>&1)"
+printf '%s' "${_s1_zero_status}" | grep -qi 'uncapped, no automatic stuck-wall release' \
+  && pass || fail "S1: threshold=0 status copy must say uncapped"
 rm -rf "${s1_root}"
 
 # ===========================================================================
@@ -253,6 +268,7 @@ e2e_seed() {
 # Full HOME isolation (see header) + deterministic SESSION_ID.
 drive_goal() {
   local setup_fn="$1" msg="${2:-Done. Wired the handler.}"
+  local goal_threshold="${3:-${OMC_GOAL_STUCK_THRESHOLD:-}}"
   E2E_ROOT="$(mktemp -d)"
   export HOME="${E2E_ROOT}"
   export STATE_ROOT="${E2E_ROOT}/.claude/quality-pack/state" SESSION_ID="${E2E_SID}"
@@ -262,7 +278,8 @@ drive_goal() {
   "${setup_fn}"
   jq -n --arg sid "${E2E_SID}" --arg msg "${msg}" \
     '{session_id:$sid, stop_hook_active:false, last_assistant_message:$msg}' \
-    | OMC_GATE_LEVEL=basic bash "${STOP_GUARD}" 2>/dev/null || true
+    | OMC_GATE_LEVEL=basic OMC_GOAL_STUCK_THRESHOLD="${goal_threshold}" \
+      bash "${STOP_GUARD}" 2>/dev/null || true
   rm -rf "${E2E_ROOT}"
 }
 
@@ -322,6 +339,16 @@ gb_stuckwall() {
 out="$(drive_goal gb_stuckwall "Still stuck, no edits this round.")"
 is_block "${out}" && fail "S4: stuck-wall should release (surface), not block" || pass
 printf '%s' "${out}" | grep -qi 'stuck-wall' && pass || fail "S4: stuck-wall surface message not emitted"
+
+# threshold=0 never reaches the wall, even with an existing no-progress count.
+out="$(drive_goal gb_stuckwall "Still stuck, no edits this round." 0)"
+is_block "${out}" && pass || fail "S4: threshold=0 should remain relentlessly blocked"
+printf '%s' "${out}" | grep -qi 'uncapped' \
+  && pass || fail "S4: threshold=0 recovery copy must say uncapped"
+printf '%s' "${out}" | grep -qi 'no automatic stuck-wall release' \
+  && pass || fail "S4: threshold=0 recovery copy must deny automatic release"
+printf '%s' "${out}" | grep -q 'After 0 consecutive' \
+  && fail "S4: threshold=0 must not promise an immediate release" || pass
 
 # PROGRESS between blocks keeps blocking (never released by cap while grinding).
 gb_progress() {

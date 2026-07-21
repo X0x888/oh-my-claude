@@ -86,11 +86,25 @@ The installer merges hook entries from `settings.patch.json` into your existing 
 
 ### Can I use this with a different output style?
 
-Yes. oh-my-claude ships two bundled styles (`oh-my-claude` — compact CLI, default; `executive-brief` — CEO-style status report). Pick between them via `/omc-config` (`output_style=opencode` for `oh-my-claude`, `output_style=executive` for `executive-brief`) and re-run install. Three upgrade-safe paths, all documented in [`docs/customization.md → Output Style`](customization.md#output-style):
+Yes. oh-my-claude ships two bundled styles (`oh-my-claude` — compact CLI,
+default; `executive-brief` — CEO-style status report). Pick between them via
+`/omc-config` (`output_style=opencode` for `oh-my-claude`,
+`output_style=executive` for `executive-brief`); that user-level write updates
+`settings.json` immediately. A manual conf edit takes effect on the next
+`bash install.sh`. Three upgrade-safe paths, all documented in
+[`docs/customization.md → Output Style`](customization.md#output-style):
 
-1. **Switch between bundled styles** — set `output_style=executive` in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer rewrites `settings.outputStyle` to `executive-brief`. Set it back to `output_style=opencode` to revert.
+1. **Switch between bundled styles** — choose `output_style=executive` via
+   `/omc-config` for an immediate switch, or set it manually in
+   `~/.claude/oh-my-claude.conf` and re-run install. Set it back to
+   `output_style=opencode` to revert.
 2. **Copy and rename for full customization** — `cp ~/.claude/output-styles/oh-my-claude.md ~/.claude/output-styles/my-style.md` (or copy `executive-brief.md`), change the frontmatter `name:`, then point `outputStyle` in `~/.claude/settings.json` at the new name. Survives `bash install.sh` upgrades.
-3. **Opt out of the bundled style entirely via `output_style=preserve`** — set it in `~/.claude/oh-my-claude.conf` (or via `/omc-config`) and re-run install. The installer leaves your `outputStyle` setting untouched (including a pre-existing custom value, or its absence — Claude Code's built-in `Default` style takes over). Both bundled style files are still copied to `~/.claude/output-styles/` for reference.
+3. **Stop managing `outputStyle` via `output_style=preserve`** — choose it via
+   `/omc-config`, or set it manually in `~/.claude/oh-my-claude.conf` and
+   re-run install. The installer leaves the current setting untouched. If a
+   bundled style is already selected, `preserve` keeps it selected; remove or
+   change `settings.outputStyle` separately to use Claude Code's Default or a
+   custom style. Both bundled style files are still copied for reference.
 
 Avoid editing the bundled style files in place — `install.sh` rsyncs the bundle on every upgrade and overwrites in-place edits. A custom style must resolve to a real file and preserve the material-closeout contract after READY: standalone `Changed`/`Shipped`, `Verification`, `Objective coverage` (or `/goal`'s `Goal achieved`), and `Next`, plus `Risks` when anything is deferred. Those labels let the final guard protect cumulative detail regardless of voice or layout.
 
@@ -106,7 +120,7 @@ Capture is on by default (`time_tracking=on`). On an accepted Stop, the dispatch
 
 ### How do I turn off time tracking?
 
-Set `time_tracking=off` in `~/.claude/oh-my-claude.conf` (or `OMC_TIME_TRACKING=off` in the environment). The PreToolUse / PostToolUse / Stop hooks fast-path-out in <1ms with no disk I/O, so opt-out is essentially free. The `Minimal` preset of `/omc-config` already sets this — run `/omc-config` and pick `Minimal` to flip it together with the other telemetry flags. Cross-session timing data has its own retention horizon (`time_tracking_xs_retain_days`, default 30) — the data already on disk is swept on the regular TTL pass.
+Set `time_tracking=off` in `~/.claude/oh-my-claude.conf` (or `OMC_TIME_TRACKING=off` in the environment). Capture and timing-ledger I/O stop in both cases. An environment opt-out lets the standalone PreTool hook exit before loading the shared library; a conf-only opt-out still pays the normal shared dispatcher/config-loading cost before handlers see the flag. The `Minimal` preset of `/omc-config` already sets this — run `/omc-config` and pick `Minimal` to flip it together with the other telemetry flags. Cross-session timing data has its own retention horizon (`time_tracking_xs_retain_days`, default 30) — the data already on disk is swept on the regular TTL pass.
 
 ### What does "ultrathink" do?
 

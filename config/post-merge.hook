@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# oh-my-claude post-merge auto-sync
+#
+# Compares this repo's installer-managed sources against the installed
+# manifest/source commit. If any managed input differs from what was installed
+# last time, prompts the user to re-run install.sh. Set OMC_AUTO_INSTALL=1 to
+# skip the prompt and install
+# automatically (useful for CI / trusted environments).
+#
+# Non-blocking: a skipped install simply means the user runs `bash
+# install.sh` when they're ready. The hook never aborts the git operation.
+
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "${repo_root}" ]] || exit 0
+
+bundle_dir="${repo_root}/bundle/dot-claude"
+installer="${repo_root}/install.sh"
+manifest="${HOME}/.claude/quality-pack/state/installed-manifest.txt"
+conf="${HOME}/.claude/oh-my-claude.conf"
+
+[[ -f "${installer}" && -d "${bundle_dir}" ]] || exit 0
+[[ -f "${manifest}" ]] || exit 0
+
+current_tmp="$(mktemp)" || exit 0
+changed_tmp="$(mktemp)" || { rm -f -- "${current_tmp}"; exit 0; }
+cleanup_tmp() {
+  rm -f -- "${current_tmp}" "${changed_tmp}" 2>/dev/null || true
+}
+cleanup_signal() {
+  cleanup_tmp
+  exit 0
+}
+trap cleanup_tmp EXIT
+trap cleanup_signal HUP INT TERM
+exclude_ios="off"
+ghostty_installed=""
+installed_sha=""
+if [[ -f "${conf}" && ! -L "${conf}" ]]; then
+  while IFS= read -r conf_line || [[ -n "${conf_line}" ]]; do
+    case "${conf_line}" in
+      exclude_ios=*)
+        conf_value="${conf_line#*=}"
+        conf_value="${conf_value#"${conf_value%%[![:space:]]*}"}"
+        conf_value="${conf_value%"${conf_value##*[![:space:]]}"}"
+        case "${conf_value}" in
+          on|off) exclude_ios="${conf_value}" ;;
+        esac
+        ;;
+      installed_sha=*)
+        conf_value="${conf_line#*=}"
+        conf_value="${conf_value#"${conf_value%%[![:space:]]*}"}"
+        conf_value="${conf_value%"${conf_value##*[![:space:]]}"}"
+        [[ "${conf_value}" =~ ^[0-9A-Fa-f]{7,40}$ ]] \
+          && installed_sha="${conf_value}"
+        ;;
+      ghostty_installed=*)
+        conf_value="${conf_line#*=}"
+        conf_value="${conf_value#"${conf_value%%[![:space:]]*}"}"
+        conf_value="${conf_value%"${conf_value##*[![:space:]]}"}"
+        case "${conf_value}" in
+          on|off) ghostty_installed="${conf_value}" ;;
+        esac
+        ;;
+    esac
+  done < "${conf}"
+fi
+manifest_comparison_failed=0
+if [[ "${OMC_TEST_POST_MERGE_MANIFEST_FAILURE:-0}" == "1" ]]; then
+  manifest_comparison_failed=1
+elif [[ "${exclude_ios}" == "on" ]]; then
+  if ! (cd "${bundle_dir}" && find . -type f ! -name '.DS_Store' \
+      ! -path './agents/ios-*.md' 2>/dev/null \
+      | sed 's|^\./||' | LC_ALL=C sort) >"${current_tmp}"; then
+    manifest_comparison_failed=1
+  fi
+elif ! (cd "${bundle_dir}" && find . -type f ! -name '.DS_Store' \
+    2>/dev/null | sed 's|^\./||' | LC_ALL=C sort) >"${current_tmp}"; then
+  manifest_comparison_failed=1
+fi
+
+added_or_removed=0
+if [[ "${manifest_comparison_failed}" -eq 0 ]] \
+    && ! LC_ALL=C diff -q "${manifest}" "${current_tmp}" >/dev/null 2>&1; then
+  added_or_removed=1
+fi
+
+source_changed=0
+comparison_failed="${manifest_comparison_failed}"
+baseline="${installed_sha}"
+if [[ -z "${baseline}" ]] \
+    || ! git -C "${repo_root}" cat-file -e "${baseline}^{commit}" \
+      >/dev/null 2>&1; then
+  baseline="$(git -C "${repo_root}" rev-parse --verify 'ORIG_HEAD^{commit}' \
+    2>/dev/null || true)"
+fi
+if [[ -n "${baseline}" ]]; then
+  # These inputs all materialize state outside the checkout. Ghostty follows
+  # the installer's default auto-detection so irrelevant theme-only updates do
+  # not nag hosts that have no Ghostty config directory. iOS exclusions are
+  # filtered per-row below from the persisted bundle-selection receipt.
+  managed_source_paths=(
+    install.sh
+    bundle/dot-claude
+    config/settings.patch.json
+    bundle/omc-user-template
+    config/post-merge.hook
+  )
+  if [[ "${ghostty_installed}" == "on" ]] \
+      || { [[ -z "${ghostty_installed}" ]] \
+        && [[ -d "${HOME}/.config/ghostty" ]]; }; then
+    managed_source_paths+=(config/ghostty)
+  fi
+  if git -c core.fileMode=true -C "${repo_root}" diff --name-only \
+      "${baseline}" -- "${managed_source_paths[@]}" >"${changed_tmp}" 2>/dev/null; then
+    while IFS= read -r changed_relative || [[ -n "${changed_relative}" ]]; do
+      [[ -n "${changed_relative}" ]] || continue
+      case "${changed_relative}" in
+        */.DS_Store)
+          continue ;;
+        bundle/dot-claude/agents/ios-*.md)
+          [[ "${exclude_ios}" == "on" ]] && continue ;;
+      esac
+      source_changed=1
+      break
+    done <"${changed_tmp}"
+  else
+    # Inability to compare is not evidence of no drift. Keep the hook
+    # non-blocking, but conservatively offer the same safe reinstall handoff.
+    comparison_failed=1
+  fi
+else
+  # A manifest without a resolvable source-generation receipt is a legacy or
+  # damaged install. Its non-bundle inputs (including install.sh itself) cannot
+  # be proven current, so request one migration reinstall.
+  comparison_failed=1
+fi
+
+if [[ "${added_or_removed}" -eq 0 && "${source_changed}" -eq 0 \
+    && "${comparison_failed}" -eq 0 ]]; then
+  exit 0
+fi
+
+printf '\n'
+if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]; then
+  printf '\033[1;33m[oh-my-claude]\033[0m Installer-managed source changes detected after merge.\n'
+else
+  printf '[oh-my-claude] Installer-managed source changes detected after merge.\n'
+fi
+if [[ "${added_or_removed}" -eq 1 ]]; then
+  printf '  - File set changed (additions or removals).\n'
+fi
+if [[ "${source_changed}" -eq 1 ]]; then
+  printf '  - Managed source bytes or executable modes differ from the installed source commit.\n'
+fi
+if [[ "${comparison_failed}" -eq 1 ]]; then
+  printf '  - Managed source comparison could not be completed; reinstall to re-establish a trusted baseline.\n'
+fi
+
+if [[ "${OMC_AUTO_INSTALL:-0}" == "1" ]]; then
+  printf '  OMC_AUTO_INSTALL=1 — running installer now...\n'
+  bash "${installer}"
+  exit 0
+fi
+
+printf '\n  Re-run the installer to sync these changes into ~/.claude/:\n'
+printf -v installer_quoted '%q' "${installer}"
+printf '    bash %s\n' "${installer_quoted}"
+printf '\n  Set OMC_AUTO_INSTALL=1 to run the installer automatically from this hook.\n'
+printf '\n'

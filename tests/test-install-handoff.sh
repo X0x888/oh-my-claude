@@ -142,10 +142,11 @@ assert_contains "AGENTS protocol embeds the canonical restart instruction" \
   "${agents_md}"
 
 printf '\n'
-printf '4. Invalid saved model tier is reported and repaired without demotion\n'
+printf '4. Invalid newest model tier cannot erase prior valid authority\n'
 
-# Last-row semantics matter for append-updated config files: an invalid newest
-# value must not expose an older valid row as though it were still effective.
+# Invalid duplicate rows are informational, not authority. Read-only verify
+# preserves the hand edit; the normal installer writer later deduplicates the
+# key while retaining the last valid Quality choice.
 cat >> "${manual_home}/.claude/oh-my-claude.conf" <<'EOF'
 model_tier=quality
 model_tier=qualtiy
@@ -156,22 +157,22 @@ invalid_verify_output="$(TARGET_HOME="${manual_home}" bash "${REPO_ROOT}/verify.
 invalid_verify_rc=$?
 set -e
 
-assert_eq "verify accepts invalid saved tier as informational" "0" "${invalid_verify_rc}"
-assert_contains "verify warns about invalid last saved tier" \
-  "Invalid saved model tier 'qualtiy' ignored; using default: balanced" "${invalid_verify_output}"
-assert_contains "verify reports balanced as the effective tier" \
-  "Active model tier: balanced (default)" "${invalid_verify_output}"
+assert_eq "verify accepts invalid duplicate tier as informational" "0" "${invalid_verify_rc}"
+assert_contains "verify reports last valid Quality tier" \
+  "Active model tier: quality" "${invalid_verify_output}"
+assert_eq "read-only verify preserves malformed duplicate rows" \
+  $'model_tier=quality\nmodel_tier=qualtiy' \
+  "$(grep -E '^model_tier=' "${manual_home}/.claude/oh-my-claude.conf" || true)"
 
 invalid_install_output="$(TARGET_HOME="${manual_home}" bash "${REPO_ROOT}/install.sh" 2>&1)"
-assert_contains "install warns while repairing invalid saved tier" \
-  'Invalid saved model tier "qualtiy"; using balanced and repairing oh-my-claude.conf.' \
-  "${invalid_install_output}"
-assert_eq "install persists one normalized balanced tier" \
-  "model_tier=balanced" \
+assert_contains "install applies retained Quality posture" \
+  'Model tier:    quality' "${invalid_install_output}"
+assert_eq "install persists one normalized Quality tier" \
+  "model_tier=quality" \
   "$(grep -E '^model_tier=' "${manual_home}/.claude/oh-my-claude.conf" || true)"
-assert_eq "invalid saved tier never demotes inherit quality reviewer" \
-  "inherit" \
-  "$(sed -n 's/^model:[[:space:]]*//p' "${manual_home}/.claude/agents/quality-reviewer.md" | head -1)"
+assert_eq "invalid saved tier never demotes Quality specialist" \
+  "opus" \
+  "$(sed -n 's/^model:[[:space:]]*//p' "${manual_home}/.claude/agents/librarian.md" | head -1)"
 
 printf '\n'
 printf '5. Economy install and reinstall preserve inherited composition\n'

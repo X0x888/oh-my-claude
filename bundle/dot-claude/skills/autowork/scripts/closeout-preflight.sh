@@ -93,9 +93,13 @@ _closeout_import_shadow_consumption_unlocked() {
   [[ -n "${current}" && "${current}" == "${expected}" ]] || return 2
   [[ -f "${shadow_file}" ]] || return 1
   while IFS=$'\t' read -r key shadow_value; do
-    [[ -n "${key}" && "${shadow_value}" =~ ^[0-9]+$ ]] || continue
+    [[ -n "${key}" ]] || continue
+    _omc_canonical_uint_in_range \
+      "${shadow_value}" 0 999999999999999999 || return 1
     live_value="$(read_state "${key}" 2>/dev/null || true)"
-    [[ "${live_value}" =~ ^[0-9]+$ ]] || live_value=0
+    live_value="${live_value:-0}"
+    _omc_canonical_uint_in_range \
+      "${live_value}" 0 999999999999999999 || return 1
     if (( shadow_value > live_value )); then
       updates+=("${key}" "${shadow_value}")
     fi
@@ -121,7 +125,9 @@ _closeout_advance_material_generation_unlocked() {
     return 20
   fi
   generation="$(read_state "work_material_generation" 2>/dev/null || true)"
-  [[ "${generation}" =~ ^[0-9]+$ ]] || generation=0
+  generation="${generation:-0}"
+  _omc_canonical_uint_in_range \
+    "${generation}" 0 999999999999999998 || return 21
   _write_state_batch_unlocked \
     "work_material_generation" "$((generation + 1))" \
     "closeout_material_activity" "1"
@@ -311,6 +317,12 @@ if [[ "${1:-}" == "--posttool-batch" ]]; then
   HOOK_JSON="$(_omc_read_hook_stdin)"
   SESSION_ID="$(json_get '.session_id')"
   [[ -n "${SESSION_ID}" ]] || exit 0
+  validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+  if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+    jq -nc --arg ctx \
+      "OMC INTERNAL CLOSEOUT PREFLIGHT: PAUSED. Agent admission is interrupted; no material-generation, seal, or gate state was advanced. Run the exact /ulw-off reset before continuing." '{suppressOutput:true,hookSpecificOutput:{hookEventName:"PostToolBatch",additionalContext:$ctx}}'
+    exit 0
+  fi
   ensure_session_dir
   capture_ulw_enforcement_interval || exit 0
 
@@ -444,8 +456,9 @@ if [[ -z "${SESSION_ID}" ]]; then
   for _manual_dir in "${STATE_ROOT}"/*/; do
     [[ -d "${_manual_dir}" ]] || continue
     _manual_state="${_manual_dir}/${STATE_JSON}"
-    [[ -f "${_manual_state}" ]] || continue
-    [[ "$(jq -r '.cwd // ""' "${_manual_state}" 2>/dev/null || true)" == "${PWD:-}" ]] || continue
+    _manual_cwd="$(_omc_read_nul_free_string_field \
+      "${_manual_state}" "cwd" 2>/dev/null || true)"
+    [[ -n "${PWD:-}" && "${_manual_cwd}" == "${PWD}" ]] || continue
     _manual_active="$(jq -r '
       ((.ulw_enforcement_active // "") | tostring) as $active
       | if (.workflow_mode // "") == "ultrawork" then
@@ -488,14 +501,40 @@ if [[ "${_manual_authority_unknown}" -eq 1 ]]; then
   exit 0
 fi
 ensure_session_dir
-if ! closeout_seal_is_required; then
-  printf 'OMC closeout preflight: READY — no material closeout seal is required for this turn.\n'
+
+# Manual preflight is itself a certifying read/mutation. Linearize the complete
+# no-seal/evaluate decision under the session mutex: a dispatch journal created
+# before acquisition is rejected by with_state_lock's outer/in-lock fences, and
+# an Agent admission cannot begin between our final journal check and READY.
+# This matters most for the no-material fast path, which otherwise never entered
+# a locked writer and could certify an interrupted Agent admission as READY.
+_closeout_manual_preflight_unlocked() {
+  if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+    return 76
+  fi
+  if ! closeout_seal_is_required; then
+    printf 'OMC closeout preflight: READY — no material closeout seal is required for this turn.\n'
+    return 0
+  fi
+  if _closeout_evaluate; then
+    printf 'OMC closeout preflight: READY — one cumulative final response may now be written.\n'
+  else
+    local feedback
+    feedback="$(read_state "closeout_preflight_feedback" 2>/dev/null || true)"
+    printf 'OMC closeout preflight: NOT_READY — %s\n' \
+      "$(closeout_compact_gate_feedback "${feedback}")"
+  fi
+  return 0
+}
+
+_manual_preflight_rc=0
+with_state_lock _closeout_manual_preflight_unlocked \
+  || _manual_preflight_rc=$?
+if [[ "${_manual_preflight_rc}" -eq 76 ]]; then
+  printf 'OMC closeout preflight: NOT_READY — Agent admission is interrupted; no completion seal was certified. Run the exact /ulw-off reset before continuing.\n'
   exit 0
-fi
-if _closeout_evaluate; then
-  printf 'OMC closeout preflight: READY — one cumulative final response may now be written.\n'
-else
-  _feedback="$(read_state "closeout_preflight_feedback" 2>/dev/null || true)"
-  printf 'OMC closeout preflight: NOT_READY — %s\n' "$(closeout_compact_gate_feedback "${_feedback}")"
+elif [[ "${_manual_preflight_rc}" -ne 0 ]]; then
+  printf 'OMC closeout preflight: NOT_READY — session state could not be certified under the closeout lock; retry after the active writer settles.\n'
+  exit 0
 fi
 exit 0

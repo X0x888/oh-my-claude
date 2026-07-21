@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 # shellcheck source=../../skills/autowork/scripts/lib/quality-constitution-authority.sh
 . "${HOME}/.claude/skills/autowork/scripts/lib/quality-constitution-authority.sh"
 # v1.47 (sre-lens R-1): observable fail-open — a mid-hook abort (lock
@@ -12,11 +13,160 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 omc_arm_failopen_err_trap "prompt-intent-router" "(this prompt's routing directives and contract state writes were skipped)"
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
-SESSION_ID="$(json_get '.session_id')"
-PROMPT_TEXT="$(json_get '.prompt')"
+# Session identity and exact slash grammar are mutation authority in the
+# recovery path below. Validate them while they are still JSON: Bash command
+# substitution silently removes decoded NUL bytes and could otherwise turn an
+# invalid ID or near-match prompt into another session's exact `/ulw-off`.
+if ! SESSION_ID="$(jq -er '
+    def valid_sid:
+      type == "string" and length >= 1 and length <= 128
+      and test("^[A-Za-z0-9_.-]+$")
+      and . != "." and . != ".."
+      and (contains("..") | not) and (test("^\\.+$") | not);
+    select(type == "object" and (.session_id | valid_sid))
+    | .session_id
+  ' <<<"${HOOK_JSON}" 2>/dev/null)"; then
+  log_anomaly "prompt-intent-router" \
+    "invalid session id; routing refused" 2>/dev/null || true
+  exit 0
+fi
+if ! PROMPT_TEXT="$(jq -er '
+    select(type == "object"
+      and (.prompt | type == "string" and index("\u0000") == null))
+    | .prompt
+  ' <<<"${HOOK_JSON}" 2>/dev/null)"; then
+  log_anomaly "prompt-intent-router" \
+    "invalid NUL-bearing prompt; routing refused" 2>/dev/null || true
+  exit 0
+fi
 
 if [[ -z "${SESSION_ID}" || -z "${PROMPT_TEXT}" ]]; then
   log_hook "prompt-intent-router" "skip: no session or prompt"
+  exit 0
+fi
+# Keep the shared validator as a defense-in-depth contract check if its grammar
+# changes independently of the JSON-side boundary above.
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+
+# Every value below can safely enter Bash's signed arithmetic only after this
+# canonical decimal boundary. State counters use the smaller contract-wide
+# ceiling (15 decimal digits), leaving ample headroom for additions while also
+# preventing octal parsing, machine-width wrap, and arithmetic-name expansion.
+_ROUTER_UINT_MAX=999999999999999
+_ROUTER_PREINCREMENT_MAX=999999999999998
+
+_router_optional_uint_or_zero() {
+  local value="${1:-}" maximum="${2:-${_ROUTER_UINT_MAX}}"
+  if [[ -z "${value}" ]]; then
+    printf '0'
+    return 0
+  fi
+  _omc_canonical_uint_in_range "${value}" 0 "${maximum}" || return 1
+  printf '%s' "${value}"
+}
+
+# A platform task notification may need to inspect the one exact stateful
+# completion claim owned by its native task.  Bind that narrow capability
+# before the universal publication barrier runs. common.sh validates the full
+# native/lifecycle/claim/digest/generation/objective identity and still fences
+# malformed rows, siblings, fixed WALs, and receipt-bound transactions.
+OMC_PUBLICATION_TASK_NOTIFICATION_NATIVE_ID=""
+if is_synthetic_prompt "${PROMPT_TEXT}" \
+    && [[ "${PROMPT_TEXT}" =~ \<task-id\>([A-Za-z0-9._:-]{1,128})\</task-id\> ]]; then
+  _task_notification_capability_id="${BASH_REMATCH[1]}"
+  if [[ "${PROMPT_TEXT}" \
+      =~ \<status\>(completed|failed|stopped|cancelled|canceled)\</status\> ]]; then
+    # Save the task capture before matching status: BASH_REMATCH is global.
+    # This also keeps the pre-barrier capability bound to the same leftmost
+    # task ID parsed by the synthetic-notification branch below; a greedy text
+    # reparse could otherwise select a later tag from untrusted summary text.
+    OMC_PUBLICATION_TASK_NOTIFICATION_NATIVE_ID="${_task_notification_capability_id}"
+  fi
+fi
+
+# Crash isolation for dedicated planner/reviewer publishers. Their fixed WALs
+# cover canonical artifacts also touched by this router (session state, pending
+# rows, and task-notification outcomes). Recover before *any* prompt branch,
+# including synthetic task notifications, so a later rollback can never erase
+# a newer prompt mutation. Planner rollback runs first; reviewer roll-forward
+# then observes one settled plan/state generation. Presence after a supposedly
+# successful helper call is treated as failure, covering disabled-mode or
+# malformed-journal no-ops.
+_router_plan_wal="${STATE_ROOT}/${SESSION_ID}/.plan-txn.active"
+_router_reviewer_wal="${STATE_ROOT}/${SESSION_ID}/.reviewer-transaction.wal"
+_router_publication_recovery_failed=""
+_router_publication_recovery_needed=0
+_router_dispatch_recovery_needed=0
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  _router_dispatch_recovery_needed=1
+fi
+if [[ -e "${_router_plan_wal}" || -L "${_router_plan_wal}" \
+    || -e "${_router_reviewer_wal}" || -L "${_router_reviewer_wal}" ]] \
+    || omc_publication_recovery_needed "${SESSION_ID}"; then
+  _router_publication_recovery_needed=1
+fi
+
+# Corrupt recovery state must not make its documented user-owned escape
+# unreachable. Accept only the exact slash grammar; no prefix/argument/compound
+# prompt receives this authority. The managed deactivator stages fixed WAL nodes
+# by rename (including symlinks) before switching the interval off.
+if [[ $(( _router_publication_recovery_needed \
+          + _router_dispatch_recovery_needed )) -gt 0 \
+    && "${PROMPT_TEXT}" =~ ^[[:space:]]*/ulw-off[[:space:]]*$ ]]; then
+  _router_reset_ok=0
+  if bash "${HOME}/.claude/skills/autowork/scripts/ulw-deactivate.sh" \
+      "${SESSION_ID}" </dev/null >/dev/null 2>&1 \
+      && ! omc_interrupted_dispatch_transaction_present "${SESSION_ID}" \
+      && jq -e '
+        ((.ulw_enforcement_active // "") | tostring) == "0"
+        and (.workflow_mode // "") == ""
+      ' "${STATE_ROOT}/${SESSION_ID}/${STATE_JSON}" >/dev/null 2>&1; then
+    _router_reset_ok=1
+  fi
+  if [[ "${_router_reset_ok}" -eq 1 ]]; then
+    jq -nc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",
+      additionalContext:"Ultrawork mode was deactivated and its interrupted publication journals were quarantined by the exact /ulw-off reset. Do not continue the prior enforced objective unless the user starts it again."}}'
+  else
+    jq -nc '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",
+      additionalContext:"OH-MY-CLAUDE RESET FAILED: the exact /ulw-off request could not atomically deactivate this session. Do not use provisional plan/reviewer state; inspect the retained transaction and retry the managed reset."}}'
+  fi
+  exit 0
+fi
+
+# Dispatch transaction creation is durable launch intent before the first
+# admission mutation; `.ready` says only that its snapshot copy is complete.
+# Any retained node cannot be replayed over newer state safely, so do not rotate
+# the objective or consume a synthetic wake. Only the exact reset above may
+# taint identities and remove it.
+if [[ "${_router_dispatch_recovery_needed}" -eq 1 ]]; then
+  log_anomaly "prompt-intent-router" \
+    "interrupted Agent admission journal; prompt routing refused" \
+    2>/dev/null || true
+  jq -nc --arg context \
+    "OH-MY-CLAUDE DISPATCH RECOVERY REQUIRED: a prior Agent authorization was interrupted while its causal ledgers were being updated. This prompt was not routed and no objective state was written. Do not launch, integrate, or certify specialist work from the partial admission. Use the exact /ulw-off reset, then reactivate /ulw and dispatch the still-required role with a fresh identity." '{
+      hookSpecificOutput:{
+        hookEventName:"UserPromptSubmit",additionalContext:$context
+      }
+    }'
+  exit 0
+fi
+
+if [[ "${_router_publication_recovery_needed}" -eq 1 ]]; then
+  if ! omc_recover_active_publication_transactions "${SESSION_ID}" \
+      || omc_publication_recovery_needed "${SESSION_ID}"; then
+    _router_publication_recovery_failed="publication"
+  fi
+fi
+if [[ -n "${_router_publication_recovery_failed}" ]]; then
+  log_anomaly "prompt-intent-router" \
+    "${_router_publication_recovery_failed} publication WAL recovery failed; prompt routing refused" \
+    2>/dev/null || true
+  _router_recovery_context="OH-MY-CLAUDE RECOVERY REQUIRED: an interrupted planner/reviewer publication journal or receipt-bound summary could not be reconciled safely. This prompt was not routed and no prompt/objective state was written. Do not implement, summarize, or accept provisional reviewer/plan state. Inspect the retained fixed WAL and retry recovery; if it is corrupt, use the exact /ulw-off reset before starting a fresh objective."
+  jq -nc --arg context "${_router_recovery_context}" '{
+    hookSpecificOutput:{
+      hookEventName:"UserPromptSubmit",additionalContext:$context
+    }
+  }'
   exit 0
 fi
 
@@ -62,8 +212,12 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     local native_id="$1" notification_key="$2" notification_status="$3"
     local bindings_file binding_json agent_type outcomes_file bundle selected
     local matches foreign temp receipt pending_file pending_temp line candidate=""
+    local selected_for_receipt protected_receipt_ids stable_rebind_id
+    local notification_claim existing_receipt
+    local receipt_recovery_reason
     local current_cycle current_objective_ts row_cycle row_objective_ts row_generation
     local row_claim_id row_claim_ts row_claim_effects row_claim_now
+    local row_notification_key row_abandon_reason row_rebind_id
     local rejected_reason="" exact_count=0 foreign_pending_count=0
     local selected_generation="" candidate_original="" retry_count=0
     local tombstone_mode="" tombstone_reason="" tombstone_count=0
@@ -80,23 +234,36 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     }
 
     bindings_file="$(session_file "native_agent_bindings.jsonl")"
+    pending_file="$(session_file "pending_agents.jsonl")"
     [[ -s "${bindings_file}" && -f "${bindings_file}" \
         && ! -L "${bindings_file}" ]] || return 0
+    # Validate both durable authority ledgers before the first raw projection.
+    # Bash cannot retain decoded NUL, so validating after jq -r/read would let
+    # a NUL-suffixed role, native ID, claim, or notification key alias its
+    # canonical counterpart. One native ID must also bind exactly once: last-
+    # row-wins is not a safe identity rule for completion recovery.
+    omc_dispatch_authority_ledger_shell_safe "${bindings_file}" || return 1
+    omc_dispatch_authority_ledger_shell_safe "${pending_file}" || return 1
     binding_json="$(jq -Rsc --arg id "${native_id}" '
       [split("\n")[] | select(length > 0)
        | (try fromjson catch {})
-       | select((.native_agent_id // "") == $id)]
-      | last // {}
+       | select((.native_agent_id // "") == $id)] as $matches
+      | if ($matches | length) == 1 then $matches[0]
+        else error("ambiguous native binding") end
     ' "${bindings_file}" 2>/dev/null || true)"
+    [[ -n "${binding_json}" ]] || return 1
     agent_type="$(jq -r '.agent_type // empty' \
       <<<"${binding_json}" 2>/dev/null || true)"
-    [[ -n "$(omc_enforced_terminal_contract_kind \
+    [[ -n "$(omc_completion_recovery_kind \
       "${agent_type}" 2>/dev/null || true)" ]] || return 0
     # The synthetic prompt may have queued behind release, /ulw-off, or a new
     # active interval. Recheck the captured authority under the session lock
     # before consuming any one-shot outcome or publishing recovery context.
     is_ultrawork_mode || return 0
     local captured_generation="${_OMC_ULW_CAPTURED_GENERATION:-migration}"
+    stable_rebind_id="task-end-$(_omc_token_digest \
+      "${notification_key}|${native_id}" 2>/dev/null | cut -c1-16)"
+    [[ "${stable_rebind_id}" =~ ^task-end-[A-Fa-f0-9]{16}$ ]] || return 1
 
     # Background completions have no second PostToolUse:Agent callback. Consume
     # their exact native-ID outcome here so it cannot be mistaken for a later
@@ -107,36 +274,57 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     [[ ! -L "${outcomes_file}" ]] \
       && { [[ ! -e "${outcomes_file}" ]] \
         || [[ -f "${outcomes_file}" ]]; } || return 1
+    notification_claim="$(omc_notification_receipt_claim_unlocked \
+      "${outcomes_file}" "${notification_key}" "task-notification" \
+      "${agent_type}" "${native_id}" "" "${notification_status}")" \
+      || return 1
+    existing_receipt="$(jq -c '.receipt' <<<"${notification_claim}" \
+      2>/dev/null)" || return 1
     if [[ -s "${outcomes_file}" && -f "${outcomes_file}" \
         && ! -L "${outcomes_file}" ]]; then
       bundle="$(jq -Rsc --arg id "${native_id}" \
         --arg key "${notification_key}" \
+        --arg agent "${agent_type}" \
         --arg generation "${captured_generation}" \
-        --arg notification_status "${notification_status}" '
-        [split("\n")[] | select(length > 0)
-         | (try fromjson catch null)
-         | select(type == "object")] as $rows
-        | (any($rows[];
-             (.notification_receipt // false) == true
-             and (.notification_key // "") == $key)) as $duplicate
-        | ([$rows | to_entries[]
-            | select((.value.notification_receipt // false) != true)
-            | select((.value.native_agent_id // "") == $id)
-            | select($notification_status
-                     | IN("completed","failed","stopped",
-                          "cancelled","canceled"))
-            | select((.value.status // "") | IN("accepted","ignored"))]) as $matches
-        | (any($rows[];
-             (.notification_receipt // false) != true
-             and (.native_agent_id // "") == $id
-             and ((.ulw_enforcement_generation // "migration")
-                  != $generation)
-             and ((.status // "") | IN("accepted","ignored")))) as $foreign
-        | ($matches[0].key // null) as $idx
-        | {duplicate:$duplicate,foreign:$foreign,matches:($matches | length),
-           selected:(if $idx == null then null else $rows[$idx] end),
-           remaining:[$rows | to_entries[]
-                      | select(.key != $idx) | .value]}
+        --arg notification_status "${notification_status}" \
+        --argjson existing_receipt "${existing_receipt}" '
+        [split("\n")[] | select(length > 0)] as $raw
+        | [$raw[] | (try fromjson catch null)] as $rows
+        | if all($rows[]; type == "object") | not then
+            error("invalid completion outcome ledger")
+          else
+        def notification_shaped($row):
+          (($row | type) == "object")
+          and (($row | has("notification_receipt"))
+            or ($row | has("notification_kind"))
+            or ($row | has("notification_key"))
+            or ($row | has("completion_outcome")));
+        if $existing_receipt != null then
+          {duplicate:true,receipt:$existing_receipt,foreign:false,matches:0,
+           selected:null,remaining:$rows}
+        else
+          ([$rows | to_entries[]
+              | select(notification_shaped(.value) | not)
+              | select((.value.native_agent_id // "") == $id)
+              | select($notification_status
+                       | IN("completed","failed","stopped",
+                            "cancelled","canceled"))
+              | select((.value.status // "") | IN("accepted","ignored"))])
+            as $matches
+          | (any($rows[];
+               (notification_shaped(.) | not)
+               and (.native_agent_id // "") == $id
+               and ((.ulw_enforcement_generation // "migration")
+                    != $generation)
+               and ((.status // "") | IN("accepted","ignored")))) as $foreign
+          | ($matches[0].key // null) as $idx
+          | {duplicate:false,receipt:null,
+             foreign:$foreign,matches:($matches | length),
+             selected:(if $idx == null then null else $rows[$idx] end),
+             remaining:[$rows | to_entries[]
+                        | select(.key != $idx) | .value]}
+        end
+          end
       ' "${outcomes_file}" 2>/dev/null || true)"
       [[ -n "${bundle}" ]] || return 1
     else
@@ -145,11 +333,34 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     if [[ "$(jq -r '.duplicate // false' \
         <<<"${bundle}" 2>/dev/null || true)" == "true" ]]; then
       _task_notification_duplicate=1
+      _task_notification_rejected_pending_reason="$(jq -r '
+        (.receipt.notification_rejected_reason // "") as $reason
+        | if $reason != "" then $reason
+          elif (.receipt.completion_outcome.status // "") == "ignored"
+          then (.receipt.completion_outcome.reason // "")
+          elif (.receipt.status // "") == "ignored"
+          then (.receipt.reason // "")
+          else "" end
+      ' <<<"${bundle}" 2>/dev/null || true)"
+      _task_notification_rebind_id="$(jq -r \
+        '.receipt.notification_rebind_id // empty' \
+        <<<"${bundle}" 2>/dev/null || true)"
+      if [[ "$(jq -r \
+          '.receipt.notification_retry_exhausted // false' \
+          <<<"${bundle}" 2>/dev/null || true)" == "true" ]]; then
+        _task_notification_retry_exhausted=1
+      fi
+      if [[ "$(jq -r \
+          '.receipt.notification_current_pending_preserved // false' \
+          <<<"${bundle}" 2>/dev/null || true)" == "true" ]]; then
+        _task_notification_current_pending_preserved=1
+      fi
       return 0
     fi
     matches="$(jq -r '.matches // 0' <<<"${bundle}" 2>/dev/null || true)"
     foreign="$(jq -r '.foreign // false' <<<"${bundle}" 2>/dev/null || true)"
-    [[ "${matches}" =~ ^[0-9]+$ ]] || matches=0
+    _omc_canonical_uint_in_range "${matches}" 0 "${_ROUTER_UINT_MAX}" \
+      || return 1
     if (( matches > 0 )); then
       selected="$(jq -c '.selected // empty' \
         <<<"${bundle}" 2>/dev/null || true)"
@@ -191,17 +402,17 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     fi
 
     if [[ -z "${selected}" || -n "${rejected_reason}" ]]; then
-      pending_file="$(session_file "pending_agents.jsonl")"
       if [[ -s "${pending_file}" && -f "${pending_file}" \
           && ! -L "${pending_file}" ]]; then
         current_cycle="$(read_state "review_cycle_id")"
-        [[ "${current_cycle}" =~ ^[0-9]+$ ]] || current_cycle=0
+        current_cycle="$(_router_optional_uint_or_zero \
+          "${current_cycle}" "${_ROUTER_UINT_MAX}")" || return 1
         current_objective_ts="$(read_state "review_cycle_prompt_ts")"
-        if [[ ! "${current_objective_ts}" =~ ^[0-9]+$ ]]; then
+        if [[ -z "${current_objective_ts}" ]]; then
           current_objective_ts="$(read_state "last_user_prompt_ts")"
         fi
-        [[ "${current_objective_ts}" =~ ^[0-9]+$ ]] \
-          || current_objective_ts=0
+        current_objective_ts="$(_router_optional_uint_or_zero \
+          "${current_objective_ts}" "${_ROUTER_UINT_MAX}")" || return 1
         while IFS= read -r line || [[ -n "${line}" ]]; do
           [[ -n "${line}" ]] || continue
           [[ "$(jq -r '.native_agent_id // empty' \
@@ -229,7 +440,24 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
           esac
           if [[ "$(jq -r '.review_dispatch_abandoned // false' \
               <<<"${line}" 2>/dev/null || true)" == "true" ]]; then
-            rejected_reason="abandoned-dispatch-completion"
+            row_abandon_reason="$(jq -r \
+              '.review_dispatch_abandonment_reason // empty' \
+              <<<"${line}" 2>/dev/null || true)"
+            row_notification_key="$(jq -r \
+              '.terminal_contract_last_notification_key // empty' \
+              <<<"${line}" 2>/dev/null || true)"
+            row_rebind_id="$(jq -r '.terminal_contract_rebind_id // empty' \
+              <<<"${line}" 2>/dev/null || true)"
+            if [[ "${row_abandon_reason}" == \
+                "terminal-contract-parent-retry-exhausted" \
+                && "${row_notification_key}" == "${notification_key}" \
+                && "${row_rebind_id}" =~ ^task-end-[A-Fa-f0-9]{16}$ ]]; then
+              rejected_reason="terminal-contract-parent-retry-exhausted"
+              _task_notification_retry_exhausted=1
+              _task_notification_rebind_id="${row_rebind_id}"
+            else
+              rejected_reason="abandoned-dispatch-completion"
+            fi
             continue
           fi
           row_claim_id="$(jq -r '.completion_claim_id // empty' \
@@ -240,11 +468,16 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
             row_claim_effects="$(jq -r \
               '.completion_claim_effects_complete // false' \
               <<<"${line}" 2>/dev/null || true)"
-            [[ "${row_claim_ts}" =~ ^[0-9]+$ ]] || row_claim_ts=0
+            # An invalid claim age must never be treated as a live lease. It is
+            # an expired causal row and follows the existing retirement path.
+            _omc_canonical_uint_in_range \
+              "${row_claim_ts}" 1 "${_ROUTER_UINT_MAX}" || row_claim_ts=0
             row_claim_now="$(now_epoch)"
-            [[ "${row_claim_now}" =~ ^[0-9]+$ ]] || row_claim_now=0
+            _omc_canonical_uint_in_range \
+              "${row_claim_now}" 1 "${_ROUTER_UINT_MAX}" || return 1
             if [[ "${row_claim_effects}" != "true" \
-                && "${row_claim_ts}" -gt 0 \
+                && "${row_claim_ts}" != "0" \
+                && "${row_claim_now}" != "0" \
                 && "${row_claim_now}" -ge "${row_claim_ts}" \
                 && $((row_claim_now - row_claim_ts)) -le 120 ]]; then
               rejected_reason="completion-claim-settling"
@@ -259,9 +492,13 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
             <<<"${line}" 2>/dev/null || true)"
           row_objective_ts="$(jq -r '.objective_prompt_ts // 0' \
             <<<"${line}" 2>/dev/null || true)"
-          [[ "${row_cycle}" =~ ^[0-9]+$ ]] || row_cycle=0
-          [[ "${row_objective_ts}" =~ ^[0-9]+$ ]] \
-            || row_objective_ts=0
+          if ! _omc_canonical_uint_in_range \
+              "${row_cycle}" 0 "${_ROUTER_UINT_MAX}" \
+              || ! _omc_canonical_uint_in_range \
+                "${row_objective_ts}" 0 "${_ROUTER_UINT_MAX}"; then
+            rejected_reason="prior-objective-completion"
+            continue
+          fi
           if (( current_cycle != 0 && row_cycle != current_cycle )) \
               || (( current_objective_ts != 0 \
                     && row_objective_ts != current_objective_ts )); then
@@ -298,64 +535,86 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     # fires: two exact-transcript resumes are allowed; the third terminal wake
     # becomes an abandoned row that requires a fresh explicit rebind.
     if [[ -n "${candidate}" ]]; then
-      pending_backup="$(mktemp "${pending_file}.rollback.XXXXXX")" \
-        || return 1
-      cp "${pending_file}" "${pending_backup}" || {
-        rm -f "${pending_backup}"
-        pending_backup=""
-        return 1
-      }
       candidate_original="${candidate}"
+      row_notification_key="$(jq -r \
+        '.terminal_contract_last_notification_key // empty' \
+        <<<"${candidate}" 2>/dev/null || true)"
       retry_count="$(jq -r '.terminal_contract_retry_count // 0' \
         <<<"${candidate}" 2>/dev/null || true)"
-      [[ "${retry_count}" =~ ^[0-9]+$ ]] || retry_count=0
-      retry_count=$((retry_count + 1))
-      if (( retry_count >= 3 )); then
-        candidate="$(jq -c --argjson count "${retry_count}" \
-          --argjson abandoned_ts "$(now_epoch)" '
-            .terminal_contract_retry_count = $count
-            | .review_dispatch_abandoned = true
-            | .review_dispatch_abandonment_reason =
-                "terminal-contract-parent-retry-exhausted"
-            | .review_dispatch_abandoned_ts = $abandoned_ts
-          ' <<<"${candidate}" 2>/dev/null || true)"
-        rejected_reason="terminal-contract-parent-retry-exhausted"
-        _task_notification_retry_exhausted=1
+      _omc_canonical_uint_in_range \
+        "${retry_count}" 0 "${_ROUTER_PREINCREMENT_MAX}" || return 1
+      if [[ "${row_notification_key}" == "${notification_key}" ]]; then
+        # The pending-row write is the first half of the notification
+        # transaction. If the hook died before its receipt rename, an exact
+        # redelivery finishes the receipt without spending a second retry.
+        [[ "${retry_count}" == "1" || "${retry_count}" == "2" ]] \
+          || return 1
       else
-        candidate="$(jq -c --argjson count "${retry_count}" \
-          '.terminal_contract_retry_count = $count' \
-          <<<"${candidate}" 2>/dev/null || true)"
-      fi
-      if [[ -z "${candidate}" ]]; then
-        _restore_task_notification_pending
-        return 1
-      fi
-      pending_temp="$(mktemp "${pending_file}.XXXXXX")" || {
-        _restore_task_notification_pending
-        return 1
-      }
-      while IFS= read -r line || [[ -n "${line}" ]]; do
-        [[ -n "${line}" ]] || continue
-        if [[ "${line}" == "${candidate_original}" ]]; then
-          printf '%s\n' "${candidate}" >>"${pending_temp}" || {
-            rm -f "${pending_temp}"
-            _restore_task_notification_pending
-            return 1
-          }
+        pending_backup="$(mktemp "${pending_file}.rollback.XXXXXX")" \
+          || return 1
+        cp "${pending_file}" "${pending_backup}" || {
+          rm -f "${pending_backup}"
+          pending_backup=""
+          return 1
+        }
+        retry_count=$((retry_count + 1))
+        if (( retry_count >= 3 )); then
+          candidate="$(jq -c --argjson count "${retry_count}" \
+            --arg key "${notification_key}" \
+            --arg rebind_id "${stable_rebind_id}" \
+            --argjson abandoned_ts "$(now_epoch)" '
+              .terminal_contract_retry_count = $count
+              | .terminal_contract_last_notification_key = $key
+              | .review_dispatch_abandoned = true
+              | .review_dispatch_abandonment_reason =
+                  "terminal-contract-parent-retry-exhausted"
+              | .review_dispatch_abandoned_ts = $abandoned_ts
+              | .terminal_contract_rebind_id = $rebind_id
+            ' <<<"${candidate}" 2>/dev/null || true)"
+          rejected_reason="terminal-contract-parent-retry-exhausted"
+          _task_notification_retry_exhausted=1
         else
-          printf '%s\n' "${line}" >>"${pending_temp}" || {
-            rm -f "${pending_temp}"
-            _restore_task_notification_pending
-            return 1
-          }
+          candidate="$(jq -c --argjson count "${retry_count}" \
+            --arg key "${notification_key}" '
+              .terminal_contract_retry_count = $count
+              | .terminal_contract_last_notification_key = $key
+            ' <<<"${candidate}" 2>/dev/null || true)"
         fi
-      done <"${pending_file}"
-      mv -f "${pending_temp}" "${pending_file}" || {
-        rm -f "${pending_temp}"
-        _restore_task_notification_pending
-        return 1
-      }
-      pending_changed=1
+        if [[ -z "${candidate}" ]]; then
+          _restore_task_notification_pending
+          return 1
+        fi
+        pending_temp="$(mktemp "${pending_file}.XXXXXX")" || {
+          _restore_task_notification_pending
+          return 1
+        }
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+          [[ -n "${line}" ]] || continue
+          if [[ "${line}" == "${candidate_original}" ]]; then
+            printf '%s\n' "${candidate}" >>"${pending_temp}" || {
+              rm -f "${pending_temp}"
+              _restore_task_notification_pending
+              return 1
+            }
+          else
+            printf '%s\n' "${line}" >>"${pending_temp}" || {
+              rm -f "${pending_temp}"
+              _restore_task_notification_pending
+              return 1
+            }
+          fi
+        done <"${pending_file}"
+        mv -f "${pending_temp}" "${pending_file}" || {
+          rm -f "${pending_temp}"
+          _restore_task_notification_pending
+          return 1
+        }
+        pending_changed=1
+        if [[ "${OMC_TEST_TASK_NOTIFICATION_KILL_AFTER_PENDING:-0}" \
+            == "1" ]]; then
+          kill -9 "$$"
+        fi
+      fi
       if [[ "${_task_notification_retry_exhausted}" -eq 1 ]]; then
         candidate=""
       fi
@@ -412,10 +671,12 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
                   <<<"${line}" 2>/dev/null || true)" == \
                   "${captured_generation}" ]]; }; }; then
           if ! jq -c --arg reason "${tombstone_reason}" \
+              --arg rebind_id "${stable_rebind_id}" \
               --argjson abandoned_ts "$(now_epoch)" '
               .review_dispatch_abandoned = true
               | .review_dispatch_abandonment_reason = $reason
               | .review_dispatch_abandoned_ts = $abandoned_ts
+              | .terminal_contract_rebind_id = $rebind_id
             ' <<<"${line}" >>"${pending_temp}"; then
             rm -f "${pending_temp}"
             _restore_task_notification_pending
@@ -442,9 +703,7 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
         || { [[ "${rejected_reason}" == \
           "abandoned-dispatch-completion" ]] \
           && (( exact_count > 0 )); }; then
-      _task_notification_rebind_id="task-end-$(_omc_token_digest \
-        "${notification_key}|${native_id}" 2>/dev/null \
-        | cut -c1-16)"
+      _task_notification_rebind_id="${stable_rebind_id}"
     fi
 
     # No causal data means this task notification is unrelated to OMC's live
@@ -453,13 +712,45 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     [[ -n "${selected}" || -n "${candidate}" \
         || -n "${rejected_reason}" ]] || return 0
 
+    # Preserve the compact selected outcome both nested (exact replay
+    # authority) and projected at the receipt top level. Dedicated
+    # reviewer/plan waiter recovery can then still prove its lifecycle outcome
+    # after this notification has consumed the causal FIFO row.
+    receipt_recovery_reason="${rejected_reason}"
+    if [[ -z "${receipt_recovery_reason}" && -n "${selected}" \
+        && "$(jq -r '.status // empty' \
+          <<<"${selected}" 2>/dev/null || true)" == "ignored" ]]; then
+      receipt_recovery_reason="$(jq -r '.reason // empty' \
+        <<<"${selected}" 2>/dev/null || true)"
+    fi
+    protected_receipt_ids="$(
+      omc_completion_receipt_protected_lifecycle_ids_unlocked
+    )" || {
+      _restore_task_notification_pending
+      return 1
+    }
+    selected_for_receipt="${selected:-null}"
     receipt="$(jq -nc --argjson ts "$(now_epoch)" \
       --arg native_id "${native_id}" --arg key "${notification_key}" \
-      --arg status "${notification_status}" --arg agent "${agent_type}" '{
-        ts:$ts,notification_receipt:true,native_agent_id:$native_id,
-        notification_key:$key,notification_status:$status,
-        notification_agent_type:$agent
-      }')" || {
+      --arg status "${notification_status}" --arg agent "${agent_type}" \
+      --arg rejected_reason "${receipt_recovery_reason}" \
+      --arg rebind_id "${_task_notification_rebind_id}" \
+      --argjson retry_exhausted "${_task_notification_retry_exhausted}" \
+      --argjson current_pending_preserved \
+        "${_task_notification_current_pending_preserved}" \
+      --argjson outcome "${selected_for_receipt}" '
+        ($outcome // {}) + {
+          ts:$ts,notification_receipt:true,native_agent_id:$native_id,
+          notification_kind:"task-notification",notification_key:$key,
+          notification_status:$status,notification_agent_type:$agent,
+          notification_rejected_reason:$rejected_reason,
+          notification_rebind_id:$rebind_id,
+          notification_retry_exhausted:($retry_exhausted == 1),
+          notification_current_pending_preserved:
+            ($current_pending_preserved == 1),
+          completion_outcome:$outcome
+        }
+      ')" || {
         _restore_task_notification_pending
         return 1
       }
@@ -467,20 +758,49 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
       _restore_task_notification_pending
       return 1
     fi
+    notification_claim="$(omc_notification_receipt_claim_unlocked \
+      "${outcomes_file}" "${notification_key}" "task-notification" \
+      "${agent_type}" "${native_id}" "" "${notification_status}")" || {
+      _restore_task_notification_pending
+      return 1
+    }
+    if [[ "$(jq -r '.claimed' <<<"${notification_claim}" 2>/dev/null)" \
+        != "false" ]]; then
+      _restore_task_notification_pending
+      return 1
+    fi
     temp="$(mktemp "${outcomes_file}.XXXXXX")" || {
       _restore_task_notification_pending
       return 1
     }
-    if ! jq -cr --argjson receipt "${receipt}" '
-        ([.remaining[] | select((.notification_receipt // false) != true)]
-         + ([.remaining[] | select((.notification_receipt // false) == true)]
-            | if length > 127 then .[-127:] else . end)
-         + [$receipt])[]
+    if ! jq -cr --argjson receipt "${receipt}" \
+        --argjson protected "${protected_receipt_ids}" '
+        def protected_receipt:
+          (.lifecycle_dispatch_id // "") as $id
+          | $id != "" and (($protected | index($id)) != null);
+        [.remaining[]
+          | select((.notification_receipt // false) != true)] as $causal
+        | [.remaining[]
+            | select((.notification_receipt // false) == true)] as $receipts
+        | [$receipts[] | select(protected_receipt)] as $live
+        | [$receipts[] | select(protected_receipt | not)] as $history
+        | (127 - ($live | length)) as $history_slots
+        | if $history_slots < 0 then error("live receipt cap")
+          else
+            ($history
+              | if $history_slots == 0 then []
+                elif length > $history_slots then .[-$history_slots:]
+                else . end) as $kept_history
+            | ($causal + $kept_history + $live + [$receipt])[]
+          end
       ' <<<"${bundle}" >"${temp}" \
         || ! mv -f "${temp}" "${outcomes_file}"; then
       rm -f "${temp}"
       _restore_task_notification_pending
       return 1
+    fi
+    if [[ "${OMC_TEST_TASK_NOTIFICATION_KILL_AFTER_RECEIPT:-0}" == "1" ]]; then
+      kill -9 "$$"
     fi
     rm -f "${pending_backup}" 2>/dev/null || true
     pending_backup=""
@@ -509,7 +829,8 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
         _task_notification_recovery_failed=1
       fi
     fi
-    if [[ "${_task_notification_duplicate}" -eq 1 ]]; then
+    if [[ "${_task_notification_duplicate}" -eq 1 \
+        && -z "${_task_notification_rejected_pending_reason}" ]]; then
       _task_notification_recovery_context="DUPLICATE BACKGROUND NOTIFICATION: this exact task wake was already processed. Do not integrate its result again, issue another resume, or wait for another copy. Continue from the current review/plan state."
     elif [[ "${_task_notification_cleanup_reconcile_failed}" -eq 1 ]]; then
       _task_notification_recovery_context="BACKGROUND RECOVERY DEGRADED: oh-my-claude retained this task notification and its durable cleanup journal because the exact pending/start artifacts could not be reconciled safely. Do not integrate the raw result, wait for another copy, resume or rebind this call, or dispatch a duplicate. Re-evaluate the lifecycle state and retry journal convergence; if it still fails, surface the concrete hook/state error instead of promising automatic resume."
@@ -518,7 +839,11 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
     elif [[ -n "${_task_notification_rejected_pending_reason}" ]]; then
       case "${_task_notification_rejected_pending_reason}" in
         terminal-contract-parent-retry-exhausted)
-          _task_notification_recovery_context="BACKGROUND REVIEW RECOVERY: the exact native call ${_task_notification_id} repeatedly ended before a valid final verdict could settle, so its bounded parent-recovery budget is exhausted. Do not wait for or resume that call. Re-evaluate current pending work first. If a replacement is already tracked, do not dispatch another. Otherwise: Dispatch a fresh equivalent now with description token [review-rebind:${_task_notification_rebind_id}]. The partial result is not accepted evidence."
+          _notification_rebind_clause="Dispatch a fresh equivalent now"
+          if [[ -n "${_task_notification_rebind_id}" ]]; then
+            _notification_rebind_clause="Dispatch a fresh equivalent now with description token [review-rebind:${_task_notification_rebind_id}]"
+          fi
+          _task_notification_recovery_context="BACKGROUND REVIEW RECOVERY: the exact native call ${_task_notification_id} repeatedly ended before a valid final verdict could settle, so its bounded parent-recovery budget is exhausted. Do not wait for or resume that call. Re-evaluate current pending work first. If a replacement is already tracked, do not dispatch another. Otherwise: ${_notification_rebind_clause}. The partial result is not accepted evidence."
           ;;
         task-stopped)
           _notification_rebind_clause="dispatch a fresh equivalent"
@@ -572,17 +897,20 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
         <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
       _notification_current_cycle="$(read_state "review_cycle_id")"
       _notification_current_ts="$(read_state "review_cycle_prompt_ts")"
-      if [[ ! "${_notification_current_ts}" =~ ^[0-9]+$ ]]; then
+      if [[ -z "${_notification_current_ts}" ]]; then
         _notification_current_ts="$(read_state "last_user_prompt_ts")"
       fi
-      [[ "${_notification_outcome_cycle}" =~ ^[0-9]+$ ]] \
-        || _notification_outcome_cycle=0
-      [[ "${_notification_outcome_ts}" =~ ^[0-9]+$ ]] \
-        || _notification_outcome_ts=0
-      [[ "${_notification_current_cycle}" =~ ^[0-9]+$ ]] \
-        || _notification_current_cycle=0
-      [[ "${_notification_current_ts}" =~ ^[0-9]+$ ]] \
-        || _notification_current_ts=0
+      _notification_objective_numbers_valid=1
+      if ! _notification_outcome_cycle="$(_router_optional_uint_or_zero \
+          "${_notification_outcome_cycle}" "${_ROUTER_UINT_MAX}")" \
+          || ! _notification_outcome_ts="$(_router_optional_uint_or_zero \
+            "${_notification_outcome_ts}" "${_ROUTER_UINT_MAX}")" \
+          || ! _notification_current_cycle="$(_router_optional_uint_or_zero \
+            "${_notification_current_cycle}" "${_ROUTER_UINT_MAX}")" \
+          || ! _notification_current_ts="$(_router_optional_uint_or_zero \
+            "${_notification_current_ts}" "${_ROUTER_UINT_MAX}")"; then
+        _notification_objective_numbers_valid=0
+      fi
       _notification_agent="$(jq -r '.agent_type // "reviewer"' \
         <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
       _notification_verdict="$(jq -r '.verdict // empty' \
@@ -595,13 +923,18 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
         _notification_plan_revision="$(read_state "plan_revision")"
         _notification_start_revision="$(jq -r '.review_revision // -1' \
           <<<"${_task_notification_outcome_json}" 2>/dev/null || true)"
-        [[ "${_notification_plan_revision}" =~ ^[0-9]+$ ]] \
-          || _notification_plan_revision=0
-        [[ "${_notification_start_revision}" =~ ^[0-9]+$ ]] \
-          || _notification_start_revision=-1
+        _notification_plan_numbers_valid=1
+        if ! _notification_plan_revision="$(_router_optional_uint_or_zero \
+            "${_notification_plan_revision}" "${_ROUTER_UINT_MAX}")" \
+            || ! _omc_canonical_uint_in_range \
+              "${_notification_start_revision}" 0 \
+              "${_ROUTER_PREINCREMENT_MAX}"; then
+          _notification_plan_numbers_valid=0
+        fi
         case "${_notification_verdict}" in
           PLAN_READY)
-            if (( _notification_start_revision >= 0 \
+            if [[ "${_notification_plan_numbers_valid}" -eq 1 ]] \
+                && (( _notification_start_revision >= 0 \
                   && _notification_plan_revision \
                     == _notification_start_revision + 1 )) \
                 && [[ "$(read_state "has_plan")" == "true" \
@@ -612,7 +945,8 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
             fi
             ;;
           NEEDS_CLARIFICATION|BLOCKED)
-            if (( _notification_start_revision >= 0 \
+            if [[ "${_notification_plan_numbers_valid}" -eq 1 ]] \
+                && (( _notification_start_revision >= 0 \
                   && _notification_plan_revision \
                     == _notification_start_revision )) \
                 && [[ "$(read_state "has_plan")" == "false" \
@@ -629,7 +963,8 @@ if is_synthetic_prompt "${PROMPT_TEXT}"; then
         _notification_generation_current=1
       fi
       _notification_outcome_current=0
-      if { (( _notification_current_cycle == 0 \
+      if [[ "${_notification_objective_numbers_valid}" -eq 1 ]] \
+          && { (( _notification_current_cycle == 0 \
                 || _notification_outcome_cycle == _notification_current_cycle )) \
           && (( _notification_current_ts == 0 \
                 || _notification_outcome_ts == _notification_current_ts )); } \
@@ -731,10 +1066,17 @@ done < <(read_state_keys \
 # staleness, whichever comes first.
 post_compact_bias=0
 if [[ "${just_compacted_value}" == "1" ]] && [[ -n "${just_compacted_ts_value}" ]]; then
-  compact_age=$(( $(now_epoch) - just_compacted_ts_value ))
-  if (( compact_age >= 0 )) && (( compact_age < 900 )); then
-    post_compact_bias=1
-    log_hook "prompt-intent-router" "post-compact bias active (age=${compact_age}s)"
+  _router_compact_now="$(now_epoch)"
+  if _omc_canonical_uint_in_range \
+      "${just_compacted_ts_value}" 1 "${_ROUTER_UINT_MAX}" \
+      && _omc_canonical_uint_in_range \
+        "${_router_compact_now}" 1 "${_ROUTER_UINT_MAX}"; then
+    compact_age=$((_router_compact_now - just_compacted_ts_value))
+    if (( compact_age >= 0 )) && (( compact_age < 900 )); then
+      post_compact_bias=1
+      log_hook "prompt-intent-router" \
+        "post-compact bias active (age=${compact_age}s)"
+    fi
   fi
   # Always clear on first read — single-use flag.
   write_state_batch "just_compacted" "" "just_compacted_ts" ""
@@ -752,7 +1094,29 @@ objective_contract_check_post_block_reprompt || true
 any_gate_check_post_block_reprompt || true
 
 TASK_INTENT="$(classify_task_intent "${PROMPT_TEXT}")"
-PROMPT_TS="$(now_epoch)"
+# Quality-Constitution curation is session management, even though mutation
+# verbs such as `remember`, `must`, and `remove` look execution-shaped to the
+# generic classifier. Normalize it before any fresh-execution reset or
+# objective-cycle transition. The command may issue one durable-taste grant,
+# but it must leave the active work lifecycle (objective, first mutation,
+# contract/floor/proof/frontier, and pending reviewers) untouched.
+QUALITY_CONSTITUTION_PROMPT=0
+if [[ "${PROMPT_TEXT}" == "/quality-constitution" \
+    || "${PROMPT_TEXT}" == /quality-constitution\ * ]]; then
+  QUALITY_CONSTITUTION_PROMPT=1
+  TASK_INTENT="session_management"
+fi
+PROMPT_TS="${OMC_TEST_ROUTER_NOW_EPOCH:-}"
+if ! _omc_canonical_uint_in_range \
+    "${PROMPT_TS}" 1 "${_ROUTER_UINT_MAX}"; then
+  PROMPT_TS="$(now_epoch)"
+fi
+if ! _omc_canonical_uint_in_range \
+    "${PROMPT_TS}" 1 "${_ROUTER_UINT_MAX}"; then
+  log_anomaly "prompt-intent-router" \
+    "invalid current epoch; prompt routing refused" 2>/dev/null || true
+  exit 1
+fi
 # Keep directive-cache identity, rendered metadata, the turn snapshot, the
 # resolver, and Agent PreTool enforcement on the same validated tier. In
 # particular, an invalid explicit env value is one effective Balanced posture,
@@ -842,8 +1206,13 @@ if is_prompt_persist_enabled; then
 else
   _omc_persisted_prompt_safe=""
 fi
-_prompt_revision="$(read_state "prompt_revision" 2>/dev/null || true)"
-[[ "${_prompt_revision}" =~ ^[0-9]+$ ]] || _prompt_revision=0
+_prompt_revision_raw="$(read_state "prompt_revision" 2>/dev/null || true)"
+if ! _prompt_revision="$(_router_optional_uint_or_zero \
+    "${_prompt_revision_raw}" "${_ROUTER_PREINCREMENT_MAX}")"; then
+  log_anomaly "prompt-intent-router" \
+    "invalid prompt_revision; prompt routing refused" 2>/dev/null || true
+  exit 1
+fi
 _prompt_revision=$((_prompt_revision + 1))
 write_state_batch \
   "stop_guard_blocks" "0" \
@@ -905,6 +1274,7 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     "closeout_finalized_token" "" \
     "closeout_finalization_status" "" \
     "closeout_finalization_claimed_ts" "" \
+    "closeout_finalization_claim_id" "" \
     "closeout_display_active_message_id" "" \
     "closeout_display_watch_message_id" "" \
     "closeout_display_buffer_message_id" "" \
@@ -912,11 +1282,17 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     "closeout_display_passthrough_message_id" "" \
     "closeout_material_activity" "0" \
     "work_material_generation" "0"
-  rm -f \
-    "$(session_file "provisional_closeouts.jsonl")" \
-    "$(session_file ".closeout-material-generation")" \
-    "$(session_file "closeout-display-buffer.txt")" 2>/dev/null || true
-  rm -rf "$(session_file ".closeout-material-generations")" 2>/dev/null || true
+  _clear_fresh_prompt_closeout_artifacts_unlocked() {
+    rm -f \
+      "$(session_file "provisional_closeouts.jsonl")" \
+      "$(session_file ".closeout-material-generation")" \
+      "$(session_file "closeout-display-buffer.txt")" 2>/dev/null \
+      || return 1
+    rm -rf "$(session_file ".closeout-material-generations")" \
+      2>/dev/null || return 1
+  }
+  with_state_lock _clear_fresh_prompt_closeout_artifacts_unlocked \
+    || exit 1
 fi
 if is_prompt_persist_enabled; then
   append_limited_state \
@@ -933,7 +1309,8 @@ if is_time_tracking_enabled; then
   timing_append_prompt_start "${_omc_new_prompt_seq}"
 fi
 
-if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
+if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" \
+    && "${QUALITY_CONSTITUTION_PROMPT}" -eq 0 ]]; then
   if [[ "${EXEMPLIFYING_SCOPE_DETECTED}" -eq 1 ]]; then
     write_state_batch \
       "exemplifying_scope_required" "1" \
@@ -954,8 +1331,7 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]]; then
   fi
 fi
 
-if [[ "${PROMPT_TEXT}" == "/quality-constitution" \
-    || "${PROMPT_TEXT}" == /quality-constitution\ * ]]; then
+if [[ "${QUALITY_CONSTITUTION_PROMPT}" -eq 1 ]]; then
   # Constitution curation changes durable taste, not the active work
   # objective. Keeping the slash payload out of current_objective also closes
   # the last verbatim persistence path when prompt_persist=off; the causal
@@ -1018,14 +1394,37 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
   if [[ -f "${_review_cycle_log}" ]]; then
     _review_cycle_log_offset="$(wc -l < "${_review_cycle_log}" | tr -d '[:space:]')"
   fi
-  [[ "${_review_cycle_log_offset}" =~ ^[0-9]+$ ]] || _review_cycle_log_offset=0
+  if ! _omc_canonical_uint_in_range \
+      "${_review_cycle_log_offset}" 0 "${_ROUTER_UINT_MAX}"; then
+    log_anomaly "prompt-intent-router" \
+      "invalid edit-log offset; fresh objective refused" 2>/dev/null || true
+    exit 1
+  fi
 
-  _review_cycle_bash_event_base="$(read_state "bash_edit_event_count")"
-  _review_cycle_bash_event_base="${_review_cycle_bash_event_base:-0}"
-  [[ "${_review_cycle_bash_event_base}" =~ ^[0-9]+$ ]] || _review_cycle_bash_event_base=0
-  _review_cycle_plan_revision_base="$(read_state "plan_revision")"
-  _review_cycle_plan_revision_base="${_review_cycle_plan_revision_base:-0}"
-  [[ "${_review_cycle_plan_revision_base}" =~ ^[0-9]+$ ]] || _review_cycle_plan_revision_base=0
+  if ! _review_cycle_bash_event_base="$(_router_optional_uint_or_zero \
+      "$(read_state "bash_edit_event_count")" "${_ROUTER_UINT_MAX}")" \
+      || ! _review_cycle_external_event_base="$(_router_optional_uint_or_zero \
+        "$(read_state "external_edit_event_count")" \
+        "${_ROUTER_UINT_MAX}")" \
+      || ! _review_cycle_external_doc_event_base="$(_router_optional_uint_or_zero \
+        "$(read_state "external_doc_edit_event_count")" \
+        "${_ROUTER_UINT_MAX}")" \
+      || ! _review_cycle_external_ui_event_base="$(_router_optional_uint_or_zero \
+        "$(read_state "external_ui_edit_event_count")" \
+        "${_ROUTER_UINT_MAX}")" \
+      || ! _review_cycle_external_native_event_base="$(_router_optional_uint_or_zero \
+        "$(read_state "external_native_edit_event_count")" \
+        "${_ROUTER_UINT_MAX}")" \
+      || ! _review_cycle_external_unknown_event_base="$(_router_optional_uint_or_zero \
+        "$(read_state "external_unknown_edit_event_count")" \
+        "${_ROUTER_UINT_MAX}")" \
+      || ! _review_cycle_plan_revision_base="$(_router_optional_uint_or_zero \
+        "$(read_state "plan_revision")" "${_ROUTER_UINT_MAX}")"; then
+    log_anomaly "prompt-intent-router" \
+      "invalid objective baseline counter; fresh objective refused" \
+      2>/dev/null || true
+    exit 1
+  fi
   _review_cycle_findings_signature_base="$(_review_cycle_file_signature "$(session_file "findings.json")")"
   _review_cycle_broad_scope=""
   if is_review_cycle_broad_scope_request "${PROMPT_TEXT}" \
@@ -1058,7 +1457,8 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
   _abandon_prior_objective_dispatches_unlocked() {
     local artifact ledger temp line updated abandoned_ts taint_file taint_tmp taint_dedup
     abandoned_ts="$(now_epoch)"
-    [[ "${abandoned_ts}" =~ ^[0-9]+$ ]] || abandoned_ts=0
+    _omc_canonical_uint_in_range \
+      "${abandoned_ts}" 1 "${_ROUTER_UINT_MAX}" || return 1
     # Taint identities durably before rotating any bounded tombstone. A late
     # pre-objective completion can otherwise hijack a later unbound row after
     # enough other tombstones have displaced its original suppression row.
@@ -1097,6 +1497,10 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     for artifact in pending_agents.jsonl agent_dispatch_starts.jsonl; do
       ledger="$(session_file "${artifact}")"
       [[ -s "${ledger}" ]] || continue
+      if [[ "${OMC_TEST_FAIL_OBJECTIVE_LEDGER_REWRITE:-0}" == "1" \
+          && "${artifact}" == "pending_agents.jsonl" ]]; then
+        return 1
+      fi
       temp="$(mktemp "${ledger}.XXXXXX")" || return 1
       while IFS= read -r line || [[ -n "${line}" ]]; do
         [[ -n "${line}" ]] || continue
@@ -1137,8 +1541,11 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
     # Timestamps remain observability only. Allocate the monotonic identity and
     # invalidate prior dispatches inside one session lock; continuations never
     # enter this branch and therefore preserve the cycle ID.
-    _review_cycle_id="$(read_state "review_cycle_id")"
-    [[ "${_review_cycle_id}" =~ ^[0-9]+$ ]] || _review_cycle_id=0
+    if ! _review_cycle_id="$(_router_optional_uint_or_zero \
+        "$(read_state "review_cycle_id")" \
+        "${_ROUTER_PREINCREMENT_MAX}")"; then
+      return 1
+    fi
     _review_cycle_id=$((_review_cycle_id + 1))
 
     # Taint/tombstone first. If the following state batch fails, the prompt
@@ -1151,6 +1558,11 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
       "review_cycle_prompt_ts" "${PROMPT_TS}" \
       "review_cycle_edit_log_offset" "${_review_cycle_log_offset}" \
       "review_cycle_bash_event_base" "${_review_cycle_bash_event_base}" \
+      "review_cycle_external_event_base" "${_review_cycle_external_event_base}" \
+      "review_cycle_external_doc_event_base" "${_review_cycle_external_doc_event_base}" \
+      "review_cycle_external_ui_event_base" "${_review_cycle_external_ui_event_base}" \
+      "review_cycle_external_native_event_base" "${_review_cycle_external_native_event_base}" \
+      "review_cycle_external_unknown_event_base" "${_review_cycle_external_unknown_event_base}" \
       "review_cycle_plan_revision_base" "${_review_cycle_plan_revision_base}" \
       "review_cycle_findings_signature_base" "${_review_cycle_findings_signature_base}" \
       "review_cycle_broad_scope" "${_review_cycle_broad_scope}" \
@@ -1174,12 +1586,17 @@ if [[ "${TASK_INTENT}" == "execution" ]]; then
   _oc_goal_on=""
   [[ "$(read_state "goal_mode_active" 2>/dev/null || true)" == "1" ]] && _oc_goal_on="1"
   if [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" || -n "${_oc_goal_on}" ]]; then
-    _oc_code_edits="$(read_state "code_edit_count")"; _oc_code_edits="${_oc_code_edits:-0}"
-    _oc_doc_edits="$(read_state "doc_edit_count")"; _oc_doc_edits="${_oc_doc_edits:-0}"
-    _oc_edit_revision="$(read_state "edit_revision")"; _oc_edit_revision="${_oc_edit_revision:-0}"
-    [[ "${_oc_code_edits}" =~ ^[0-9]+$ ]] || _oc_code_edits=0
-    [[ "${_oc_doc_edits}" =~ ^[0-9]+$ ]] || _oc_doc_edits=0
-    [[ "${_oc_edit_revision}" =~ ^[0-9]+$ ]] || _oc_edit_revision=0
+    if ! _oc_code_edits="$(_router_optional_uint_or_zero \
+        "$(read_state "code_edit_count")" "${_ROUTER_UINT_MAX}")" \
+        || ! _oc_doc_edits="$(_router_optional_uint_or_zero \
+          "$(read_state "doc_edit_count")" "${_ROUTER_UINT_MAX}")" \
+        || ! _oc_edit_revision="$(_router_optional_uint_or_zero \
+          "$(read_state "edit_revision")" "${_ROUTER_UINT_MAX}")"; then
+      log_anomaly "prompt-intent-router" \
+        "invalid objective edit counter; objective contract refused" \
+        2>/dev/null || true
+      exit 1
+    fi
     # objective_contract_god_scope (v1.47): a CYCLE-BOUND mirror of the
     # god-scope bare-imperative signal. The sticky god_scope_required flag
     # (set at the god-scope directive below, never cleared) cannot be read at
@@ -1237,7 +1654,10 @@ if [[ "${post_compact_bias}" -eq 1 ]]; then
   fi
 fi
 
-if [[ "${TASK_INTENT}" == "advisory" || "${TASK_INTENT}" == "session_management" || "${TASK_INTENT}" == "checkpoint" ]]; then
+if [[ "${QUALITY_CONSTITUTION_PROMPT}" -eq 0 ]] \
+    && [[ "${TASK_INTENT}" == "advisory" \
+      || "${TASK_INTENT}" == "session_management" \
+      || "${TASK_INTENT}" == "checkpoint" ]]; then
   normalized_meta_request="$(trim_whitespace "$(normalize_task_prompt "${PROMPT_TEXT_SAFE}")")"
   if [[ -n "${normalized_meta_request}" ]]; then
     write_state "last_meta_request" "${normalized_meta_request}"
@@ -1303,9 +1723,14 @@ directive_budget_total_char_limit() {
   case "$1" in
     off) printf '32000' ;;
     maximum) printf '24000' ;;
-    balanced) printf '14000' ;;
+    # The frozen Definition-of-Excellent contract is a mandatory ~1.7K
+    # directive. Preserve the pre-contract balanced allowance for the
+    # higher-priority scope/surface/paradigm defenses instead of letting that
+    # new mandatory floor crowd out divergent framing while a much smaller
+    # low-priority defect-watch hint slips into the remaining gap.
+    balanced) printf '16000' ;;
     minimal) printf '8000' ;;
-    *) printf '14000' ;;
+    *) printf '16000' ;;
   esac
 }
 
@@ -1385,7 +1810,7 @@ directive_registry_row() {
       printf 'safety|0|mandatory|always' ;;
     guard_exhausted_warning)
       printf 'gate|1|mandatory|always' ;;
-    goal_command_entrance|goal_auto_armed|continuation_directive_explicit|phase8_resume_hint|resume_request_hint|council_phase8_followup|ultrathink|definition_of_excellent|quality_constitution_authorization|quality_constitution_authorization_invalid)
+    goal_command_entrance|goal_auto_armed|continuation_directive_explicit|phase8_resume_hint|resume_request_hint|council_phase8_followup|ultrathink|definition_of_excellent|quality_contract_scope_overflow|quality_constitution_authorization|quality_constitution_authorization_invalid)
       printf 'contract|2|mandatory|always' ;;
     routing_state_delta)
       printf 'routing|3|mandatory|always' ;;
@@ -1567,7 +1992,13 @@ flush_directives() {
     previous_signature="$(read_state "directive_context_signature")"
     previous_full_ts="$(read_state "directive_context_last_full_ts")"
     force_full="$(read_state "directive_context_force_full")"
-    [[ "${previous_full_ts}" =~ ^[0-9]+$ ]] || previous_full_ts=0
+    if ! previous_full_ts="$(_router_optional_uint_or_zero \
+        "${previous_full_ts}" "${_ROUTER_UINT_MAX}")"; then
+      # Cache metadata is advisory. Corruption safely costs one full frame; it
+      # never suppresses current routing guidance or aborts the user prompt.
+      previous_full_ts=0
+      force_full=1
+    fi
     signature_age=$((PROMPT_TS - previous_full_ts))
     if [[ "${force_full}" != "1" ]] \
       && [[ "${post_compact_bias:-0}" -ne 1 ]] \
@@ -1958,8 +2389,18 @@ if [[ -n "${recovered_from_corrupt_ts:-}" ]]; then
   # The counter lives in a sidecar (.recovery_count) that survives
   # the JSON-state archive in lib/state-io.sh:_ensure_valid_state.
   _recovery_count_file="$(session_file ".recovery_count")"
-  _recovery_count="$(cat "${_recovery_count_file}" 2>/dev/null || printf '0')"
-  [[ "${_recovery_count}" =~ ^[0-9]+$ ]] || _recovery_count=0
+  if [[ -e "${_recovery_count_file}" || -L "${_recovery_count_file}" ]]; then
+    _recovery_count="$(_omc_read_canonical_metadata_line \
+      "${_recovery_count_file}" 32 2>/dev/null || true)"
+    if ! _omc_canonical_uint_in_range \
+        "${_recovery_count}" 0 "${_ROUTER_UINT_MAX}"; then
+      _recovery_count=2
+      log_anomaly "prompt-intent-router" \
+        "malformed recovery counter preserved; repeat-recovery alarm forced"
+    fi
+  else
+    _recovery_count=0
+  fi
 
   if [[ "${_recovery_count}" -ge 2 ]]; then
     # Escalated directive — the recovery has fired ≥2 times in this
@@ -2068,22 +2509,56 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   TASK_RISK_TIER="$(classify_task_risk_tier "${PROMPT_TEXT}" "${TASK_INTENT}" "${TASK_DOMAIN}")"
 
   _activate_ulw_interval_unlocked() {
-    local _active _generation
+    local _active _generation _prior_mode _prior_active _prior_generation
+    local _marker _marker_tmp
     _active="$(read_state "ulw_enforcement_active" 2>/dev/null || true)"
     _generation="$(read_state "ulw_enforcement_generation" 2>/dev/null || true)"
-    [[ "${_generation}" =~ ^[0-9]+$ ]] || _generation=0
+    _prior_mode="$(read_state "workflow_mode" 2>/dev/null || true)"
+    _prior_active="${_active}"
+    _prior_generation="${_generation}"
+    _generation="$(_router_optional_uint_or_zero \
+      "${_generation}" "${_ROUTER_PREINCREMENT_MAX}")" || return 1
     # A Stop closes every assistant turn. The next real ULW prompt opens a new
     # generation; duplicate router delivery while already active is idempotent.
     if [[ "${_active}" != "1" ]]; then
       _generation=$((_generation + 1))
     fi
+    # State authority and its per-session fast-path marker linearize under one
+    # mutex epoch. A failed marker publication rolls authority back before the
+    # lock is released; a later exact reset can never delete a successor marker.
+    touch "${STATE_ROOT}/.ulw_active" || return 1
     _write_state_batch_unlocked \
       "workflow_mode" "ultrawork" \
       "ulw_enforcement_active" "1" \
-      "ulw_enforcement_generation" "${_generation}"
+      "ulw_enforcement_generation" "${_generation}" || return 1
+    _marker="$(session_file ".ulw_active")"
+    _marker_tmp="$(mktemp "${_marker}.XXXXXX")" || {
+      _write_state_batch_unlocked \
+        "workflow_mode" "${_prior_mode}" \
+        "ulw_enforcement_active" "${_prior_active}" \
+        "ulw_enforcement_generation" "${_prior_generation}" || true
+      return 1
+    }
+    if ! printf '%s\n' "${_generation}" >"${_marker_tmp}" \
+        || ! mv -f -- "${_marker_tmp}" "${_marker}"; then
+      rm -f -- "${_marker_tmp}" 2>/dev/null || true
+      _write_state_batch_unlocked \
+        "workflow_mode" "${_prior_mode}" \
+        "ulw_enforcement_active" "${_prior_active}" \
+        "ulw_enforcement_generation" "${_prior_generation}" || true
+      return 1
+    fi
     _OMC_ACTIVE_ULW_GENERATION="${_generation}"
   }
-  with_state_lock _activate_ulw_interval_unlocked
+  with_state_lock _activate_ulw_interval_unlocked || exit 1
+  OMC_EXPECTED_ACTIVE_ULW_GENERATION="${_OMC_ACTIVE_ULW_GENERATION}"
+  if [[ -n "${OMC_TEST_ROUTER_ACTIVATION_READY_FILE:-}" \
+      && -n "${OMC_TEST_ROUTER_ACTIVATION_RELEASE_FILE:-}" ]]; then
+    : >"${OMC_TEST_ROUTER_ACTIVATION_READY_FILE}" || exit 1
+    while [[ ! -e "${OMC_TEST_ROUTER_ACTIVATION_RELEASE_FILE}" ]]; do
+      sleep 0.01
+    done
+  fi
   write_state "task_domain" "${TASK_DOMAIN}"
   write_state "task_risk_tier" "${TASK_RISK_TIER}"
   write_state "quality_policy" "${OMC_QUALITY_POLICY:-balanced}"
@@ -2144,10 +2619,14 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   _quality_evidence_file="$(session_file "quality_evidence.jsonl")"
   _quality_frontier_file="$(session_file "quality_frontier.json")"
   _quality_constitution_snapshot="$(session_file "quality_constitution_snapshot.json")"
+  _quality_verification_receipts="$(session_file "verification_receipts.jsonl")"
 
   # A fresh objective gets a fresh contract generation. Archive a valid prior
-  # envelope for audit, then remove only current-proof artifacts; frontier and
-  # contract histories remain bounded, non-authoritative receipts.
+  # envelope for audit, then remove every objective-bound live proof artifact.
+  # Contract history remains the bounded non-authoritative audit surface. The
+  # live verification ledger is deliberately cleared wholesale: legacy v1,
+  # malformed, or prior-cycle rows must not poison v2 receipt validation for a
+  # newly frozen objective.
   if [[ "${TASK_INTENT}" == "execution" && "${continuation_prompt}" -eq 0 ]]; then
     if [[ -f "${_quality_contract_file}" && ! -L "${_quality_contract_file}" ]] \
       && _quality_old_contract="$(jq -ce . "${_quality_contract_file}" 2>/dev/null)"; then
@@ -2158,11 +2637,27 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       append_limited_state "quality_contract_history.jsonl" \
         "${_quality_archived_contract}" "24" || true
     fi
-    rm -f \
-      "${_quality_contract_file}" \
-      "${_quality_evidence_file}" \
-      "${_quality_frontier_file}" \
-      "${_quality_constitution_snapshot}" 2>/dev/null || true
+    _clear_fresh_quality_contract_artifacts_unlocked() {
+      # Receipt publication uses this same session lock. Once the new cycle is
+      # visible, an old in-flight completion is rejected by its captured cycle;
+      # locking the clear closes the remaining append-after-clear race.
+      if [[ -L "${_quality_verification_receipts}" ]]; then
+        rm -f -- "${_quality_verification_receipts}"
+      elif [[ -e "${_quality_verification_receipts}" ]]; then
+        [[ -f "${_quality_verification_receipts}" ]] || return 1
+        rm -f -- "${_quality_verification_receipts}"
+      fi
+      rm -f -- \
+        "${_quality_contract_file}" \
+        "${_quality_evidence_file}" \
+        "${_quality_frontier_file}" \
+        "${_quality_constitution_snapshot}" 2>/dev/null || return 1
+    }
+    if ! with_state_lock _clear_fresh_quality_contract_artifacts_unlocked; then
+      log_anomaly "prompt-intent-router" \
+        "fresh objective could not clear live contract/proof artifacts"
+      exit 1
+    fi
     write_state_batch \
       "quality_contract_tracking_version" "1" \
       "quality_contract_id" "" \
@@ -2175,6 +2670,8 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       "quality_contract_late" "0" \
       "quality_contract_recheck_required" "" \
       "quality_contract_scope_addition_digests" "" \
+      "quality_contract_scope_transition" "" \
+      "quality_contract_scope_overflow" "" \
       "quality_contract_blocks" "0" \
       "quality_evidence_required_count" "0" \
       "quality_evidence_current_count" "0" \
@@ -2190,6 +2687,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   _quality_constitution_digest="none"
   _quality_constitution_generation="0"
   _quality_constitution_blocking_ids=""
+  _quality_constitution_selectors='{}'
   _quality_constitution_script="${HOME}/.claude/skills/autowork/scripts/quality-constitution.sh"
   # Pass only selectors the deterministic router can know without semantic
   # invention. Missing audience/path selectors safely defer narrowly scoped
@@ -2223,32 +2721,52 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     --max-chars "${OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS:-2400}"
   )
   if [[ "${OMC_QUALITY_CONSTITUTION:-on}" != "on" ]]; then
-    rm -f "${_quality_constitution_snapshot}" 2>/dev/null || true
+    _remove_quality_constitution_snapshot_unlocked() {
+      rm -f -- "${_quality_constitution_snapshot}" 2>/dev/null || return 1
+      [[ ! -e "${_quality_constitution_snapshot}" \
+          && ! -L "${_quality_constitution_snapshot}" ]]
+    }
+    with_state_lock _remove_quality_constitution_snapshot_unlocked \
+      || exit 1
   fi
   if [[ "${_quality_required}" == "1" && "${OMC_QUALITY_CONSTITUTION:-on}" == "on" ]]; then
     _quality_constitution_status="invalid"
     if [[ -x "${_quality_constitution_script}" ]] \
       && _quality_constitution_json="$("${_quality_constitution_script}" compile \
         "${_quality_constitution_compile_args[@]}" --json 2>/dev/null)" \
-      && jq -e '.schema_version == 1 and (.blocking_claims | type == "array")' \
+      && jq -e '.schema_version == 1 and (.blocking_claims | type == "array")
+        and (.selectors | type == "object"
+          and (keys | sort == ["audience","domain","path","surface","task_type"])
+          and all(.[]; type == "string"))' \
         <<<"${_quality_constitution_json}" >/dev/null 2>&1; then
       _quality_constitution_status="current"
       _quality_constitution_digest="$(jq -r '.digest // "none"' <<<"${_quality_constitution_json}")"
       _quality_constitution_generation="$(jq -r '.generation // 0' <<<"${_quality_constitution_json}")"
       _quality_constitution_blocking_ids="$(jq -r '[.blocking_claims[].id] | join(",")' <<<"${_quality_constitution_json}")"
+      _quality_constitution_selectors="$(jq -cS '.selectors' \
+        <<<"${_quality_constitution_json}" 2>/dev/null || printf '{}')"
       _quality_constitution_context="$(jq -r '.rendered_context // empty' \
         <<<"${_quality_constitution_json}" 2>/dev/null || true)"
       [[ -n "${_quality_constitution_context}" ]] \
         || _quality_constitution_status="invalid"
-      if [[ ! -L "${_quality_constitution_snapshot}" ]]; then
-        _quality_constitution_tmp="${_quality_constitution_snapshot}.tmp.$$"
-        if (umask 077; printf '%s\n' "${_quality_constitution_json}" >"${_quality_constitution_tmp}"); then
-          mv -f "${_quality_constitution_tmp}" "${_quality_constitution_snapshot}"
-        else
-          rm -f "${_quality_constitution_tmp}" 2>/dev/null || true
-          _quality_constitution_status="invalid"
+      _publish_quality_constitution_snapshot_unlocked() {
+        local snapshot_tmp
+        [[ ! -L "${_quality_constitution_snapshot}" ]] || return 1
+        [[ ! -e "${_quality_constitution_snapshot}" \
+            || -f "${_quality_constitution_snapshot}" ]] || return 1
+        snapshot_tmp="$(mktemp \
+          "${_quality_constitution_snapshot}.XXXXXX")" || return 1
+        if (umask 077; printf '%s\n' "${_quality_constitution_json}" \
+            >"${snapshot_tmp}") \
+            && mv -f -- "${snapshot_tmp}" \
+              "${_quality_constitution_snapshot}"; then
+          return 0
         fi
-      else
+        rm -f -- "${snapshot_tmp}" 2>/dev/null || true
+        return 1
+      }
+      if ! with_state_lock \
+          _publish_quality_constitution_snapshot_unlocked; then
         _quality_constitution_status="invalid"
       fi
     fi
@@ -2264,7 +2782,8 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     "quality_constitution_status" "${_quality_constitution_status}" \
     "quality_constitution_digest" "${_quality_constitution_digest}" \
     "quality_constitution_generation" "${_quality_constitution_generation}" \
-    "quality_constitution_blocking_ids" "${_quality_constitution_blocking_ids}"
+    "quality_constitution_blocking_ids" "${_quality_constitution_blocking_ids}" \
+    "quality_constitution_selectors" "${_quality_constitution_selectors}"
 
   # Only a truly bare resume preserves the current contract. Any substantive
   # continuation text may alter scope/constraints and therefore fails closed
@@ -2280,7 +2799,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     # ledger for this objective cycle: exact normalized repeats are already
     # bound scope, while every genuinely new addition still fails closed into
     # additive re-contracting. No prompt text is persisted in this key.
-    _quality_scope_digest="$(_omc_token_digest \
+    _quality_scope_digest="$(_omc_authority_digest \
       "$(trim_whitespace "${continuation_directive}")")"
     _quality_scope_history="$(read_state \
       "quality_contract_scope_addition_digests" 2>/dev/null || true)"
@@ -2296,7 +2815,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
         _quality_scope_history_remaining=""
       fi
       # Ignore malformed state instead of allowing it to suppress a recheck.
-      [[ "${_quality_scope_token}" =~ ^[[:xdigit:]-]{8,40}$ ]] || continue
+      [[ "${_quality_scope_token}" =~ ^[A-Fa-f0-9]{8,40}$ ]] || continue
       [[ "${_quality_scope_token}" == "${_quality_scope_digest}" ]] \
         && _quality_scope_seen=1
       _quality_scope_history_next+="${_quality_scope_history_next:+,}${_quality_scope_token}"
@@ -2305,44 +2824,263 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
 
     if [[ "${_quality_scope_seen}" -eq 0 ]]; then
       _quality_scope_expanded=1
+      # The ledger is an authority-preserving idempotence set, not a cache.
+      # Evicting its oldest member makes a later retry of that exact accepted
+      # addition look new and appends it twice. Once all 20 slots are occupied,
+      # reject a 21st distinct addition before changing the objective, ledger,
+      # or transition. A fresh objective resets the set normally.
+      if (( _quality_scope_history_count >= 20 )); then
+        _quality_scope_prompt_revision="$(read_state "prompt_revision")"
+        _quality_scope_cycle="$(read_state "review_cycle_id")"
+        if ! _omc_canonical_uint_in_range \
+            "${_quality_scope_prompt_revision}" 1 "${_ROUTER_UINT_MAX}" \
+            || ! _omc_canonical_uint_in_range \
+              "${_quality_scope_cycle}" 1 "${_ROUTER_UINT_MAX}"; then
+          log_anomaly "prompt-intent-router" \
+            "invalid scope-overflow coordinates; continuation refused" \
+            2>/dev/null || true
+          exit 1
+        fi
+        _quality_scope_overflow="$(jq -cnS \
+          --arg reason "scope-addition-idempotence-cap" \
+          --argjson max_distinct_additions 20 \
+          --argjson admitted_count "${_quality_scope_history_count}" \
+          --arg prior_objective_digest "$(_quality_contract_digest \
+            "${previous_objective}")" \
+          --arg addition_digest "${_quality_scope_digest}" \
+          --argjson scope_prompt_revision \
+            "${_quality_scope_prompt_revision}" \
+          --argjson review_cycle_id "${_quality_scope_cycle}" \
+          --arg enforcement_generation "$(read_state \
+            "ulw_enforcement_generation")" \
+          --arg prior_contract_id "$(read_state "quality_contract_id")" \
+          --arg prior_contract_revision "$(read_state \
+            "quality_contract_revision")" '
+            {
+              schema_version:1,
+              reason:$reason,
+              max_distinct_additions:$max_distinct_additions,
+              admitted_count:$admitted_count,
+              prior_objective_digest:$prior_objective_digest,
+              addition_digest:$addition_digest,
+              scope_prompt_revision:$scope_prompt_revision,
+              review_cycle_id:$review_cycle_id,
+              enforcement_generation:$enforcement_generation,
+              prior_contract_id:$prior_contract_id,
+              prior_contract_revision:$prior_contract_revision
+            }
+          ')" || exit 1
+        write_state_batch \
+          "quality_contract_scope_overflow" "${_quality_scope_overflow}" \
+          "quality_contract_recheck_required" "1" \
+          "quality_contract_status" "scope-overflow"
+        add_directive "quality_contract_scope_overflow" \
+          "**DEFINITION SCOPE ADDITION CAP — fail closed.** This objective already has ${_quality_scope_history_count} distinct admitted additions, the complete idempotence limit of 20. The attempted addition was not merged, its digest was not admitted, and the existing objective and transition remain authoritative. Do not publish PLAN_READY, mutate artifacts, or claim completion. Ask the user for one fresh condensed objective that replaces the accumulated scope, or use the explicit /ulw-off reset; never evict an admitted digest or duplicate a retried addition."
+      else
       _quality_scope_history_next+="${_quality_scope_history_next:+,}${_quality_scope_digest}"
       _quality_scope_history_count=$((_quality_scope_history_count + 1))
-      while (( _quality_scope_history_count > 20 )); do
-        _quality_scope_history_next="${_quality_scope_history_next#*,}"
-        _quality_scope_history_count=$((_quality_scope_history_count - 1))
-      done
 
       _quality_scope_marker=$'\n\nScope addition (authoritative):\n'
-      _quality_scope_available=$((4000 - ${#_quality_scope_marker} - 16))
-      _quality_previous_budget=${#previous_objective}
-      _quality_addition_budget=${#continuation_directive}
-      if (( _quality_previous_budget + _quality_addition_budget > _quality_scope_available )); then
-        # Preserve the entire addition when possible. When both sides are long,
-        # reserve a meaningful prior-objective capsule and retain the addition's
-        # own head *and* tail; this keeps both an opening scope noun and ending
-        # rollback/recovery qualifiers inside the digest-bound objective.
-        _quality_previous_floor=1400
-        (( _quality_previous_budget < _quality_previous_floor )) \
-          && _quality_previous_floor=${_quality_previous_budget}
-        _quality_addition_budget=$((_quality_scope_available - _quality_previous_floor))
-        if (( _quality_addition_budget > ${#continuation_directive} )); then
-          _quality_addition_budget=${#continuation_directive}
-        fi
-        _quality_previous_budget=$((_quality_scope_available - _quality_addition_budget))
-        (( _quality_previous_budget > ${#previous_objective} )) \
-          && _quality_previous_budget=${#previous_objective}
+      # current_objective is the durable source of truth for the user's scope;
+      # unlike model-facing rendered context, it is not a compact prose capsule.
+      # Preserve every byte of every accepted normalized addition. The former
+      # 4k preserve-ends merge silently deleted substantive middle requirements
+      # while retaining only their digests, making re-contracting impossible to
+      # reconstruct. Exact text is retained until a fresh objective replaces
+      # it, subject to the explicit aggregate byte ceiling below.
+      _quality_merged_objective="${previous_objective}${_quality_scope_marker}${continuation_directive}"
+      _quality_scope_limit_bytes=122880
+      _quality_scope_prior_bytes="$(printf '%s' "${previous_objective}" \
+        | LC_ALL=C wc -c | tr -d '[:space:]')"
+      _quality_scope_addition_bytes="$(printf '%s%s' \
+        "${_quality_scope_marker}" "${continuation_directive}" \
+        | LC_ALL=C wc -c | tr -d '[:space:]')"
+      [[ "${_quality_scope_prior_bytes}" =~ ^[0-9]+$ ]] \
+        || _quality_scope_prior_bytes=0
+      [[ "${_quality_scope_addition_bytes}" =~ ^[0-9]+$ ]] \
+        || _quality_scope_addition_bytes=0
+      if ! _omc_canonical_uint_in_range \
+          "${_quality_scope_prior_bytes}" 0 "${_ROUTER_UINT_MAX}" \
+          || ! _omc_canonical_uint_in_range \
+            "${_quality_scope_addition_bytes}" 0 "${_ROUTER_UINT_MAX}"; then
+        log_anomaly "prompt-intent-router" \
+          "invalid objective byte count; scope expansion refused" \
+          2>/dev/null || true
+        exit 1
       fi
-      _quality_previous_capsule="$(closeout_preserve_ends \
-        "${previous_objective}" "${_quality_previous_budget}")"
-      _quality_addition_capsule="$(closeout_preserve_ends \
-        "${continuation_directive}" "${_quality_addition_budget}")"
-      _quality_merged_objective="${_quality_previous_capsule}${_quality_scope_marker}${_quality_addition_capsule}"
+      _quality_scope_attempted_bytes=$((_quality_scope_prior_bytes \
+        + _quality_scope_addition_bytes))
+      if (( _quality_scope_attempted_bytes > _quality_scope_limit_bytes )); then
+        _quality_scope_prompt_revision="$(read_state "prompt_revision")"
+        _quality_scope_cycle="$(read_state "review_cycle_id")"
+        if ! _omc_canonical_uint_in_range \
+            "${_quality_scope_prompt_revision}" 1 "${_ROUTER_UINT_MAX}" \
+            || ! _omc_canonical_uint_in_range \
+              "${_quality_scope_cycle}" 1 "${_ROUTER_UINT_MAX}"; then
+          log_anomaly "prompt-intent-router" \
+            "invalid scope-overflow coordinates; continuation refused" \
+            2>/dev/null || true
+          exit 1
+        fi
+        _quality_scope_overflow="$(jq -cnS \
+          --arg reason "aggregate-scope-bytes-exceeded" \
+          --argjson limit_bytes "${_quality_scope_limit_bytes}" \
+          --argjson prior_bytes "${_quality_scope_prior_bytes}" \
+          --argjson attempted_bytes "${_quality_scope_attempted_bytes}" \
+          --arg prior_objective_digest "$(_quality_contract_digest \
+            "${previous_objective}")" \
+          --arg attempted_merged_objective_digest "$(_quality_contract_digest \
+            "${_quality_merged_objective}")" \
+          --arg addition_digest "${_quality_scope_digest}" \
+          --argjson scope_prompt_revision \
+            "${_quality_scope_prompt_revision}" \
+          --argjson review_cycle_id "${_quality_scope_cycle}" \
+          --arg enforcement_generation "$(read_state \
+            "ulw_enforcement_generation")" \
+          --arg prior_contract_id "$(read_state "quality_contract_id")" \
+          --arg prior_contract_revision "$(read_state \
+            "quality_contract_revision")" '
+            {
+              schema_version:1,
+              reason:$reason,
+              limit_bytes:$limit_bytes,
+              prior_bytes:$prior_bytes,
+              attempted_bytes:$attempted_bytes,
+              prior_objective_digest:$prior_objective_digest,
+              attempted_merged_objective_digest:
+                $attempted_merged_objective_digest,
+              addition_digest:$addition_digest,
+              scope_prompt_revision:$scope_prompt_revision,
+              review_cycle_id:$review_cycle_id,
+              enforcement_generation:$enforcement_generation,
+              prior_contract_id:$prior_contract_id,
+              prior_contract_revision:$prior_contract_revision
+            }
+          ')" || exit 1
+        # The rejected addition never changes the objective or digest ledger.
+        # Only this compact tuple is passed through jq argv, leaving ample
+        # macOS ARG_MAX headroom even when the attempted text is very large.
+        write_state_batch \
+          "quality_contract_scope_overflow" "${_quality_scope_overflow}" \
+          "quality_contract_recheck_required" "1" \
+          "quality_contract_status" "scope-overflow"
+        add_directive "quality_contract_scope_overflow" \
+          "**DEFINITION SCOPE OVERFLOW — fail closed.** The authoritative objective is already ${_quality_scope_prior_bytes} bytes and this addition would grow it to ${_quality_scope_attempted_bytes}, above the ${_quality_scope_limit_bytes}-byte exact-scope ceiling. The attempted addition was not merged and its digest was not admitted. Do not publish PLAN_READY, mutate artifacts, or claim completion. Ask the user for one fresh condensed objective that replaces the accumulated scope, or use the explicit /ulw-off reset; never silently drop middle requirements."
+      else
+      _quality_scope_transition=""
+      _quality_scope_prior_contract=""
+      _quality_scope_existing_transition="$(read_state \
+        "quality_contract_scope_transition" 2>/dev/null || true)"
+      _quality_scope_previous_digest="$(_quality_contract_digest \
+        "${previous_objective}")"
+      _quality_scope_merged_digest="$(_quality_contract_digest \
+        "${_quality_merged_objective}")"
+      _quality_scope_prompt_revision="$(read_state "prompt_revision")"
+      _quality_scope_cycle="$(read_state "review_cycle_id")"
+      if ! _omc_canonical_uint_in_range \
+          "${_quality_scope_prompt_revision}" 1 "${_ROUTER_UINT_MAX}" \
+          || ! _omc_canonical_uint_in_range \
+            "${_quality_scope_cycle}" 1 "${_ROUTER_UINT_MAX}"; then
+        log_anomaly "prompt-intent-router" \
+          "invalid scope-transition coordinates; continuation refused" \
+          2>/dev/null || true
+        exit 1
+      fi
+
+      # Scope expansion gets a one-use, digest-only transition rooted in the
+      # exact prior contract. The idempotence ledger alone cannot authorize an
+      # objective change: a stale ledger plus an arbitrary current_objective
+      # must remain unable to publish a replacement contract. Multiple genuine
+      # additions before the next planner return extend the same anchored tuple.
+      if [[ -f "${_quality_contract_file}" \
+          && ! -L "${_quality_contract_file}" ]] \
+          && _quality_scope_prior_contract="$(_quality_contract_read_json_file \
+            "${_quality_contract_file}" 65536 2>/dev/null)" \
+          && quality_contract_validate_envelope \
+            "${_quality_scope_prior_contract}" 2>/dev/null \
+          && [[ "$(jq -r '.review_cycle_id' \
+            <<<"${_quality_scope_prior_contract}")" == "${_quality_scope_cycle}" ]] \
+          && [[ "$(jq -r '.contract_id' \
+            <<<"${_quality_scope_prior_contract}")" \
+            == "$(read_state "quality_contract_id")" ]] \
+          && [[ "$(jq -r '.contract_revision' \
+            <<<"${_quality_scope_prior_contract}")" \
+            == "$(read_state "quality_contract_revision")" ]] \
+          && [[ "$(jq -r '.ulw_enforcement_generation' \
+            <<<"${_quality_scope_prior_contract}")" \
+            == "$(read_state "quality_contract_enforcement_generation")" ]]; then
+        _quality_scope_prior_digest="$(jq -r '.objective_digest' \
+          <<<"${_quality_scope_prior_contract}")"
+        _quality_scope_prior_prompt_revision="$(jq -r \
+          '.objective_prompt_revision' <<<"${_quality_scope_prior_contract}")"
+        if [[ "${_quality_scope_prior_digest}" \
+            == "${_quality_scope_previous_digest}" ]] \
+            && (( _quality_scope_prompt_revision \
+              > _quality_scope_prior_prompt_revision )); then
+          _quality_scope_transition="$(jq -cnS \
+            --arg prior_contract_id "$(jq -r '.contract_id' \
+              <<<"${_quality_scope_prior_contract}")" \
+            --argjson prior_contract_revision "$(jq -r '.contract_revision' \
+              <<<"${_quality_scope_prior_contract}")" \
+            --arg prior_objective_digest "${_quality_scope_prior_digest}" \
+            --arg merged_objective_digest "${_quality_scope_merged_digest}" \
+            --arg addition_digest "${_quality_scope_digest}" \
+            --argjson scope_prompt_revision "${_quality_scope_prompt_revision}" \
+            --argjson review_cycle_id "${_quality_scope_cycle}" \
+            --arg enforcement_generation "$(jq -r \
+              '.ulw_enforcement_generation' \
+              <<<"${_quality_scope_prior_contract}")" '
+              {schema_version:1,prior_contract_id:$prior_contract_id,
+               prior_contract_revision:$prior_contract_revision,
+               prior_objective_digest:$prior_objective_digest,
+               merged_objective_digest:$merged_objective_digest,
+               scope_prompt_revision:$scope_prompt_revision,
+               review_cycle_id:$review_cycle_id,
+               enforcement_generation:$enforcement_generation,
+               addition_digests:[$addition_digest]}
+            ')"
+        elif jq -e \
+            --argjson prior "${_quality_scope_prior_contract}" \
+            --arg previous_digest "${_quality_scope_previous_digest}" \
+            --argjson cycle "${_quality_scope_cycle}" '
+              type == "object"
+              and (keys | sort == ["addition_digests",
+                "enforcement_generation","merged_objective_digest",
+                "prior_contract_id","prior_contract_revision",
+                "prior_objective_digest","review_cycle_id","schema_version",
+                "scope_prompt_revision"])
+              and .schema_version == 1
+              and .prior_contract_id == $prior.contract_id
+              and .prior_contract_revision == $prior.contract_revision
+              and .prior_objective_digest == $prior.objective_digest
+              and .merged_objective_digest == $previous_digest
+              and .review_cycle_id == $cycle
+              and .enforcement_generation == $prior.ulw_enforcement_generation
+              and (.addition_digests | type == "array"
+                and length >= 1 and length < 20
+                and length == (unique | length)
+                and all(.[]; type == "string"
+                  and test("^[A-Fa-f0-9]{8,40}$")))
+            ' <<<"${_quality_scope_existing_transition}" \
+            >/dev/null 2>&1; then
+          _quality_scope_transition="$(jq -cS \
+            --arg merged_objective_digest "${_quality_scope_merged_digest}" \
+            --arg addition_digest "${_quality_scope_digest}" \
+            --argjson scope_prompt_revision \
+              "${_quality_scope_prompt_revision}" '
+              .merged_objective_digest = $merged_objective_digest
+              | .scope_prompt_revision = $scope_prompt_revision
+              | .addition_digests = (.addition_digests + [$addition_digest])
+            ' <<<"${_quality_scope_existing_transition}")"
+        fi
+      fi
       # Scope identity, merged objective, and the re-contract latch are one
       # atomic transition. A hook interruption cannot publish only half of the
       # new authority and accidentally admit mutation against the old bar.
       write_state_batch \
         "current_objective" "${_quality_merged_objective}" \
         "quality_contract_scope_addition_digests" "${_quality_scope_history_next}" \
+        "quality_contract_scope_transition" "${_quality_scope_transition}" \
         "quality_contract_recheck_required" "1" \
         "quality_contract_prompt_revision" "$(read_state "prompt_revision")" \
         "quality_contract_status" "recheck-required"
@@ -2352,6 +3090,8 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       # first frame described the stale pre-addition objective and forced one
       # unnecessary full-frame replay on the retry.
       previous_objective="${_quality_merged_objective}"
+      fi
+      fi
     fi
   fi
   # A bare continuation is the recovery turn on which a missing-contract or
@@ -2363,7 +3103,9 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     "quality_contract_recheck_required" 2>/dev/null || true)"
   if [[ "${_quality_required}" == "1" \
       && "${continuation_prompt}" -eq 1 \
-      && "${_quality_scope_expanded}" -eq 0 ]] \
+      && "${_quality_scope_expanded}" -eq 0 \
+      && -z "$(read_state \
+        "quality_contract_scope_overflow" 2>/dev/null || true)" ]] \
     && { { [[ ! -e "${_quality_contract_file}" ]] \
           && [[ ! -L "${_quality_contract_file}" ]]; } \
       || { [[ "${_quality_existing_recheck}" == "1" ]] \
@@ -2377,6 +3119,8 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
   fi
   if [[ "${_quality_required}" == "1" ]] \
     && [[ "${continuation_prompt}" -eq 1 ]] \
+    && [[ -z "$(read_state \
+      "quality_contract_scope_overflow" 2>/dev/null || true)" ]] \
     && { [[ "${_quality_scope_expanded}" -eq 1 ]] \
       || { [[ -n "${_quality_prior_constitution_digest}" ]] \
         && [[ "${_quality_prior_constitution_digest}" != "${_quality_constitution_digest}" ]]; }; }; then
@@ -2401,7 +3145,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     if [[ "${_quality_constitution_status}" == "invalid" ]]; then
       _quality_constitution_clause="QUALITY CONSTITUTION ERROR: the user-owned profile could not be compiled or snapshotted. Treat the contract as blocked; run quality-constitution.sh audit and repair the exact user-owned data. Never ignore a corrupt profile or substitute repository prose."
     fi
-    add_directive "definition_of_excellent" "**DEFINITION OF EXCELLENT REQUIRED -- mutation stays blocked until a frozen bar exists.** Before implementation, dispatch and wait for **quality-planner** (prometheus only for genuine scope ambiguity). It must define what **deliberate, distinctive, coherent, visionary, and complete** mean for this exact objective, then end with one structural \`QUALITY_CONTRACT_JSON:\` line and \`VERDICT: PLAN_READY\`. The initial contract needs 5-10 falsifiable criteria and at least one mandatory empirical + independent-review criterion per axis. Each criterion needs its own claim, failure signal, surface, tradeoff, and exactly one installed-hook-mintable proof kind/tool/command-or-target language; alternative proofs become separate criteria. Visionary uses benchmark, render, or comparison. Bind exact blocking Constitution entries plus explicit anti-goals. The main thread cannot author, self-approve, infer from implementation, or lower this frozen floor. After implementation, collect current target-bound \`vr-...\` receipts and dispatch a fresh **excellence-reviewer**. It independently searches credible alternatives before emitting criterion-level \`QUALITY_REVIEW_JSON:\` and the strongest remaining frontier. One receipt or proof identity satisfies at most one criterion. Stop stays blocked until every mandatory criterion proves the current artifact and no material scope-fitting move dominates it. Arming: ${_quality_reason}; mode=${OMC_DEFINITION_OF_EXCELLENT:-adaptive}; cycle=$(read_state "review_cycle_id").\n\n${_quality_constitution_clause}"
+    add_directive "definition_of_excellent" "**DEFINITION OF EXCELLENT REQUIRED -- mutation stays blocked until a frozen bar exists.** Before implementation, dispatch and wait for **quality-planner** (prometheus only for genuine scope ambiguity). It must define what **deliberate, distinctive, coherent, visionary, and complete** mean for this exact objective, then end with one structural \`QUALITY_CONTRACT_JSON:\` line and \`VERDICT: PLAN_READY\`. The initial contract needs 5-10 falsifiable criteria and at least one mandatory empirical + independent-review criterion per axis. Each criterion needs its own claim, failure signal, surface, tradeoff, and exactly one installed-hook-mintable proof kind/tool/command-or-target language; alternative proofs become separate criteria. Bash proof independence follows a real named semantic execution target; ignored argv/evidence-kind labels/list/skip/zero-test modes cannot create proof. Visionary uses benchmark, render, or comparison. Bind exact blocking Constitution entries plus explicit anti-goals. The main thread cannot author, self-approve, infer from implementation, or lower this frozen floor. After implementation, collect current target-bound \`vr-...\` receipts and dispatch a fresh **excellence-reviewer**. It independently searches credible alternatives before emitting criterion-level \`QUALITY_REVIEW_JSON:\` and the strongest remaining frontier. One receipt or proof identity satisfies at most one criterion. Stop stays blocked until every mandatory criterion proves the current artifact and no material scope-fitting move dominates it. Arming: ${_quality_reason}; mode=${OMC_DEFINITION_OF_EXCELLENT:-adaptive}; cycle=$(read_state "review_cycle_id").\n\n${_quality_constitution_clause}"
     record_gate_event "definition-of-excellent" "armed" \
       "reason=${_quality_reason}" \
       "mode=${OMC_DEFINITION_OF_EXCELLENT:-adaptive}" \
@@ -2412,6 +3156,7 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
       write_state_batch \
         "quality_contract_status" "not-required" \
         "quality_contract_recheck_required" "" \
+        "quality_contract_scope_transition" "" \
         "quality_evidence_required_count" "0" \
         "quality_evidence_current_count" "0" \
         "quality_frontier_status" "not-required"
@@ -2541,13 +3286,6 @@ if is_ulw_trigger "${PROMPT_TEXT}" \
     "${TASK_DOMAIN}" \
     "${PROMPT_TEXT_SAFE}" \
     "${current_pretool_blocks}" || true
-
-  # Process-wide activation latch for zero-cost hook fast paths. It is not
-  # per-session authority and deliberately remains after a turn releases;
-  # ulw_enforcement_active + workflow_mode decide the addressed session.
-  touch "${STATE_ROOT}/.ulw_active"
-  printf '%s\n' "${_OMC_ACTIVE_ULW_GENERATION:-migration}" \
-    >"$(session_file ".ulw_active")"
 
   log_hook "prompt-intent-router" "ulw=on domain=${TASK_DOMAIN} intent=${TASK_INTENT} risk=${TASK_RISK_TIER} policy=${OMC_QUALITY_POLICY:-balanced}"
 
@@ -3088,10 +3826,13 @@ ${_spec_safe}
       _council_assessment_ts="$(read_state "council_assessment_ts" 2>/dev/null || true)"
       _council_assessment_revision="$(read_state "council_assessment_prompt_revision" 2>/dev/null || true)"
       _council_followup_age=999999
-      if [[ "${_council_assessment_ts}" =~ ^[0-9]+$ ]]; then
+      if _omc_canonical_uint_in_range \
+          "${_council_assessment_ts}" 1 "${_ROUTER_UINT_MAX}"; then
         _council_followup_age=$((PROMPT_TS - _council_assessment_ts))
       fi
-      if [[ "${_council_assessment_revision}" =~ ^[0-9]+$ ]] \
+      if _omc_canonical_uint_in_range \
+          "${_council_assessment_revision}" 0 \
+          "${_ROUTER_PREINCREMENT_MAX}" \
           && (( _prompt_revision == _council_assessment_revision + 1 )) \
           && (( _council_followup_age >= 0 && _council_followup_age <= 7200 )) \
           && is_execution_intent_value "${TASK_INTENT}" \
@@ -3108,7 +3849,9 @@ ${_spec_safe}
       _council_phase8_active_revision="$(read_state "council_phase8_prompt_revision" 2>/dev/null || true)"
       if [[ "${TASK_INTENT}" == "continuation" ]] \
           || is_council_phase8_followup_request "${PROMPT_TEXT}" \
-          || { [[ "${_council_phase8_active_revision}" =~ ^[0-9]+$ ]] \
+          || { _omc_canonical_uint_in_range \
+                 "${_council_phase8_active_revision}" 0 \
+                 "${_ROUTER_UINT_MAX}" \
                && (( _council_phase8_active_revision == _prompt_revision )); }; then
         _council_phase8_active_context=1
       fi
@@ -3665,14 +4408,18 @@ if [[ "${OMC_MID_SESSION_MEMORY_CHECKPOINT:-on}" == "on" ]] \
    && is_auto_memory_enabled 2>/dev/null \
    && is_execution_intent_value "${TASK_INTENT}"; then
   if [[ -n "${previous_last_prompt_ts}" ]] \
-     && [[ "${previous_last_prompt_ts}" =~ ^[0-9]+$ ]]; then
+     && _omc_canonical_uint_in_range \
+       "${previous_last_prompt_ts}" 1 "${_ROUTER_UINT_MAX}"; then
     _msc_idle_threshold="${OMC_MID_SESSION_IDLE_THRESHOLD_SECS:-1800}"
-    [[ "${_msc_idle_threshold}" =~ ^[0-9]+$ ]] || _msc_idle_threshold=1800
+    _omc_canonical_uint_in_range \
+      "${_msc_idle_threshold}" 0 2147483647 || _msc_idle_threshold=1800
     _msc_gap_s=$(( PROMPT_TS - previous_last_prompt_ts ))
     if (( _msc_gap_s >= _msc_idle_threshold )); then
       _msc_should_fire=1
       if [[ -n "${midsession_checkpoint_last_fired_ts}" ]] \
-         && [[ "${midsession_checkpoint_last_fired_ts}" =~ ^[0-9]+$ ]] \
+         && _omc_canonical_uint_in_range \
+           "${midsession_checkpoint_last_fired_ts}" 1 \
+           "${_ROUTER_UINT_MAX}" \
          && (( midsession_checkpoint_last_fired_ts >= previous_last_prompt_ts )); then
         # We already fired for the gap ending at previous_last_prompt_ts.
         # The user has not produced an activity boundary since, so don't
@@ -3744,9 +4491,19 @@ fi
 
 context_text="$(printf '%s\n' "${context_parts[@]}")"
 
-jq -nc --arg context "${context_text}" '{
-  hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
-    additionalContext: $context
-  }
-}'
+_emit_router_context_unlocked() {
+  jq -nc --arg context "${context_text}" '{
+    hookSpecificOutput: {
+      hookEventName: "UserPromptSubmit",
+      additionalContext: $context
+    }
+  }'
+}
+if [[ -n "${OMC_EXPECTED_ACTIVE_ULW_GENERATION:-}" ]]; then
+  # Hold the same interval fence through stdout publication. A reset that wins
+  # first suppresses this stale ULW-on frame; a reset that waits linearizes
+  # strictly after the already-emitted activation response.
+  with_state_lock _emit_router_context_unlocked
+else
+  _emit_router_context_unlocked
+fi

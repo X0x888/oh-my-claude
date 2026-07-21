@@ -18,7 +18,8 @@
     {
       "id": "scope_bounded",
       "rules": [
-        {"type": "file_count_at_most", "value": 2}
+        {"type": "file_count_at_most", "value": 2},
+        {"type": "changed_paths_exact", "paths": ["src/status.txt"]}
       ]
     }
   ]

@@ -151,6 +151,61 @@ run_agent_dispatch() {
       2>/dev/null || true
 }
 
+# Agent PreTool transaction creation is durable intent before its first
+# causal-ledger mutation; `.ready` says only that snapshot copying completed.
+# If that hook dies, every later prompt (including a synthetic task notification)
+# must remain inert until the one exact reset grammar runs.
+dispatch_router_sid="dispatch-router-recovery"
+dispatch_router_dir="${STATE_ROOT}/${dispatch_router_sid}"
+mkdir -p "${dispatch_router_dir}/.dispatch-txn.interrupted"
+touch "${dispatch_router_dir}/.dispatch-txn.interrupted/.ready"
+jq -nc '{
+  workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1",task_intent:"execution",
+  current_objective:"preserve interrupted admission objective",
+  prompt_revision:"7",review_cycle_id:"3",review_cycle_prompt_ts:"100"
+}' >"${dispatch_router_dir}/session_state.json"
+dispatch_router_before="$(<"${dispatch_router_dir}/session_state.json")"
+dispatch_router_out="$(run_router \
+  '/ulw replace the interrupted objective' "${dispatch_router_sid}")"
+assert_contains_text "retained dispatch journal blocks objective routing" \
+  "DISPATCH RECOVERY REQUIRED" "${dispatch_router_out}"
+assert_eq "retained dispatch journal preserves state bytes" \
+  "${dispatch_router_before}" \
+  "$(<"${dispatch_router_dir}/session_state.json")"
+dispatch_router_near_off="$(run_router \
+  '/ulw-off now' "${dispatch_router_sid}")"
+assert_contains_text "argument-bearing ulw-off is not a reset" \
+  "DISPATCH RECOVERY REQUIRED" "${dispatch_router_near_off}"
+assert_eq "near reset preserves retained dispatch journal" "1" \
+  "$([[ -e "${dispatch_router_dir}/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+# JSON escape decoding happens in jq, after the hook payload reaches Bash.
+# Neither an invalid ID nor a NUL-suffixed near-match may normalize into reset
+# authority for the valid interrupted session.
+dispatch_router_nul_payload="$(jq -nc --arg sid "${dispatch_router_sid}" '
+  {session_id:($sid + "\u0000"),prompt:("/ulw-off" + "\u0000"),
+   transcript_path:"/tmp/none.jsonl"}')"
+dispatch_router_nul_out="$(printf '%s' "${dispatch_router_nul_payload}" \
+  | bash "${ROUTER_SH}" 2>&1 || true)"
+assert_eq "NUL-bearing reset payload emits no reset authority" "" \
+  "${dispatch_router_nul_out}"
+assert_eq "NUL-bearing reset preserves interrupted dispatch journal" "1" \
+  "$([[ -e "${dispatch_router_dir}/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+assert_eq "NUL-bearing reset preserves enforcement interval" "1" \
+  "$(jq -r '.ulw_enforcement_active // empty' \
+    "${dispatch_router_dir}/session_state.json")"
+dispatch_router_off="$(run_router '  /ulw-off  ' "${dispatch_router_sid}")"
+assert_contains_text "exact ulw-off resets interrupted dispatch" \
+  "Ultrawork mode was deactivated" "${dispatch_router_off}"
+assert_eq "exact reset removes interrupted dispatch journal" "0" \
+  "$([[ -e "${dispatch_router_dir}/.dispatch-txn.interrupted" ]] \
+    && printf 1 || printf 0)"
+assert_eq "exact reset closes enforcement interval" "0" \
+  "$(jq -r '.ulw_enforcement_active // empty' \
+    "${dispatch_router_dir}/session_state.json")"
+
 # Pre-populate a session with a known contract — synthetic injection
 # must NOT overwrite these fields.
 sid="bug-a-test"
@@ -189,6 +244,58 @@ assert_eq "task-notification: task_intent unchanged" "execution" \
   "$(jq -r '.task_intent // ""' "${sdir}/session_state.json")"
 assert_eq "task-notification: commit_mode unchanged" "required" \
   "$(jq -r '.done_contract_commit_mode // ""' "${sdir}/session_state.json")"
+
+# Binding/pending ledgers are shell-facing durable authority. Reject decoded
+# NUL before jq -r/read can normalize a poisoned field into an exact bundled
+# role, and reject duplicate exact native bindings instead of choosing last.
+for authority_case in binding-nul pending-nul duplicate-binding; do
+  authority_sid="task-notification-authority-${authority_case}"
+  authority_dir="${STATE_ROOT}/${authority_sid}"
+  mkdir -p "${authority_dir}"
+  jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+    ulw_enforcement_generation:"migration",task_intent:"execution",
+    current_objective:"preserve authority bytes",review_cycle_id:"1",
+    review_cycle_prompt_ts:"1000",last_code_edit_revision:"3"}' \
+    >"${authority_dir}/session_state.json"
+  jq -nc --arg case "${authority_case}" \
+    '{native_agent_id:"a-byte-authority",
+      agent_type:(if $case == "binding-nul"
+        then ("quality-reviewer" + "\u0000") else "quality-reviewer" end),
+      review_dispatch_id:"",ts:1001}' \
+    >"${authority_dir}/native_agent_bindings.jsonl"
+  if [[ "${authority_case}" == "duplicate-binding" ]]; then
+    jq -nc '{native_agent_id:"a-byte-authority",
+      agent_type:"quality-reviewer",review_dispatch_id:"",ts:1002}' \
+      >>"${authority_dir}/native_agent_bindings.jsonl"
+  fi
+  jq -nc --arg case "${authority_case}" \
+    '{agent_type:(if $case == "pending-nul"
+        then ("quality-reviewer" + "\u0000") else "quality-reviewer" end),
+      native_agent_id:"a-byte-authority",ts:1001,
+      review_dispatch_abandoned:false,objective_cycle_id:1,
+      objective_prompt_ts:1000,review_revision:3,
+      ulw_enforcement_generation:"migration"}' \
+    >"${authority_dir}/pending_agents.jsonl"
+  authority_binding_before="$(<"${authority_dir}/native_agent_bindings.jsonl")"
+  authority_pending_before="$(<"${authority_dir}/pending_agents.jsonl")"
+  authority_out="$(run_router '<task-notification>
+<task-id>a-byte-authority</task-id>
+<tool-use-id>toolu_byte_authority</tool-use-id>
+<status>completed</status>
+<summary>Untrusted completion.</summary>
+</task-notification>' "${authority_sid}")"
+  assert_contains_text "${authority_case}: recovery fails closed" \
+    "BACKGROUND RECOVERY DEGRADED" "${authority_out}"
+  assert_eq "${authority_case}: binding ledger is byte-identical" \
+    "${authority_binding_before}" \
+    "$(<"${authority_dir}/native_agent_bindings.jsonl")"
+  assert_eq "${authority_case}: pending ledger is byte-identical" \
+    "${authority_pending_before}" \
+    "$(<"${authority_dir}/pending_agents.jsonl")"
+  assert_eq "${authority_case}: no completion receipt is published" "0" \
+    "$([[ -e "${authority_dir}/agent_completion_outcomes.jsonl" ]] \
+      && printf 1 || printf 0)"
+done
 
 # Background Agent completion arrives as a synthetic UserPromptSubmit, not a
 # second PostToolUse:Agent. If a max-turn return left an exact current pending
@@ -275,7 +382,8 @@ jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-stopped",ts:1001,
 jq -nc '{ts:1001,agent_type:"quality-reviewer",status:"accepted",
   reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
   native_agent_id:"a-stopped",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:3}' \
+  objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 stopped_notification_out="$(run_router '<task-notification>
 <task-id>a-stopped</task-id>
@@ -318,17 +426,20 @@ rm -f "${sdir}/pending_agents.jsonl"
 jq -nc '{ts:1002,agent_type:"quality-reviewer",status:"accepted",
   reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
   native_agent_id:"a-recover",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:3}' \
+  objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >"${sdir}/agent_completion_outcomes.jsonl"
 jq -nc '{ts:1003,agent_type:"quality-reviewer",status:"ignored",
   reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
   findings_count:0,finding_ids:"none",native_agent_id:"a-recover",
-  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3}' \
+  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"accepted",
   reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
   native_agent_id:"a-other",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:3}' \
+  objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 accepted_notification_out="$(run_router '<task-notification>
 <task-id>a-recover</task-id>
@@ -341,6 +452,20 @@ assert_eq "accepted background notification needs no recovery directive" "" \
 assert_eq "first same-native notification leaves later and other outcomes" "2" \
   "$(jq -s '[.[] | select((.notification_receipt // false) != true)] | length' \
     "${sdir}/agent_completion_outcomes.jsonl")"
+assert_eq "background receipt preserves nested accepted outcome" "CLEAN" \
+  "$(jq -s -r '[.[] | select(
+      (.notification_receipt // false) == true
+      and (.notification_kind // "") == "task-notification"
+      and (.notification_key // "")
+        == "a-recover|toolu_accepted_review|completed")][0]
+    | .completion_outcome.verdict // empty' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+assert_eq "background receipt projects outcome for orphan settlement" \
+  "accepted" "$(jq -s -r '[.[] | select(
+      (.notification_receipt // false) == true
+      and (.notification_key // "")
+        == "a-recover|toolu_accepted_review|completed")][0]
+    | .status // empty' "${sdir}/agent_completion_outcomes.jsonl")"
 assert_eq "later same-native outcome remains ordered for next notification" \
   "terminal-contract-retry-exhausted" \
   "$(jq -s -r '[.[] | select(.native_agent_id == "a-recover" and
@@ -360,6 +485,136 @@ assert_contains_text "accepted notification replay uses its receipt" \
 assert_eq "accepted replay does not consume the next same-native outcome" "1" \
   "$(jq -s '[.[] | select(.native_agent_id == "a-recover" and
       (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+accepted_receipt_row="$(jq -sc '[.[] | select(
+    (.notification_receipt // false) == true
+    and (.notification_key // "")
+      == "a-recover|toolu_accepted_review|completed")][0]' \
+  "${sdir}/agent_completion_outcomes.jsonl")"
+printf '%s\n' "${accepted_receipt_row}" \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+accepted_ambiguous_out="$(run_router '<task-notification>
+<task-id>a-recover</task-id>
+<tool-use-id>toolu_accepted_review</tool-use-id>
+<status>completed</status>
+<summary>Review complete.</summary>
+</task-notification>' "${sid}")"
+accepted_ambiguous_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${accepted_ambiguous_out}" 2>/dev/null || true)"
+assert_contains_text "duplicate exact notification receipts fail closed" \
+  "BACKGROUND RECOVERY DEGRADED" "${accepted_ambiguous_context}"
+assert_eq "ambiguous receipt cannot consume next same-native outcome" "1" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-recover" and
+      (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+
+# Task wakes use the same global key contract as foreground Agent PostTool.
+# One malformed or foreign-coordinate claim reserves the key fail-closed; it
+# cannot suppress the legitimate outcome as a duplicate or permit a second
+# receipt to be minted.
+for task_claim_case in coordinate flag kind schema status outcome nested \
+    projection extra; do
+  task_claim_sid="task-notification-key-${task_claim_case}"
+  task_claim_dir="${STATE_ROOT}/${task_claim_sid}"
+  task_claim_native="a-task-key-${task_claim_case}"
+  task_claim_tool="toolu_task_key_${task_claim_case}"
+  task_claim_key="${task_claim_native}|${task_claim_tool}|completed"
+  mkdir -p "${task_claim_dir}"
+  jq -nc '{workflow_mode:"ultrawork",review_cycle_id:"1",
+    review_cycle_prompt_ts:"1000",last_user_prompt_ts:"1000",
+    last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+    >"${task_claim_dir}/session_state.json"
+  jq -nc --arg native "${task_claim_native}" \
+    '{native_agent_id:$native,agent_type:"quality-reviewer",
+      review_dispatch_id:"",ts:1000}' \
+    >"${task_claim_dir}/native_agent_bindings.jsonl"
+  jq -nc --arg native "${task_claim_native}" '
+    {ts:1000,agent_type:"quality-reviewer",status:"accepted",reason:"",
+     verdict:"CLEAN",findings_count:0,finding_ids:"none",
+     native_agent_id:$native,objective_cycle_id:1,
+     objective_prompt_ts:1000,review_revision:3,
+     ulw_enforcement_generation:"migration"}' \
+    >"${task_claim_dir}/agent_completion_outcomes.jsonl"
+  jq -nc --arg key "${task_claim_key}" \
+      --arg native "${task_claim_native}" \
+      --arg case "${task_claim_case}" '
+    {ts:999,agent_type:"quality-reviewer",status:"accepted",reason:"",
+     verdict:"CLEAN",findings_count:0,finding_ids:"none",
+     native_agent_id:$native,objective_cycle_id:1,
+     objective_prompt_ts:1000,review_revision:3,
+     ulw_enforcement_generation:"migration"} as $outcome
+    | $outcome +
+    {ts:(if $case == "schema" then "bad" else 1000 end),
+     notification_receipt:(if $case == "flag" then "true" else true end),
+     notification_kind:(if $case == "kind" then "foreign" else
+       "task-notification" end),notification_key:$key,
+     notification_agent_type:"quality-reviewer",
+     native_agent_id:(if $case == "coordinate" then "foreign-native"
+       else $native end),notification_status:"completed",
+     notification_rejected_reason:"",notification_rebind_id:"",
+     notification_retry_exhausted:false,
+     notification_current_pending_preserved:false,
+     completion_outcome:$outcome}
+    | if $case == "status" then del(.notification_status)
+      elif $case == "outcome" then del(.completion_outcome)
+      elif $case == "nested" then
+        .completion_outcome = {status:"accepted"}
+      elif $case == "projection" then .verdict = "BLOCK (1)"
+      elif $case == "extra" then .forged_recovery_authority = true
+      else . end
+  ' >>"${task_claim_dir}/agent_completion_outcomes.jsonl"
+  task_claim_out="$(run_router "<task-notification>
+<task-id>${task_claim_native}</task-id>
+<tool-use-id>${task_claim_tool}</tool-use-id>
+<status>completed</status>
+<summary>Malformed same-key receipt authority.</summary>
+</task-notification>" "${task_claim_sid}")"
+  task_claim_context="$(jq -r \
+    '.hookSpecificOutput.additionalContext // ""' \
+    <<<"${task_claim_out}" 2>/dev/null || true)"
+  assert_contains_text \
+    "task key ${task_claim_case}: malformed claim fails closed" \
+    "BACKGROUND RECOVERY DEGRADED" "${task_claim_context}"
+  assert_eq "task key ${task_claim_case}: causal outcome is preserved" "1" \
+    "$(jq -s --arg native "${task_claim_native}" '[.[] | select(
+      (.native_agent_id // "") == $native
+      and (has("notification_key") | not))] | length' \
+      "${task_claim_dir}/agent_completion_outcomes.jsonl")"
+  assert_eq "task key ${task_claim_case}: no second key claim is minted" "1" \
+    "$(jq -s --arg key "${task_claim_key}" '[.[] | select(
+      (.notification_key // "") == $key)] | length' \
+      "${task_claim_dir}/agent_completion_outcomes.jsonl")"
+done
+
+# Third-party code reviewers own a real record-reviewer publisher but do not
+# adopt OMC's forced terminal-vocabulary contract. Background recovery must
+# recognize either authority; otherwise their task notification leaves the
+# exact accepted outcome stranded for a later unrelated foreground callback.
+jq -nc '{native_agent_id:"a-code-recover",
+  agent_type:"superpowers:code-reviewer",review_dispatch_id:"",ts:1002}' \
+  >>"${sdir}/native_agent_bindings.jsonl"
+jq -nc '{ts:1002,agent_type:"superpowers:code-reviewer",
+  status:"accepted",reason:"",verdict:"CLEAN",findings_count:0,
+  finding_ids:"none",native_agent_id:"a-code-recover",
+  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
+  >>"${sdir}/agent_completion_outcomes.jsonl"
+code_notification_out="$(run_router '<task-notification>
+<task-id>a-code-recover</task-id>
+<tool-use-id>toolu_code_recover</tool-use-id>
+<status>completed</status>
+<summary>Third-party code review complete.</summary>
+</task-notification>' "${sid}")"
+assert_eq "code-reviewer notification accepts dedicated publisher" "" \
+  "${code_notification_out}"
+assert_eq "code-reviewer notification consumes exact causal outcome" "0" \
+  "$(jq -s '[.[] | select(.native_agent_id == "a-code-recover" and
+      (.notification_receipt // false) != true)] | length' \
+    "${sdir}/agent_completion_outcomes.jsonl")"
+assert_eq "code-reviewer notification preserves accepted receipt" "accepted" \
+  "$(jq -s -r '[.[] | select(.native_agent_id == "a-code-recover" and
+      (.notification_receipt // false) == true)][0].status // empty' \
     "${sdir}/agent_completion_outcomes.jsonl")"
 
 # After the bounded retry cap, the exact background notification consumes the
@@ -386,6 +641,7 @@ jq -c --arg fp "${background_crash_fp}" '
       and (.reason // "") == "terminal-contract-retry-exhausted"
       and (.notification_receipt // false) != true
   then . + {cleanup_journal_version:2,
+             lifecycle_dispatch_id:"dispatch-background-recover",
              cleanup_lifecycle_dispatch_id:
                "dispatch-background-recover",
              cleanup_pending_fingerprint:$fp,
@@ -429,12 +685,14 @@ jq -nc '{native_agent_id:"a-no-tool-id",agent_type:"quality-reviewer",
 jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"accepted",
   reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
   native_agent_id:"a-no-tool-id",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:3}' \
+  objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"ignored",
   reason:"terminal-contract-retry-exhausted",verdict:"UNREPORTED",
   findings_count:0,finding_ids:"none",native_agent_id:"a-no-tool-id",
-  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3}' \
+  objective_cycle_id:1,objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 no_id_body='<task-notification>
 <task-id>a-no-tool-id</task-id>
@@ -468,7 +726,8 @@ jq -nc '{native_agent_id:"a-failed-outcome",agent_type:"quality-reviewer",
 jq -nc '{ts:1004,agent_type:"quality-reviewer",status:"accepted",
   reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
   native_agent_id:"a-failed-outcome",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:3}' \
+  objective_prompt_ts:1000,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 failed_outcome_out="$(run_router '<task-notification>
 <task-id>a-failed-outcome</task-id>
@@ -518,7 +777,8 @@ jq -nc '{native_agent_id:"a-ignored",agent_type:"quality-reviewer",
 jq -nc '{ts:1006,agent_type:"quality-reviewer",status:"ignored",
   reason:"prior-objective-completion",verdict:"UNREPORTED",
   findings_count:0,finding_ids:"none",native_agent_id:"a-ignored",
-  objective_cycle_id:0,objective_prompt_ts:1,review_revision:2}' \
+  objective_cycle_id:0,objective_prompt_ts:1,review_revision:2,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 ignored_notification_out="$(run_router '<task-notification>
 <task-id>a-ignored</task-id>
@@ -540,7 +800,8 @@ jq -nc '{native_agent_id:"a-accepted-stale",agent_type:"quality-reviewer",
 jq -nc '{ts:1007,agent_type:"quality-reviewer",status:"accepted",
   reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
   native_agent_id:"a-accepted-stale",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:2}' \
+  objective_prompt_ts:1000,review_revision:2,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 accepted_stale_out="$(run_router '<task-notification>
 <task-id>a-accepted-stale</task-id>
@@ -719,13 +980,14 @@ assert_eq "current same-native pending row remains live" "false" \
 # The preservation branch is deliberately after every validity check. An
 # abandoned, revision-stale, or actively settling current-generation row may
 # share the native ID, but none may be advertised as a validated live task.
-for invalid_kind in abandoned stale claimed expired effects; do
+for invalid_kind in abandoned stale claimed expired overflow effects; do
   invalid_sid="task-notification-invalid-current-${invalid_kind}"
   invalid_dir="${STATE_ROOT}/${invalid_sid}"
   mkdir -p "${invalid_dir}"
   jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
     ulw_enforcement_generation:"2",review_cycle_id:"1",
     review_cycle_prompt_ts:"3250",last_user_prompt_ts:"3250",
+    prompt_revision:"1",
     last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
     >"${invalid_dir}/session_state.json"
   jq -nc --arg id "a-invalid-${invalid_kind}" \
@@ -739,17 +1001,30 @@ for invalid_kind in abandoned stale claimed expired effects; do
       objective_prompt_ts:3250,review_revision:3,
       ulw_enforcement_generation:"1"}' \
     >"${invalid_dir}/agent_completion_outcomes.jsonl"
+  invalid_claim_message="Completed current reviewer callback.\nVERDICT: CLEAN"
+  invalid_claim_digest="$(printf '%s' "${invalid_claim_message}" \
+    | shasum -a 256 | awk '{print substr($1,1,24)}')"
   jq -nc --arg id "a-invalid-${invalid_kind}" --arg kind "${invalid_kind}" \
+    --arg lifecycle "dispatch-invalid-${invalid_kind}-current" \
+    --arg claim_message "${invalid_claim_message}" \
+    --arg claim_digest "${invalid_claim_digest}" \
     --argjson claim_now "$(date +%s)" '
     {agent_type:"quality-reviewer",native_agent_id:$id,ts:3250,
+     lifecycle_dispatch_id:$lifecycle,
      review_dispatch_abandoned:($kind == "abandoned"),
      objective_cycle_id:1,objective_prompt_ts:3250,
+     objective_prompt_revision:1,
      review_revision:(if $kind == "stale" then 2 else 3 end),
      ulw_enforcement_generation:"2"}
-    + if ($kind == "claimed" or $kind == "expired" or $kind == "effects") then {
-        completion_claim_id:("completion-" + $kind),
-        completion_claim_ts:(if $kind == "expired" then 1 else $claim_now end),
-        completion_claim_effects_complete:($kind == "effects")
+     + if ($kind == "claimed" or $kind == "expired" or $kind == "overflow"
+         or $kind == "effects") then {
+        completion_claim_id:("completion-invalid-" + $kind),
+        completion_claim_ts:(if $kind == "expired" then 1
+          elif $kind == "overflow" then "999999999999999999999999999999"
+          else $claim_now end),
+        completion_claim_effects_complete:($kind == "effects"),
+        completion_claim_message:$claim_message,
+        completion_claim_digest:$claim_digest
       } else {} end
   ' >"${invalid_dir}/pending_agents.jsonl"
   invalid_out="$(run_router "<task-notification>
@@ -767,8 +1042,9 @@ for invalid_kind in abandoned stale claimed expired effects; do
     assert_contains_text "settling claim forbids a duplicate dispatch" \
       "Do not integrate the old result, resume, rebind, or dispatch a duplicate" \
       "${invalid_context}"
-  elif [[ "${invalid_kind}" == "expired" ]]; then
-    assert_contains_text "expired claim is not described as settling" \
+  elif [[ "${invalid_kind}" == "expired" \
+      || "${invalid_kind}" == "overflow" ]]; then
+    assert_contains_text "${invalid_kind} claim is not described as settling" \
       "expired incomplete completion claim" "${invalid_context}"
   elif [[ "${invalid_kind}" == "effects" ]]; then
     assert_contains_text "effects-complete claim is not described as settling" \
@@ -778,7 +1054,7 @@ for invalid_kind in abandoned stale claimed expired effects; do
       "BACKGROUND RESULT REJECTED" "${invalid_context}"
   fi
   case "${invalid_kind}" in
-    abandoned|stale|expired)
+    abandoned|stale|expired|overflow)
       invalid_rebind_id="$(printf '%s' "${invalid_context}" \
         | sed -n 's/.*\[review-rebind:\([^]]*\)\].*/\1/p')"
       assert_true "${invalid_kind} rejection exposes a rebind ID" \
@@ -788,6 +1064,154 @@ for invalid_kind in abandoned stale claimed expired effects; do
           "[review-rebind:${invalid_rebind_id}] replace invalid current row")"
       ;;
   esac
+done
+
+# The same exact task-wake capability covers planners. It is not a broad
+# native-ID exemption: a digest mismatch keeps the universal recovery fence.
+planner_claim_message="Current planner callback is publishing.
+VERDICT: PLAN_READY"
+planner_claim_digest="$(printf '%s' "${planner_claim_message}" \
+  | shasum -a 256 | awk '{print substr($1,1,24)}')"
+for planner_claim_case in exact malformed; do
+  planner_claim_sid="task-notification-planner-claim-${planner_claim_case}"
+  planner_claim_dir="${STATE_ROOT}/${planner_claim_sid}"
+  planner_claim_native="a-planner-claim-${planner_claim_case}"
+  mkdir -p "${planner_claim_dir}"
+  jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+    ulw_enforcement_generation:"2",review_cycle_id:"1",
+    review_cycle_prompt_ts:"4150",last_user_prompt_ts:"4150",
+    prompt_revision:"1",edit_revision:"3",plan_revision:"0"}' \
+    >"${planner_claim_dir}/session_state.json"
+  jq -nc --arg id "${planner_claim_native}" \
+    '{native_agent_id:$id,agent_type:"quality-planner",
+      review_dispatch_id:"",ts:4150}' \
+    >"${planner_claim_dir}/native_agent_bindings.jsonl"
+  jq -nc --arg id "${planner_claim_native}" '
+    {ts:4149,agent_type:"quality-planner",status:"accepted",reason:"",
+     verdict:"PLAN_READY",findings_count:0,finding_ids:"none",
+     native_agent_id:$id,objective_cycle_id:1,
+     objective_prompt_ts:4150,review_revision:0,
+     ulw_enforcement_generation:"1"}
+  ' >"${planner_claim_dir}/agent_completion_outcomes.jsonl"
+  jq -nc --arg id "${planner_claim_native}" \
+    --arg message "${planner_claim_message}" \
+    --arg digest "${planner_claim_digest}" \
+    --arg case_name "${planner_claim_case}" \
+    --argjson claim_now "$(date +%s)" '
+      {agent_type:"quality-planner",native_agent_id:$id,ts:4150,
+       lifecycle_dispatch_id:("dispatch-planner-claim-" + $case_name),
+       review_dispatch_abandoned:false,objective_cycle_id:1,
+       objective_prompt_ts:4150,objective_prompt_revision:1,
+       review_revision:0,plan_revision:0,ulw_enforcement_generation:"2",
+       completion_claim_id:("completion-planner-claim-" + $case_name),
+       completion_claim_ts:$claim_now,completion_claim_effects_complete:false,
+       completion_claim_message:$message,
+       completion_claim_digest:(if $case_name == "exact" then $digest
+         else "000000000000000000000000" end)}
+    ' >"${planner_claim_dir}/pending_agents.jsonl"
+  planner_claim_out="$(run_router "<task-notification>
+<task-id>${planner_claim_native}</task-id>
+<tool-use-id>toolu_planner_claim_${planner_claim_case}</tool-use-id>
+<status>completed</status>
+<summary>Planner wake beside a publishing claim.</summary>
+</task-notification>" "${planner_claim_sid}")"
+  if [[ "${planner_claim_case}" == "exact" ]]; then
+    assert_contains_text "exact planner wake reports settling without mutation" \
+      "validated current completion claim is still settling" \
+      "${planner_claim_out}"
+    assert_eq "exact planner wake preserves the live claim" "false" \
+      "$(jq -r '.completion_claim_effects_complete' \
+        "${planner_claim_dir}/pending_agents.jsonl")"
+    planner_claim_nested_tag_out="$(run_router "<task-notification>
+<task-id>${planner_claim_native}</task-id>
+<tool-use-id>toolu_planner_claim_exact_nested_tag</tool-use-id>
+<status>completed</status>
+<summary>Untrusted summary text contains a later <task-id>decoy-native</task-id> tag.</summary>
+</task-notification>" "${planner_claim_sid}")"
+    assert_contains_text \
+      "task-wake capability uses the same leftmost ID as notification parsing" \
+      "validated current completion claim is still settling" \
+      "${planner_claim_nested_tag_out}"
+  else
+    assert_contains_text "malformed planner claim remains recovery-fenced" \
+      "OH-MY-CLAUDE RECOVERY REQUIRED" "${planner_claim_out}"
+  fi
+done
+
+# Row-only crashes precede both dedicated WAL/receipt publishers. Once the
+# exact universal claim lease expires, the publication barrier must retire the
+# planner/reviewer pending+start pair through the ignored-outcome journal before
+# admitting a newer real prompt. No dedicated verdict/plan effect is inferred.
+for orphan_kind in reviewer planner; do
+  orphan_sid="orphaned-dedicated-${orphan_kind}"
+  orphan_dir="${STATE_ROOT}/${orphan_sid}"
+  orphan_native="a-orphaned-${orphan_kind}"
+  orphan_lifecycle="dispatch-orphaned-${orphan_kind}-claim"
+  if [[ "${orphan_kind}" == "reviewer" ]]; then
+    orphan_agent="quality-reviewer"
+    orphan_message="Recovered reviewer callback was never authoritative.
+VERDICT: CLEAN"
+    orphan_review_revision=3
+    orphan_effects=false
+  else
+    orphan_agent="quality-planner"
+    orphan_message="Recovered planner callback was never authoritative.
+VERDICT: PLAN_READY"
+    orphan_review_revision=0
+    orphan_effects=true
+  fi
+  orphan_digest="$(printf '%s' "${orphan_message}" \
+    | shasum -a 256 | awk '{print substr($1,1,24)}')"
+  mkdir -p "${orphan_dir}"
+  jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+    ulw_enforcement_generation:"2",native_agent_id_tracking_version:"1",
+    review_dispatch_tracking_version:"1",subagent_dispatch_tracking_version:"1",
+    review_cycle_id:"1",review_cycle_prompt_ts:"4250",
+    last_user_prompt_ts:"4250",prompt_revision:"1",
+    last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+    >"${orphan_dir}/session_state.json"
+  jq -nc --arg native "${orphan_native}" --arg agent "${orphan_agent}" \
+    --arg lifecycle "${orphan_lifecycle}" \
+    '{native_agent_id:$native,agent_type:$agent,
+      review_dispatch_id:"",lifecycle_dispatch_id:$lifecycle,
+      objective_cycle_id:1,ts:4250}' \
+    >"${orphan_dir}/native_agent_bindings.jsonl"
+  jq -nc --arg native "${orphan_native}" --arg agent "${orphan_agent}" \
+    --arg lifecycle "${orphan_lifecycle}" \
+    --arg message "${orphan_message}" --arg digest "${orphan_digest}" \
+    --argjson revision "${orphan_review_revision}" \
+    --argjson effects "${orphan_effects}" '
+      {ts:4250,agent_type:$agent,native_agent_id:$native,
+       lifecycle_dispatch_id:$lifecycle,review_dispatch_id:"",
+       review_dispatch_causality_version:1,review_dispatch_abandoned:false,
+       objective_cycle_id:1,objective_prompt_ts:4250,
+       objective_prompt_revision:1,review_revision:$revision,
+       edit_revision:3,code_revision:3,doc_revision:0,bash_revision:0,
+       ui_revision:0,plan_revision:0,ulw_enforcement_generation:"2",
+       completion_claim_id:("completion-orphaned-" + $agent),
+       completion_claim_ts:1,completion_claim_effects_complete:$effects,
+       completion_claim_message:$message,completion_claim_digest:$digest}
+    ' >"${orphan_dir}/pending_agents.jsonl"
+  cp "${orphan_dir}/pending_agents.jsonl" \
+    "${orphan_dir}/agent_dispatch_starts.jsonl"
+  orphan_out="$(run_router "/ulw continue after ${orphan_kind} crash" \
+    "${orphan_sid}")"
+  assert_not_contains_text "${orphan_kind} orphan converges before real prompt" \
+    "RECOVERY REQUIRED" "${orphan_out}"
+  assert_eq "${orphan_kind} orphan pending row is retired" "0" \
+    "$(jq -s 'length' "${orphan_dir}/pending_agents.jsonl")"
+  assert_eq "${orphan_kind} orphan start row is retired" "0" \
+    "$(jq -s 'length' "${orphan_dir}/agent_dispatch_starts.jsonl")"
+  assert_eq "${orphan_kind} orphan has one ignored roll-forward outcome" \
+    "ignored:orphaned-dedicated-publication" \
+    "$(jq -s -r '[.[] | select(
+        .lifecycle_dispatch_id == "'"${orphan_lifecycle}"'")]
+      | if length == 1 then .[0].status + ":" + .[0].reason else "" end' \
+      "${orphan_dir}/agent_completion_outcomes.jsonl")"
+  assert_contains_text "${orphan_kind} prompt advances only after retirement" \
+    "continue after ${orphan_kind} crash" \
+    "$(jq -r '.current_objective // ""' \
+      "${orphan_dir}/session_state.json")"
 done
 
 # A hard-cap return can have no outcome because SubagentStop never fired. An
@@ -908,6 +1332,210 @@ assert_eq "receipt failure keeps exact pending row live" "false" \
 assert_false "receipt failure commits no receipt ledger" \
   "[[ -e \"${receipt_fail_dir}/agent_completion_outcomes.jsonl\" ]]"
 
+# Process death after the pending retry write but before the receipt rename
+# must not spend the bounded native-resume budget twice. The stable wake key
+# on the row is the roll-forward marker for exact redelivery.
+receipt_kill_sid="task-notification-receipt-kill"
+receipt_kill_dir="${STATE_ROOT}/${receipt_kill_sid}"
+mkdir -p "${receipt_kill_dir}"
+jq -nc '{workflow_mode:"ultrawork",review_cycle_id:"1",
+  review_cycle_prompt_ts:"4200",last_user_prompt_ts:"4200",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${receipt_kill_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-receipt-kill",agent_type:"quality-reviewer",
+  review_dispatch_id:"",ts:4200}' \
+  >"${receipt_kill_dir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",native_agent_id:"a-receipt-kill",
+  ts:4200,review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:4200,review_revision:3}' \
+  >"${receipt_kill_dir}/pending_agents.jsonl"
+receipt_kill_prompt='<task-notification>
+<task-id>a-receipt-kill</task-id>
+<tool-use-id>toolu_receipt_kill</tool-use-id>
+<status>completed</status>
+<summary>Hard-limit completion interrupted after pending publication.</summary>
+</task-notification>'
+export OMC_TEST_TASK_NOTIFICATION_KILL_AFTER_PENDING=1
+run_router "${receipt_kill_prompt}" "${receipt_kill_sid}" >/dev/null
+unset OMC_TEST_TASK_NOTIFICATION_KILL_AFTER_PENDING
+assert_eq "receipt kill spends one retry before process death" "1" \
+  "$(jq -r '.terminal_contract_retry_count // 0' \
+    "${receipt_kill_dir}/pending_agents.jsonl")"
+assert_false "receipt kill precedes durable notification receipt" \
+  "[[ -e \"${receipt_kill_dir}/agent_completion_outcomes.jsonl\" ]]"
+receipt_kill_replay_out="$(run_router \
+  "${receipt_kill_prompt}" "${receipt_kill_sid}")"
+receipt_kill_replay_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${receipt_kill_replay_out}" 2>/dev/null || true)"
+assert_eq "exact notification replay spends no second retry" "1" \
+  "$(jq -r '.terminal_contract_retry_count // 0' \
+    "${receipt_kill_dir}/pending_agents.jsonl")"
+assert_eq "exact notification replay commits one receipt" "1" \
+  "$(jq -s '[.[] | select(.notification_receipt == true)] | length' \
+    "${receipt_kill_dir}/agent_completion_outcomes.jsonl")"
+assert_contains_text "exact notification replay retains resume guidance" \
+  "Resume that exact call now" "${receipt_kill_replay_context}"
+
+# A malformed completion ledger must fence the notification transaction. The
+# receipt rewrite may not silently filter an unrelated malformed row while
+# consuming a valid same-native outcome.
+malformed_sid="task-notification-malformed-outcomes"
+malformed_dir="${STATE_ROOT}/${malformed_sid}"
+mkdir -p "${malformed_dir}"
+jq -nc '{workflow_mode:"ultrawork",review_cycle_id:"1",
+  review_cycle_prompt_ts:"4250",last_user_prompt_ts:"4250",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${malformed_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-malformed-outcome",
+  agent_type:"quality-reviewer",review_dispatch_id:"",ts:4250}' \
+  >"${malformed_dir}/native_agent_bindings.jsonl"
+jq -nc '{ts:4250,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-malformed-outcome",objective_cycle_id:1,
+  objective_prompt_ts:4250,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
+  >"${malformed_dir}/agent_completion_outcomes.jsonl"
+# Valid JSON is still corrupt authority when it is only a causal-looking
+# fragment rather than the complete producer contract.
+printf '%s\n' \
+  '{"status":"accepted","native_agent_id":"a-malformed-outcome"}' \
+  >>"${malformed_dir}/agent_completion_outcomes.jsonl"
+malformed_before="$(cksum \
+  <"${malformed_dir}/agent_completion_outcomes.jsonl")"
+malformed_out="$(run_router '<task-notification>
+<task-id>a-malformed-outcome</task-id>
+<tool-use-id>toolu_malformed_outcome</tool-use-id>
+<status>completed</status>
+<summary>Completion with an unrelated malformed ledger row.</summary>
+</task-notification>' "${malformed_sid}")"
+malformed_context="$(jq -r '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${malformed_out}" 2>/dev/null || true)"
+assert_contains_text "malformed outcome ledger fails notification closed" \
+  "BACKGROUND RECOVERY DEGRADED" "${malformed_context}"
+assert_eq "malformed outcome ledger remains byte-identical" \
+  "${malformed_before}" \
+  "$(cksum <"${malformed_dir}/agent_completion_outcomes.jsonl")"
+
+# The newest-128 delivery-receipt cap is history retention, not permission to
+# discard a receipt that is still the accepted-outcome authority for an exact
+# summary-first waiter. Preserve the live lifecycle and prune older unrelated
+# history instead.
+protected_sid="task-notification-protected-receipt"
+protected_dir="${STATE_ROOT}/${protected_sid}"
+mkdir -p "${protected_dir}"
+jq -nc '{workflow_mode:"ultrawork",review_cycle_id:"1",
+  review_cycle_prompt_ts:"4275",last_user_prompt_ts:"4275",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${protected_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-protected-new",
+  agent_type:"quality-reviewer",review_dispatch_id:"",ts:4275}' \
+  >"${protected_dir}/native_agent_bindings.jsonl"
+protected_plan_ready_digest="$(
+  . "${COMMON_SH}"
+  _omc_token_digest "VERDICT: PLAN_READY"
+)"
+jq -nc --arg digest "${protected_plan_ready_digest}" \
+  '{schema_version:1,created_at:4275,
+  lifecycle_dispatch_id:"dispatch-protected-receipt-0001",
+  agent_type:"quality-planner",native_agent_id:"a-protected-old",
+  completion_digest:$digest,message:"VERDICT: PLAN_READY"}' \
+  >"${protected_dir}/plan_summary_waiters.jsonl"
+jq -nc '{notification_receipt:true,notification_kind:"agent-posttool",
+  notification_key:"protected-old",notification_agent_type:"quality-planner",
+  lifecycle_dispatch_id:"dispatch-protected-receipt-0001",
+  agent_type:"quality-planner",native_agent_id:"a-protected-old",
+  status:"accepted",completion_outcome:{status:"accepted"}}' \
+  >"${protected_dir}/agent_completion_outcomes.jsonl"
+jq -nc 'range(0;127) as $i | {
+  notification_receipt:true,notification_kind:"task-notification",
+  notification_key:("history-" + ($i|tostring)),
+  notification_agent_type:"quality-reviewer",
+  native_agent_id:("history-native-" + ($i|tostring)),
+  completion_outcome:null}' \
+  >>"${protected_dir}/agent_completion_outcomes.jsonl"
+jq -nc '{ts:4275,agent_type:"quality-reviewer",status:"accepted",
+  reason:"",verdict:"CLEAN",findings_count:0,finding_ids:"none",
+  native_agent_id:"a-protected-new",objective_cycle_id:1,
+  objective_prompt_ts:4275,review_revision:3,
+  ulw_enforcement_generation:"migration"}' \
+  >>"${protected_dir}/agent_completion_outcomes.jsonl"
+protected_out="$(run_router '<task-notification>
+<task-id>a-protected-new</task-id>
+<tool-use-id>toolu_protected_new</tool-use-id>
+<status>completed</status>
+<summary>New accepted completion at the receipt cap.</summary>
+</task-notification>' "${protected_sid}")"
+assert_eq "protected receipt notification remains silent" "" \
+  "${protected_out}"
+assert_eq "delivery receipt cap remains bounded" "128" \
+  "$(jq -s 'length' \
+    "${protected_dir}/agent_completion_outcomes.jsonl")"
+assert_eq "live waiter receipt survives history pruning" "1" \
+  "$(jq -s '[.[] | select(.lifecycle_dispatch_id ==
+      "dispatch-protected-receipt-0001")] | length' \
+    "${protected_dir}/agent_completion_outcomes.jsonl")"
+assert_eq "oldest unrelated receipt is pruned first" "0" \
+  "$(jq -s '[.[] | select(.notification_key == "history-0")] | length' \
+    "${protected_dir}/agent_completion_outcomes.jsonl")"
+assert_eq "new delivery receipt is retained" "1" \
+  "$(jq -s '[.[] | select(.notification_key ==
+      "a-protected-new|toolu_protected_new|completed")] | length' \
+    "${protected_dir}/agent_completion_outcomes.jsonl")"
+
+# The pending tombstone and delivery receipt commit before hook output. If the
+# process dies after the receipt rename, exact notification replay must recover
+# the same persisted replacement token instead of degrading to a token-less
+# generic duplicate.
+terminal_receipt_sid="task-notification-terminal-receipt-kill"
+terminal_receipt_dir="${STATE_ROOT}/${terminal_receipt_sid}"
+mkdir -p "${terminal_receipt_dir}"
+jq -nc '{workflow_mode:"ultrawork",review_cycle_id:"1",
+  review_cycle_prompt_ts:"4290",last_user_prompt_ts:"4290",
+  last_code_edit_revision:"3",edit_revision:"3",plan_revision:"0"}' \
+  >"${terminal_receipt_dir}/session_state.json"
+jq -nc '{native_agent_id:"a-terminal-receipt",
+  agent_type:"quality-reviewer",review_dispatch_id:"",ts:4290}' \
+  >"${terminal_receipt_dir}/native_agent_bindings.jsonl"
+jq -nc '{agent_type:"quality-reviewer",
+  native_agent_id:"a-terminal-receipt",ts:4290,
+  review_dispatch_abandoned:false,objective_cycle_id:1,
+  objective_prompt_ts:4290,review_revision:3,
+  terminal_contract_retry_count:2}' \
+  >"${terminal_receipt_dir}/pending_agents.jsonl"
+terminal_receipt_prompt='<task-notification>
+<task-id>a-terminal-receipt</task-id>
+<tool-use-id>toolu_terminal_receipt</tool-use-id>
+<status>completed</status>
+<summary>Third hard-limit completion interrupted after its receipt.</summary>
+</task-notification>'
+export OMC_TEST_TASK_NOTIFICATION_KILL_AFTER_RECEIPT=1
+run_router "${terminal_receipt_prompt}" "${terminal_receipt_sid}" >/dev/null
+unset OMC_TEST_TASK_NOTIFICATION_KILL_AFTER_RECEIPT
+terminal_rebind_id="$(jq -r '.terminal_contract_rebind_id // empty' \
+  "${terminal_receipt_dir}/pending_agents.jsonl")"
+assert_true "terminal receipt kill persists a valid rebind token" \
+  "[[ \"${terminal_rebind_id}\" =~ ^task-end-[A-Fa-f0-9]{16}$ ]]"
+assert_eq "terminal delivery receipt preserves the same rebind token" \
+  "${terminal_rebind_id}" \
+  "$(jq -s -r '[.[] | select(.notification_key ==
+      "a-terminal-receipt|toolu_terminal_receipt|completed")][0]
+    .notification_rebind_id // empty' \
+    "${terminal_receipt_dir}/agent_completion_outcomes.jsonl")"
+terminal_receipt_replay_out="$(run_router \
+  "${terminal_receipt_prompt}" "${terminal_receipt_sid}")"
+terminal_receipt_replay_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // ""' \
+  <<<"${terminal_receipt_replay_out}" 2>/dev/null || true)"
+assert_contains_text "terminal receipt replay retains exhaustion guidance" \
+  "bounded parent-recovery budget is exhausted" \
+  "${terminal_receipt_replay_context}"
+assert_contains_text "terminal receipt replay reuses exact token" \
+  "[review-rebind:${terminal_rebind_id}]" \
+  "${terminal_receipt_replay_context}"
+assert_not_contains_text "terminal receipt replay never resumes old call" \
+  "Resume that exact call now" "${terminal_receipt_replay_context}"
+
 # PLAN_READY is the one accepted outcome whose dedicated recorder advances its
 # own freshness generation: dispatch N publishes plan revision N+1. The task
 # notification is current only when the committed plan state proves that exact
@@ -917,7 +1545,8 @@ jq -nc '{native_agent_id:"a-plan-ready",agent_type:"quality-planner",
 jq -nc '{ts:1008,agent_type:"quality-planner",status:"accepted",
   reason:"",verdict:"PLAN_READY",findings_count:0,finding_ids:"none",
   native_agent_id:"a-plan-ready",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:4}' \
+  objective_prompt_ts:1000,review_revision:4,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 plan_ready_notification_out="$(run_router '<task-notification>
 <task-id>a-plan-ready</task-id>
@@ -934,7 +1563,8 @@ jq -nc '{native_agent_id:"a-plan-unpublished",agent_type:"quality-planner",
 jq -nc '{ts:1009,agent_type:"quality-planner",status:"accepted",
   reason:"",verdict:"PLAN_READY",findings_count:0,finding_ids:"none",
   native_agent_id:"a-plan-unpublished",objective_cycle_id:1,
-  objective_prompt_ts:1000,review_revision:5}' \
+  objective_prompt_ts:1000,review_revision:5,
+  ulw_enforcement_generation:"migration"}' \
   >>"${sdir}/agent_completion_outcomes.jsonl"
 plan_unpublished_out="$(run_router '<task-notification>
 <task-id>a-plan-unpublished</task-id>
@@ -956,7 +1586,16 @@ assert_contains_text "unpublished PLAN_READY outcome is rejected" \
 sid2="real-user-prompt"
 sdir2="${STATE_ROOT}/${sid2}"
 mkdir -p "${sdir2}"
-echo '{"workflow_mode":"ultrawork"}' > "${sdir2}/session_state.json"
+jq -nc '{workflow_mode:"ultrawork",
+  external_edit_event_count:"9",
+  external_doc_edit_event_count:"3",
+  external_ui_edit_event_count:"2",
+  external_native_edit_event_count:"1",
+  external_unknown_edit_event_count:"3"}' > "${sdir2}/session_state.json"
+printf '%s\n' \
+  '{"_v":1,"legacy":true}' \
+  '{malformed legacy receipt' \
+  >"${sdir2}/verification_receipts.jsonl"
 run_router '/ulw fix the payment refund' "${sid2}" >/dev/null
 real_intent="$(jq -r '.task_intent // ""' "${sdir2}/session_state.json")"
 real_objective="$(jq -r '.current_objective // ""' "${sdir2}/session_state.json")"
@@ -964,30 +1603,127 @@ assert_true "real prompt: task_intent populated" \
   "[[ -n \"${real_intent}\" ]]"
 assert_true "real prompt: current_objective updated" \
   "[[ \"${real_objective}\" == *'payment refund'* ]]"
+assert_false "fresh objective clears the entire live verification receipt ledger" \
+  "[[ -e \"${sdir2}/verification_receipts.jsonl\" ]]"
+assert_eq "fresh objective snapshots aggregate connector baseline" "9" \
+  "$(jq -r '.review_cycle_external_event_base // ""' "${sdir2}/session_state.json")"
+assert_eq "fresh objective snapshots document connector baseline" "3" \
+  "$(jq -r '.review_cycle_external_doc_event_base // ""' "${sdir2}/session_state.json")"
+assert_eq "fresh objective snapshots UI connector baseline" "2" \
+  "$(jq -r '.review_cycle_external_ui_event_base // ""' "${sdir2}/session_state.json")"
+assert_eq "fresh objective snapshots native connector baseline" "1" \
+  "$(jq -r '.review_cycle_external_native_event_base // ""' "${sdir2}/session_state.json")"
+assert_eq "fresh objective snapshots unknown connector baseline" "3" \
+  "$(jq -r '.review_cycle_external_unknown_event_base // ""' "${sdir2}/session_state.json")"
+
+# Constitution curation is a session-management turn. Even mutation-shaped
+# grammar must preserve the active objective lifecycle and all causal proof
+# artifacts while still returning the exact authorization guidance.
+constitution_sid="constitution-lifecycle-inert"
+constitution_dir="${STATE_ROOT}/${constitution_sid}"
+mkdir -p "${constitution_dir}"
+jq -nc '{
+  workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"4",task_intent:"execution",
+  prompt_classified_intent:"execution",prompt_revision:"7",
+  last_meta_request:"prior status request",
+  current_objective:"finish the active exporter",task_domain:"coding",
+  task_risk_tier:"high",review_cycle_id:"11",
+  review_cycle_prompt_ts:"7000",review_cycle_edit_log_offset:"2",
+  first_mutation_ts:"7100",first_mutation_tool:"Edit",
+  quality_contract_tracking_version:"1",quality_contract_required:"1",
+  quality_contract_id:"qc-active-contract",quality_contract_revision:"2",
+  quality_contract_status:"current",quality_frontier_status:"open",
+  quality_evidence_current_count:"2",dimension_guard_blocks:"3",
+  exemplifying_scope_required:""
+}' >"${constitution_dir}/session_state.json"
+printf '%s\n' '{"contract_id":"qc-active-contract","sentinel":"contract"}' \
+  >"${constitution_dir}/quality_contract.json"
+printf '%s\n' '{"criterion_id":"criterion-1","sentinel":"evidence"}' \
+  >"${constitution_dir}/quality_evidence.jsonl"
+printf '%s\n' '{"status":"open","sentinel":"frontier"}' \
+  >"${constitution_dir}/quality_frontier.json"
+printf '%s\n' '{"contract_id":"qc-active-contract","sentinel":"floor"}' \
+  >"${constitution_dir}/quality_contract_floor.json"
+printf '%s\n' '{"_v":2,"sentinel":"receipt"}' \
+  >"${constitution_dir}/verification_receipts.jsonl"
+printf '%s\n' '{"agent_type":"quality-reviewer","sentinel":"pending"}' \
+  >"${constitution_dir}/pending_agents.jsonl"
+constitution_state_before="$(jq -c '{
+  current_objective,last_meta_request,review_cycle_id,review_cycle_prompt_ts,
+  review_cycle_edit_log_offset,first_mutation_ts,first_mutation_tool,
+  quality_contract_tracking_version,quality_contract_required,
+  quality_contract_id,quality_contract_revision,quality_contract_status,
+  quality_frontier_status,quality_evidence_current_count,
+  dimension_guard_blocks,exemplifying_scope_required
+}' "${constitution_dir}/session_state.json")"
+constitution_artifacts_before="$(
+  cksum \
+    "${constitution_dir}/quality_contract.json" \
+    "${constitution_dir}/quality_evidence.jsonl" \
+    "${constitution_dir}/quality_frontier.json" \
+    "${constitution_dir}/quality_contract_floor.json" \
+    "${constitution_dir}/verification_receipts.jsonl" \
+    "${constitution_dir}/pending_agents.jsonl"
+)"
+export OMC_PROMPT_PERSIST=off
+constitution_output="$(run_router \
+  '/quality-constitution remember Prefer causal evidence such as runnable proof over vague assurance' \
+  "${constitution_sid}")"
+unset OMC_PROMPT_PERSIST
+constitution_state_after="$(jq -c '{
+  current_objective,last_meta_request,review_cycle_id,review_cycle_prompt_ts,
+  review_cycle_edit_log_offset,first_mutation_ts,first_mutation_tool,
+  quality_contract_tracking_version,quality_contract_required,
+  quality_contract_id,quality_contract_revision,quality_contract_status,
+  quality_frontier_status,quality_evidence_current_count,
+  dimension_guard_blocks,exemplifying_scope_required
+}' "${constitution_dir}/session_state.json")"
+constitution_artifacts_after="$(
+  cksum \
+    "${constitution_dir}/quality_contract.json" \
+    "${constitution_dir}/quality_evidence.jsonl" \
+    "${constitution_dir}/quality_frontier.json" \
+    "${constitution_dir}/quality_contract_floor.json" \
+    "${constitution_dir}/verification_receipts.jsonl" \
+    "${constitution_dir}/pending_agents.jsonl"
+)"
+assert_eq "Constitution command preserves active lifecycle state" \
+  "${constitution_state_before}" "${constitution_state_after}"
+assert_eq "Constitution command preserves live contract/proof/pending artifacts" \
+  "${constitution_artifacts_before}" "${constitution_artifacts_after}"
+assert_eq "Constitution command is normalized to session management" \
+  "session_management" \
+  "$(jq -r '.task_intent // ""' "${constitution_dir}/session_state.json")"
+assert_false "Constitution command does not persist raw slash payload when prompt persistence is off" \
+  "grep -Fq 'Prefer causal evidence such as runnable proof over vague assurance' \
+    \"${constitution_dir}/session_state.json\""
+assert_contains_text "Constitution command still emits exact authorization guidance" \
+  "QUALITY CONSTITUTION — EXACT USER AUTHORIZATION" "${constitution_output}"
 
 # Monotonic objective identity is produced in the same locked transition that
-# tombstones prior live dispatches. Freeze `date +%s` to prove two genuinely
+# tombstones prior live dispatches. Freeze the router epoch to prove two genuinely
 # fresh prompts in one epoch second still receive distinct cycle IDs, while a
 # true continuation preserves both the ID and its current live row.
-fake_bin="${TEST_HOME}/fake-bin"
-mkdir -p "${fake_bin}"
-printf '%s\n' '#!/bin/sh' \
-  'if [ "${1:-}" = "+%s" ]; then printf "424242\\n"; else exec /bin/date "$@"; fi' \
-  >"${fake_bin}/date"
-chmod +x "${fake_bin}/date"
 run_router_same_second() {
   local prompt="$1" cycle_sid="$2" input
   input="$(jq -nc --arg sid "${cycle_sid}" --arg p "${prompt}" \
     '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
-  printf '%s' "${input}" | PATH="${fake_bin}:${PATH}" bash "${ROUTER_SH}" \
-    2>&1 || true
+  printf '%s' "${input}" \
+    | OMC_TEST_ROUTER_NOW_EPOCH=424242 bash "${ROUTER_SH}" 2>&1 || true
 }
 cycle_sid="review-cycle-producer"
 cycle_dir="${STATE_ROOT}/${cycle_sid}"
 mkdir -p "${cycle_dir}"
 jq -nc '{workflow_mode:"ultrawork",task_intent:"execution",
   current_objective:"old objective",review_cycle_id:"4",
-  review_cycle_prompt_ts:"424242"}' >"${cycle_dir}/session_state.json"
+  review_cycle_prompt_ts:"424242",
+  closeout_finalized_token:"4:9:completed",
+  closeout_finalization_status:"claimed",
+  closeout_finalization_claimed_ts:"424242",
+  closeout_finalization_claim_id:
+    "finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+  >"${cycle_dir}/session_state.json"
 jq -nc '{ts:424242,agent_type:"old-cycle-worker",objective_cycle_id:4,
   review_dispatch_abandoned:false}' >"${cycle_dir}/pending_agents.jsonl"
 run_router_same_second '/ulw implement the new export path completely' \
@@ -997,6 +1733,9 @@ assert_eq "fresh producer increments the monotonic review cycle" "5" \
 assert_eq "fresh producer keeps the frozen same-second timestamp diagnostic" \
   "424242" \
   "$(jq -r '.review_cycle_prompt_ts // ""' "${cycle_dir}/session_state.json")"
+assert_eq "fresh producer clears the prior closeout claimant identity" "" \
+  "$(jq -r '.closeout_finalization_claim_id // ""' \
+    "${cycle_dir}/session_state.json")"
 assert_eq "cycle publication atomically tombstones the prior live row" "true" \
   "$(jq -s -r '[.[] | select(.agent_type == "old-cycle-worker")][0].review_dispatch_abandoned' \
     "${cycle_dir}/pending_agents.jsonl")"
@@ -1020,14 +1759,8 @@ assert_eq "second fresh transition tombstones former current work" "true" \
 # pending-ledger rewrite must not be masked merely because the following start
 # ledger is absent and the function's caller is inside an `if ! ...` context
 # (which suppresses Bash errexit inside the call tree). Inject a targeted
-# mktemp failure after taint staging and prove the transition fails closed.
-printf '%s\n' '#!/bin/sh' \
-  'case "${OMC_TEST_FAIL_OBJECTIVE_LEDGER_REWRITE:-}:$*" in' \
-  '  1:*pending_agents.jsonl.XXXXXX*) exit 1 ;;' \
-  'esac' \
-  'exec /usr/bin/mktemp "$@"' \
-  >"${fake_bin}/mktemp"
-chmod +x "${fake_bin}/mktemp"
+# ledger rewrite failure after taint staging and prove the transition fails
+# closed without weakening the hook's observer PATH.
 failure_sid="review-cycle-rewrite-failure"
 failure_dir="${STATE_ROOT}/${failure_sid}"
 mkdir -p "${failure_dir}"
@@ -1041,7 +1774,7 @@ failure_input="$(jq -nc --arg sid "${failure_sid}" \
   '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
 set +e
 printf '%s' "${failure_input}" \
-  | PATH="${fake_bin}:${PATH}" OMC_TEST_FAIL_OBJECTIVE_LEDGER_REWRITE=1 \
+  | OMC_TEST_FAIL_OBJECTIVE_LEDGER_REWRITE=1 \
     bash "${ROUTER_SH}" >/dev/null 2>&1
 failure_rc=$?
 set -e
@@ -1052,6 +1785,116 @@ assert_eq "ledger rewrite failure does not publish a new review cycle" "9" \
 assert_eq "ledger rewrite failure leaves prior row live for a safe retry" "false" \
   "$(jq -r '.review_dispatch_abandoned // false' \
     "${failure_dir}/pending_agents.jsonl")"
+
+# Numeric state is untrusted input to Bash arithmetic. Causal counters fail
+# closed instead of wrapping/restarting their identities; advisory timestamps
+# and the explicit epoch seam fall back without suppressing current routing.
+numeric_prompt_sid="router-numeric-prompt-revision"
+numeric_prompt_dir="${STATE_ROOT}/${numeric_prompt_sid}"
+mkdir -p "${numeric_prompt_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1",prompt_revision:"999999999999999",
+  review_cycle_id:"2",current_objective:"preserve numeric objective"}' \
+  >"${numeric_prompt_dir}/session_state.json"
+numeric_prompt_input="$(jq -nc --arg sid "${numeric_prompt_sid}" \
+  --arg p 'continue' \
+  '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
+set +e
+printf '%s' "${numeric_prompt_input}" \
+  | bash "${ROUTER_SH}" >/dev/null 2>&1
+numeric_prompt_rc=$?
+set -e
+assert_true "maximum prompt revision fails closed before wrap" \
+  "[[ ${numeric_prompt_rc} -ne 0 ]]"
+assert_eq "maximum prompt revision remains unchanged" "999999999999999" \
+  "$(jq -r '.prompt_revision // ""' \
+    "${numeric_prompt_dir}/session_state.json")"
+assert_eq "prompt revision failure preserves objective" \
+  "preserve numeric objective" \
+  "$(jq -r '.current_objective // ""' \
+    "${numeric_prompt_dir}/session_state.json")"
+
+numeric_cycle_sid="router-numeric-review-cycle"
+numeric_cycle_dir="${STATE_ROOT}/${numeric_cycle_sid}"
+mkdir -p "${numeric_cycle_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1",prompt_revision:"1",
+  review_cycle_id:"999999999999999",current_objective:"old cycle"}' \
+  >"${numeric_cycle_dir}/session_state.json"
+numeric_cycle_input="$(jq -nc --arg sid "${numeric_cycle_sid}" \
+  --arg p '/ulw implement the bounded counter path' \
+  '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
+set +e
+printf '%s' "${numeric_cycle_input}" \
+  | OMC_TEST_ROUTER_NOW_EPOCH=424242 \
+    bash "${ROUTER_SH}" >/dev/null 2>&1
+numeric_cycle_rc=$?
+set -e
+assert_true "maximum review cycle fails closed before wrap" \
+  "[[ ${numeric_cycle_rc} -ne 0 ]]"
+assert_eq "maximum review cycle is never reset or wrapped" \
+  "999999999999999" \
+  "$(jq -r '.review_cycle_id // ""' \
+    "${numeric_cycle_dir}/session_state.json")"
+
+numeric_generation_sid="router-numeric-generation"
+numeric_generation_dir="${STATE_ROOT}/${numeric_generation_sid}"
+mkdir -p "${numeric_generation_dir}"
+jq -nc '{workflow_mode:"",ulw_enforcement_active:"0",
+  ulw_enforcement_generation:"999999999999999",prompt_revision:"1",
+  review_cycle_id:"1",current_objective:"old generation"}' \
+  >"${numeric_generation_dir}/session_state.json"
+numeric_generation_input="$(jq -nc --arg sid "${numeric_generation_sid}" \
+  --arg p '/ulw implement the bounded generation path' \
+  '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
+set +e
+printf '%s' "${numeric_generation_input}" \
+  | OMC_TEST_ROUTER_NOW_EPOCH=424242 \
+    bash "${ROUTER_SH}" >/dev/null 2>&1
+numeric_generation_rc=$?
+set -e
+assert_true "maximum enforcement generation fails closed before wrap" \
+  "[[ ${numeric_generation_rc} -ne 0 ]]"
+assert_eq "maximum enforcement generation remains unchanged" \
+  "999999999999999" \
+  "$(jq -r '.ulw_enforcement_generation // ""' \
+    "${numeric_generation_dir}/session_state.json")"
+assert_eq "failed generation increment never activates interval" "0" \
+  "$(jq -r '.ulw_enforcement_active // ""' \
+    "${numeric_generation_dir}/session_state.json")"
+
+numeric_time_sid="router-numeric-time-fallbacks"
+numeric_time_dir="${STATE_ROOT}/${numeric_time_sid}"
+mkdir -p "${numeric_time_dir}"
+jq -nc '{workflow_mode:"ultrawork",ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"1",prompt_revision:"2",review_cycle_id:"2",
+  review_cycle_prompt_ts:"420000",current_objective:"continue bounded work",
+  last_user_prompt_ts:"420000",midsession_checkpoint_last_fired_ts:
+    "999999999999999999999999999999",
+  directive_context_last_full_ts:"999999999999999999999999999999"}' \
+  >"${numeric_time_dir}/session_state.json"
+numeric_time_input="$(jq -nc --arg sid "${numeric_time_sid}" \
+  --arg p 'continue' \
+  '{session_id:$sid,prompt:$p,transcript_path:"/tmp/none.jsonl"}')"
+set +e
+numeric_time_output="$(printf '%s' "${numeric_time_input}" \
+  | OMC_TEST_ROUTER_NOW_EPOCH=999999999999999999999999999999 \
+    OMC_MID_SESSION_IDLE_THRESHOLD_SECS=999999999999999999999999999999 \
+    bash "${ROUTER_SH}" 2>&1)"
+numeric_time_rc=$?
+set -e
+assert_eq "oversized epoch/cache/checkpoint metadata falls back safely" "0" \
+  "${numeric_time_rc}"
+assert_contains_text "invalid threshold falls back and stale throttle is ignored" \
+  "MID-SESSION CHECKPOINT" "${numeric_time_output}"
+numeric_time_recorded="$(jq -r '.last_user_prompt_ts // ""' \
+  "${numeric_time_dir}/session_state.json")"
+assert_true "fallback epoch is canonical and bounded" \
+  "[[ \"${numeric_time_recorded}\" =~ ^[1-9][0-9]{0,14}$ ]]"
+assert_not_contains_text "invalid future checkpoint timestamp cannot throttle" \
+  "999999999999999999999999999999" \
+  "$(jq -r '.midsession_checkpoint_last_fired_ts // ""' \
+    "${numeric_time_dir}/session_state.json")"
 
 # A bash-stdout injection must also be skipped.
 sid3="bash-stdout-test"

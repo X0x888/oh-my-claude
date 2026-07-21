@@ -10,9 +10,23 @@
 # ignored. Anything not set takes the documented default.
 #
 # Precedence (highest first):
-#   env var > project conf > user conf > built-in default
+#   valid env var > nearest allowed project conf > user conf > built-in default
 #
 # So `OMC_AUTO_MEMORY=off claude` always wins, no matter what the conf says.
+# Invalid values are ignored and resolution falls through to the next source.
+# Values are trimmed; when a file has duplicate rows, the last valid row wins
+# (a malformed later row cannot erase an earlier valid choice). Public numeric
+# flags use canonical decimal text: `0` or a non-zero value with no leading
+# zero, bounded to 2147483647 unless a flag documents a narrower range.
+# At project scope, sensitive persistence toggles are monotonic: a project may
+# turn capture off but cannot turn it back on over a user/default opt-out.
+# `resume_request_per_cwd_cap` may reduce retention but cannot raise it or use
+# unlimited `0` unless the user authority is already unlimited.
+# `wave_override_ttl_seconds` may shorten—but never widen—the user/default
+# stale-wave commit-authorization window. Resume claim TTL and scan breadth are
+# user-only so project hooks and the machine-wide watchdog see one universe.
+# Session notices may be suppressed by a project, but cannot be re-enabled over
+# a user/default opt-out because their dedupe markers are machine-wide.
 #
 # Tip: for a guided multi-choice walkthrough, run /omc-config inside Claude
 # Code. It edits this file for you (atomic writes, validation), recommends
@@ -85,8 +99,8 @@
 #definition_of_excellent=adaptive
 
 # Minimum verification confidence (0–100) to satisfy the verify gate.
-# Default 40 blocks lint-only checks (shellcheck=30, bash -n=30) while
-# accepting project test suites (npm test=70+) and framework runs (jest=50+).
+# Default 40 admits hook-observed authoritative lint/syntax execution at its
+# exact floor while stronger framework/project suites score well above it.
 # Env: OMC_VERIFY_CONFIDENCE_THRESHOLD.
 #verify_confidence_threshold=40
 
@@ -119,7 +133,8 @@
 # focused stress-test); 2+ specialists is the smallest pattern that maps
 # to a finding-emitting workflow (small council / focused dual-lens
 # review). v1.42.x quality-reviewer F-3 catches the 2-lens small-council
-# bypass shape; pre-fix threshold-of-3 missed it.
+# bypass shape; pre-fix threshold-of-3 missed it. Must be positive: 0 would
+# arm the gate even when no advisory specialist was dispatched.
 # Env: OMC_ADVISORY_NO_FINDINGS_THRESHOLD.
 #advisory_no_findings_threshold=2
 
@@ -252,7 +267,8 @@
 # Wave-plan freshness window (seconds) for the pretool guard's wave
 # exception. When a council Phase 8 plan is active and updated within this
 # window, `git commit` is allowed even under non-execution intent. Default
-# 7200s = 2h. Stale plans never grant the exception.
+# 7200s = 2h. Stale plans never grant the exception. A project may shorten
+# this window, but cannot widen the user/default authorization ceiling.
 # Env: OMC_WAVE_OVERRIDE_TTL_SECONDS.
 #wave_override_ttl_seconds=7200
 
@@ -265,8 +281,15 @@
 # Pipe-separated glob patterns of MCP tools that count as verification.
 # Example: mcp__cypress__*|mcp__custom_api_tester__*
 # Built-in matchers cover Playwright + computer-use; this widens the set.
+# User-only because it broadens proof admission; project conf is ignored.
 # Env: OMC_CUSTOM_VERIFY_MCP_TOOLS.
 #custom_verify_mcp_tools=
+
+# User-authorized extended regular expression for trusted Bash verification
+# wrappers. This broadens proof admission and is therefore ignored in project
+# conf; set it here at user scope or via OMC_CUSTOM_VERIFY_PATTERNS.
+# Example: \b(run-tests\.sh|check\.sh)\b
+#custom_verify_patterns=
 
 # ---------------------------------------------------------------------------
 # Bias-defense — opt-in directives that catch "confident wrong" failures.
@@ -376,14 +399,19 @@
 # observe -> recommend -> now APPLIES loop closed for exactly one
 # tuning target, objective_contract_min_files. When `on`,
 # session-start-auto-tune.sh checks at most once every 7 days whether
-# the objective-contract gate's reprompt-rate (the SAME signal
-# /ulw-report already surfaces as a suggestion — see show-report.sh's
+# the objective-contract gate's reprompt-rate (the same arithmetic and
+# global-plus-live view `/ulw-report --sweep week` surfaces as a suggestion —
+# see show-report.sh's
 # "Objective-contract block reprompt-rate" heuristic) clears a >=50%
 # over-firing bar over >=10 qualifying blocks in the last 7 days, and
 # if so raises objective_contract_min_files by exactly one step
 # (clamped to [2,12], and only when the current value is already
 # inside that band — 0 is the documented volume-arm-disable sentinel
-# and is left untouched). Every application appends an audit row to
+# and is left untouched). Evidence includes both the TTL-swept global
+# rollup and eligible live per-session ledgers under their locks, so a
+# fresh install does not wait for session expiry; transferred resume
+# sources and exact copied rows are excluded from the effective sample.
+# Every application appends an audit row to
 # ~/.claude/quality-pack/auto-tune.jsonl and announces itself with the
 # exact revert instruction.
 #
@@ -585,7 +613,9 @@
 
 # Statusline shows a yellow `↑v<version>` arrow when the source repo is
 # ahead of the installed bundle. Useful nudge to re-run install.sh after
-# `git pull`. Default true.
+# `git pull`. Parsed from user-level conf only (not the project overlay), like
+# the two statusline controls below. Default true. Compatibility spellings
+# true/on/1/yes and false/off/0/no are accepted case-insensitively.
 # Env: OMC_INSTALLATION_DRIFT_CHECK.
 #installation_drift_check=true
 
@@ -594,7 +624,8 @@
 # so the harness's passive value is visible without running /ulw-report.
 # Cached 5 minutes; silent when the count is zero. Parsed by
 # statusline.py (user-level conf only, not the project overlay).
-# Default on. Env: OMC_STATUSLINE_RETENTION.
+# Default on. Compatibility spellings true/on/1/yes and false/off/0/no are
+# accepted case-insensitively. Env: OMC_STATUSLINE_RETENTION.
 #statusline_retention=on
 
 # Statusline width fit. When on, each line sheds/shrinks its
@@ -607,7 +638,8 @@
 # fits renders in full at any width; unknown width (no COLUMNS, no
 # tty) renders everything. Off = never shed. Parsed by statusline.py
 # (user-level conf only, not the project overlay).
-# Default on. Env: OMC_STATUSLINE_WIDTH.
+# Default on. Compatibility spellings true/on/1/yes and false/off/0/no are
+# accepted case-insensitively. Env: OMC_STATUSLINE_WIDTH.
 #statusline_width=on
 
 # Whats-new SessionStart hint. When the installed_version differs from
@@ -619,6 +651,7 @@
 # to installation_drift_check (drift surfaces a git-pull-without-install;
 # this surfaces a re-install). Default true.
 # Env: OMC_WHATS_NEW_SESSION_HINT.
+# Project conf may set false, but cannot restore true over a user opt-out.
 #whats_new_session_hint=true
 
 # Self-audit staleness nudge (v1.48-pre). CONTRIBUTING.md documents a
@@ -631,6 +664,7 @@
 # markdown-driven protocol), then `bash
 # ~/.claude/quality-pack/scripts/record-self-audit.sh` to reset the
 # clock. Default on. Env: OMC_SELF_AUDIT_NUDGE.
+# Project conf may set off, but cannot restore on over a user opt-out.
 #self_audit_nudge=on
 
 # Lazy-init SessionStart hooks (v1.41 W3). When on, three SessionStart
@@ -688,9 +722,10 @@
 # claims may block. Project conf cannot arm persistence. Env: OMC_TASTE_LEARNING.
 #taste_learning=review
 
-# Maximum characters in the role-specific compiled Constitution context. Raw
-# evidence and reference contents are never injected. User authority only so a
-# repo cannot hide blocking standards by lowering the cap.
+# Maximum characters in the role-specific compiled Constitution context
+# (512..12000, canonical decimal with no leading zero). Raw evidence and
+# reference contents are never injected. User authority only so a repo cannot
+# hide blocking standards by lowering the cap.
 # Env: OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS.
 #quality_constitution_max_context_chars=2400
 
@@ -837,6 +872,7 @@
 # settings.outputStyle that does NOT match a bundled style name (i.e. a
 # user's custom style) is always preserved. Upgrades from the legacy
 # "OpenCode Compact" name are migrated automatically.
+# User-only: this controls global ~/.claude/settings.json, never project conf.
 # Env: OMC_OUTPUT_STYLE.
 #output_style=opencode
 
@@ -848,6 +884,8 @@
 # the same selective escalation. Quality-first users on
 # `model_tier=quality` are the typical opt-in.
 # Env: OMC_COUNCIL_DEEP_DEFAULT.
+# User-only model/cost posture: project conf cannot silently escalate or
+# suppress auto-Council depth.
 #council_deep_default=off
 
 # ---------------------------------------------------------------------------
@@ -868,6 +906,7 @@
 # and the watchdog. Older artifacts are silently skipped. Default 7 — long
 # enough for the 7-day rate-limit window plus slack, short enough that a
 # crashed-and-forgotten resume from last month won't surprise the user.
+# User-only: hooks and the machine-wide watchdog must use one claim horizon.
 # Env: OMC_RESUME_REQUEST_TTL_DAYS.
 #resume_request_ttl_days=7
 
@@ -879,6 +918,8 @@
 # pre-sorts session dirs by mtime descending and heads to N. Raise if
 # you have many concurrent claimable kills across active projects;
 # lower on slow disks where the mtime-sort dominates. Default 30.
+# User-only: project-specific breadth would make hooks and the machine-wide
+# watchdog disagree about which artifacts exist.
 # Env: OMC_RESUME_SCAN_MAX_SESSIONS.
 #resume_scan_max_sessions=30
 
@@ -892,6 +933,7 @@
 # to register the LaunchAgent (macOS) or systemd user-timer (Linux).
 # /omc-config can do this for you.
 # Env: OMC_RESUME_WATCHDOG.
+# User-only: project conf cannot register/control the machine-wide scheduler.
 #resume_watchdog=off
 
 # Maximum lifetime (seconds) for headless omc-resume-* tmux sessions.
@@ -901,6 +943,7 @@
 # The watchdog reaper kills sessions older than this on each tick.
 # Default 7200 = 2 hours.
 # Env: OMC_RESUME_SESSION_TTL_SECS.
+# User-only: consumed by the machine-wide watchdog outside project cwd.
 #resume_session_ttl_secs=7200
 
 # Per-artifact cooldown (seconds) between watchdog launch attempts.
@@ -910,6 +953,7 @@
 # under the cross-session lock at claim time (defends against parallel
 # watchdog ticks racing the cooldown window — v1.31.0 metis F-7 fix).
 # Env: OMC_RESUME_WATCHDOG_COOLDOWN_SECS.
+# User-only: consumed by the machine-wide watchdog outside project cwd.
 #resume_watchdog_cooldown_secs=600
 
 # Per-cwd cap on resume_request.json artifacts. A user who hits N
@@ -947,16 +991,17 @@
 # across machines if the binary lives at different paths.
 #
 # v1.32.16 (4-attacker security review, A1-MED-2): post-load
-# validation rejects values under `/tmp/`, `/private/tmp/`,
-# `/var/tmp/`, `/Users/Shared/`, `/dev/shm/` — known world-writable
-# or shared-by-default locations where an unprivileged-shell attacker
-# could drop a binary. Invalid pins fall back to live `command -v
-# claude` lookup with a one-line warning to stderr. The validation
-# applies to both conf-set AND env-set values (`OMC_CLAUDE_BIN`
-# override does NOT bypass the check). If your `claude` binary
-# legitimately lives in a temp-shaped path (e.g. test rigs), set it
-# elsewhere or accept the live-lookup fallback.
+# validation requires an absolute existing executable and rejects values under
+# `/tmp/`, `/private/tmp/`, `/var/tmp/`, `/Users/Shared/`, `/dev/shm/` — known
+# world-writable or shared-by-default locations where an unprivileged-shell
+# attacker could drop a binary. Invalid environment pins warn, then fall
+# through to a valid saved pin or live `command -v claude`; malformed conf rows
+# are ignored under the ordinary last-valid precedence rule. Validation applies
+# to both conf-set and env-set values (`OMC_CLAUDE_BIN` does not bypass it). If
+# your binary legitimately lives in a temp-shaped path (for example, a test
+# rig), move the pin elsewhere or accept the lower-authority/live fallback.
 #
+# User-only: a project conf cannot choose the daemon executable.
 # Env: OMC_CLAUDE_BIN.
 #claude_bin=
 
@@ -964,16 +1009,18 @@
 # Time tracking — surface "where did this prompt's time go?" via
 # per-tool / per-subagent capture, a Stop epilogue one-liner, and the
 # `/ulw-time` skill (current session, last session, week / month / all
-# cross-session rollups). The hook layer is append-only and lock-free
-# on the hot path; opt out on shared machines or when residual disk
-# noise (one JSONL per session under STATE_ROOT) is unwanted.
+# cross-session rollups). The hook layer serializes each append under a
+# dedicated per-log mutex without taking the broader session-state lock;
+# opt out on shared machines or when residual disk noise (one JSONL per
+# session under STATE_ROOT) is unwanted.
 # ---------------------------------------------------------------------------
 
 # Per-tool / per-subagent timing capture.
 #   on  — capture; emit Stop epilogue; populate /ulw-time, /ulw-status,
 #         /ulw-report. (Default.)
-#   off — kill switch; PreToolUse / PostToolUse / Stop hooks fast-exit
-#         in <1ms (no jq, no disk I/O); no rows captured.
+#   off — kill switch; no timing rows or timing-ledger I/O. An environment
+#         opt-out also skips the standalone PreTool hook's shared-library load;
+#         a conf-only opt-out is observed after normal config loading.
 # Env: OMC_TIME_TRACKING.
 #time_tracking=on
 
@@ -983,6 +1030,7 @@
 # because workflow data is more privacy-sensitive than gate telemetry.
 # Default 30 days — long enough for monthly reflection, short enough
 # that workflow patterns do not accrue indefinitely on shared machines.
+# User authority only: project conf cannot prune the machine-wide aggregate.
 # Env: OMC_TIME_TRACKING_XS_RETAIN_DAYS.
 #time_tracking_xs_retain_days=30
 
@@ -1137,6 +1185,8 @@
 # active turns (soft, model-honored enforcement; the Workflow tool is
 # model-invoked, so there is no hard PreToolUse gate).
 # Env: OMC_WORKFLOW_SUBSTRATE.
+# User-only execution/cost posture: project conf cannot arm or suppress the
+# background heavy-fan-out substrate.
 #workflow_substrate=on
 
 # Router directive budget mode. Applies a total assembled-context ceiling plus
@@ -1213,6 +1263,7 @@
 # State carries the session's classifier telemetry, gate events, finding
 # list, and resume artifacts — sweeping is what keeps `~/.claude/quality-
 # pack/state/` from growing without bound on long-running setups.
+# User authority only: project conf cannot delete other projects' state.
 # Env: OMC_STATE_TTL_DAYS.
 #state_ttl_days=7
 
@@ -1222,4 +1273,15 @@
 # repo_path=...           # absolute path to the source repo
 # installed_version=...   # version captured by the last install
 # installed_sha=...       # source-repo HEAD at last install (git only)
+# exclude_ios=on|off      # bundle-selection receipt used by drift checks
+# ghostty_installed=on|off
+#                         # last install's Ghostty materialization receipt
+# git_post_merge_hook_sha256=...
+#                         # ownership receipt for an opt-in installed hook
+# resume_watchdog_scheduler=launchd|systemd|cron|off
+# resume_watchdog_launchd_sha256=...
+# resume_watchdog_systemd_service_sha256=...
+# resume_watchdog_systemd_timer_sha256=...
+# resume_watchdog_cron_sha256=...
+#                         # scheduler kind + artifact ownership receipts
 # omc_config_completed=...# ISO timestamp written by /omc-config at first run

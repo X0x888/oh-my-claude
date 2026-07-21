@@ -173,7 +173,7 @@ for impl in "${implementations[@]}"; do
   assert_json_count "${impl}: fresh — UserPromptSubmit hooks" \
     "${work}/settings.json" '.hooks.UserPromptSubmit' "1"
   assert_json_count "${impl}: fresh — PreToolUse hooks" \
-    "${work}/settings.json" '.hooks.PreToolUse' "5"
+    "${work}/settings.json" '.hooks.PreToolUse' "6"
   assert_json_count "${impl}: fresh — MessageDisplay hooks" \
     "${work}/settings.json" '.hooks.MessageDisplay' "1"
   # v1.48 W3.1: the four per-call PostToolUse processes (universal timing +
@@ -213,6 +213,10 @@ for impl in "${implementations[@]}"; do
     "true"
 
   # PreToolUse must wire the Agent matcher to record-pending-agent.sh
+  assert_json_eq "${impl}: fresh — universal dispatch-recovery guard wired" \
+    "${work}/settings.json" \
+    '[.hooks.PreToolUse[] | select(has("matcher") | not) | .hooks[]?.command] | any(. | tostring | contains("dispatch-recovery-guard.sh"))' \
+    "true"
   assert_json_eq "${impl}: fresh — PreToolUse Agent matcher wired" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[0].command] | .[0] | tostring | contains("record-pending-agent.sh")' \
@@ -286,8 +290,8 @@ for impl in "${implementations[@]}"; do
     "${work}/settings.json" '.hooks.SubagentStop' "12"
   assert_json_count "${impl}: idempotent — PostToolUse hooks still 6" \
     "${work}/settings.json" '.hooks.PostToolUse' "6"
-  assert_json_count "${impl}: idempotent — PreToolUse hooks still 5" \
-    "${work}/settings.json" '.hooks.PreToolUse' "5"
+  assert_json_count "${impl}: idempotent — PreToolUse hooks still 6" \
+    "${work}/settings.json" '.hooks.PreToolUse' "6"
   assert_json_count "${impl}: idempotent — SubagentStart hooks still 1" \
     "${work}/settings.json" '.hooks.SubagentStart' "1"
   assert_json_count "${impl}: idempotent — StopFailure hooks still 1" \
@@ -304,6 +308,11 @@ for impl in "${implementations[@]}"; do
   cat > "${work}/upgrade.json" <<'PRE148'
 {
   "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "bash $HOME/.claude/quality-pack/scripts/cleanup-orphan-resume.sh"}]},
+      {"hooks": [{"type": "command", "command": "bash $HOME/.claude/quality-pack/scripts/cleanup-orphan-tmp.sh"}]},
+      {"hooks": [{"type": "command", "command": "sh $HOME/.claude/quality-pack/scripts/cleanup-orphan-tmp.sh"}]}
+    ],
     "PostToolUse": [
       {"hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/posttool-timing.sh"}]},
       {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/mark-edit.sh"}]},
@@ -316,6 +325,10 @@ for impl in "${implementations[@]}"; do
       {"matcher": "SoloRead", "hooks": []},
       {"matcher": "SoloGrep", "hooks": null},
       null
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "/opt/acme/dispatch-recovery-guard.sh --foreign-policy"}]},
+      {"matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*", "hooks": [{"type": "command", "command": "/opt/acme/quality-constitution-authority-guard.sh --foreign-authority"}]}
     ],
     "Stop": [
       {"matcher": "*", "hooks": [{"type": "command", "command": "$HOME/.claude/skills/autowork/scripts/stop-guard.sh"}]},
@@ -353,6 +366,14 @@ PRE148
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | select(. == null)] | length' \
     "1"
+  assert_json_eq "${impl}: upgrade — exact historical cleanup hooks are pruned" \
+    "${work}/upgrade.json" \
+    '[.hooks.SessionStart[] | .hooks[]? | select((.command // "") | test("^bash .*cleanup-orphan-(resume|tmp)\\.sh$"))] | length' \
+    "0"
+  assert_json_eq "${impl}: upgrade — never-emitted sh cleanup wrapper remains foreign" \
+    "${work}/upgrade.json" \
+    '[.hooks.SessionStart[] | .hooks[]? | select((.command // "") == "sh $HOME/.claude/quality-pack/scripts/cleanup-orphan-tmp.sh")] | length' \
+    "1"
   assert_json_eq "${impl}: upgrade — no direct posttool-timing wiring survives" \
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | .hooks[]? | .command // ""] | any(contains("posttool-timing.sh"))' \
@@ -373,10 +394,30 @@ PRE148
     "${work}/upgrade.json" \
     '[.hooks.PostToolUse[] | select(type == "object") | select(.matcher == "Edit|Write|MultiEdit|NotebookEdit|mcp__.*") | .hooks[]? | select((.command // "") | contains("mark-edit.sh"))] | length' \
     "1"
-  assert_json_eq "${impl}: upgrade — no direct managed Stop wiring survives" \
+  assert_json_eq "${impl}: upgrade — foreign same-basename recovery guard preserved" \
     "${work}/upgrade.json" \
-    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/") and test("(stop-guard|stop-time-summary|canary-claim-audit|stop-transcript-archive)\\.sh"))] | length' \
+    '[.hooks.PreToolUse[] | .hooks[]? | (.command // "") | select(. == "/opt/acme/dispatch-recovery-guard.sh --foreign-policy")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — managed recovery guard still installed" \
+    "${work}/upgrade.json" \
+    '[.hooks.PreToolUse[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/dispatch-recovery-guard.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — foreign same-basename Constitution authority guard preserved" \
+    "${work}/upgrade.json" \
+    '[.hooks.PreToolUse[] | .hooks[]? | (.command // "") | select(. == "/opt/acme/quality-constitution-authority-guard.sh --foreign-authority")] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — managed Constitution authority guard still installed" \
+    "${work}/upgrade.json" \
+    '[.hooks.PreToolUse[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/quality-constitution-authority-guard.sh"))] | length' \
+    "1"
+  assert_json_eq "${impl}: upgrade — exact historically emitted Stop wiring is pruned" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(. == "$HOME/.claude/skills/autowork/scripts/stop-guard.sh")] | length' \
     "0"
+  assert_json_eq "${impl}: upgrade — three never-emitted Stop wrappers remain foreign" \
+    "${work}/upgrade.json" \
+    '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(test("^(bash |/usr/bin/bash |env bash ).*(stop-time-summary|canary-claim-audit|stop-transcript-archive)\\.sh$"))] | length' \
+    "3"
   assert_json_eq "${impl}: upgrade — ordered Stop dispatcher wired exactly once" \
     "${work}/upgrade.json" \
     '[.hooks.Stop[] | .hooks[]? | (.command // "") | select(contains("/.claude/skills/autowork/scripts/stop-dispatch.sh"))] | length' \
@@ -414,16 +455,18 @@ PRE148
   run_merge "${impl}" "${work}/upgrade.json" "${SETTINGS_PATCH}" "false"
   assert_json_count "${impl}: upgrade re-merge — PostToolUse still 6 real + 3 vestigial" \
     "${work}/upgrade.json" '.hooks.PostToolUse' "9"
-  assert_json_count "${impl}: upgrade re-merge — Stop stays dispatcher + three foreign hooks" \
-    "${work}/upgrade.json" '.hooks.Stop' "4"
+  assert_json_count "${impl}: upgrade re-merge — PreToolUse keeps six managed and two foreign owners" \
+    "${work}/upgrade.json" '.hooks.PreToolUse' "8"
+  assert_json_count "${impl}: upgrade re-merge — Stop keeps dispatcher + six foreign hooks" \
+    "${work}/upgrade.json" '.hooks.Stop' "7"
   assert_json_count "${impl}: upgrade re-merge — display keeps managed and foreign owners" \
     "${work}/upgrade.json" '.hooks.MessageDisplay' "2"
   assert_json_count "${impl}: upgrade re-merge — preflight keeps managed and foreign owners" \
     "${work}/upgrade.json" '.hooks.PostToolBatch' "2"
 
-  # Phase-0 matcher migration must coalesce with an already-correct entry,
-  # including stale commands launched through every interpreter prefix the
-  # verifier recognizes. This was a real double-dispatch upgrade path.
+  # Phase-0 migration coalesces only the exact command emitted by the patch.
+  # Synthetic wrapper/parser stress forms were never emitted by a release and
+  # are foreign custom invocations that must survive.
   cat > "${work}/duplicate-matcher.json" <<'DUPLICATE_MATCHER'
 {
   "hooks": {
@@ -442,14 +485,89 @@ PRE148
 }
 DUPLICATE_MATCHER
   run_merge "${impl}" "${work}/duplicate-matcher.json" "${SETTINGS_PATCH}" "false"
-  assert_json_eq "${impl}: matcher migration leaves exactly one dispatcher" \
+  assert_json_eq "${impl}: matcher migration leaves one canonical plus seven foreign wrappers" \
     "${work}/duplicate-matcher.json" \
     '[.hooks | to_entries[] | .value[]? | .hooks[]? | select((.command // "") | contains("posttool-dispatch.sh"))] | length' \
-    "1"
-  assert_json_eq "${impl}: surviving dispatcher is universal" \
+    "8"
+  assert_json_eq "${impl}: exact managed dispatcher is unique and universal" \
     "${work}/duplicate-matcher.json" \
-    '[.hooks.PostToolUse[] | select(any(.hooks[]?; (.command // "") | contains("posttool-dispatch.sh"))) | (.matcher // "")] | unique | join(",")' \
+    '[.hooks.PostToolUse[] | select(any(.hooks[]?; (.command // "") == "$HOME/.claude/skills/autowork/scripts/posttool-dispatch.sh")) | (.matcher // "")] | join(",")' \
     ""
+  assert_json_eq "${impl}: all seven synthetic wrapper commands survive as foreign" \
+    "${work}/duplicate-matcher.json" \
+    '[.hooks.PostToolUse[] | select((.matcher // "") == "Bash") | .hooks[]? | select((.command // "") | contains("posttool-dispatch.sh"))] | length' \
+    "7"
+
+  # Managed ownership is the actual executed script at an exact managed
+  # root, not a basename or an arbitrary `.../.claude/...` suffix. Foreign
+  # same-basename hooks and managed-looking decoy arguments must survive while
+  # the canonical patch hook is installed alongside them.
+  cat > "${work}/identity-spoofs.json" <<'IDENTITY_SPOOFS'
+{
+  "hooks": {
+    "PreToolUse": [
+      {"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*","hooks":[
+        {"type":"command","command":"/opt/acme/pretool-intent-guard.sh --foreign"}
+      ]},
+      {"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*","hooks":[
+        {"type":"command","command":"bash /tmp/evil.sh $HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh"}
+      ]},
+      {"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*","hooks":[
+        {"type":"command","command":"/tmp/alternate/.claude/skills/autowork/scripts/pretool-intent-guard.sh"}
+      ]},
+      {"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*","hooks":[
+        {"type":"command","command":"$HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh --custom-mode"}
+      ]}
+    ],
+    "PostToolUse": [
+      {"matcher":"Edit|Write|MultiEdit|NotebookEdit|mcp__.*","hooks":[
+        {"type":"command","command":"/opt/acme/mark-edit.sh --foreign"}
+      ]}
+    ],
+    "SubagentStop": [
+      {"matcher":"editor-critic","hooks":[
+        {"type":"command","command":"/opt/acme/record-reviewer.sh prose"}
+      ]}
+    ],
+    "PostToolBatch": [
+      {"hooks":[
+        {"type":"command","command":"$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh"}
+      ]}
+    ]
+  }
+}
+IDENTITY_SPOOFS
+  run_merge "${impl}" "${work}/identity-spoofs.json" "${SETTINGS_PATCH}" "false"
+  for foreign_command in \
+    '/opt/acme/pretool-intent-guard.sh --foreign' \
+    'bash /tmp/evil.sh $HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh' \
+    '/tmp/alternate/.claude/skills/autowork/scripts/pretool-intent-guard.sh' \
+    '$HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh --custom-mode' \
+    '/opt/acme/mark-edit.sh --foreign' \
+    '/opt/acme/record-reviewer.sh prose' \
+    '$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh'; do
+    foreign_count="$(jq -r --arg cmd "${foreign_command}" \
+      '[.hooks | to_entries[] | .value[]? | .hooks[]? | select((.command // "") == $cmd)] | length' \
+      "${work}/identity-spoofs.json")"
+    assert_eq "${impl}: exact identity preserves foreign command: ${foreign_command}" \
+      "1" "${foreign_count}"
+  done
+  assert_json_eq "${impl}: exact identity still installs managed pretool guard" \
+    "${work}/identity-spoofs.json" \
+    '[.hooks.PreToolUse[] | .hooks[]? | select((.command // "") == "$HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh")] | length' \
+    "1"
+  assert_json_eq "${impl}: exact identity still installs managed mark-edit" \
+    "${work}/identity-spoofs.json" \
+    '[.hooks.PostToolUse[] | .hooks[]? | select((.command // "") == "$HOME/.claude/skills/autowork/scripts/mark-edit.sh")] | length' \
+    "1"
+  assert_json_eq "${impl}: exact identity still installs managed prose reviewer" \
+    "${work}/identity-spoofs.json" \
+    '[.hooks.SubagentStop[] | select(.matcher == "editor-critic") | .hooks[]? | select((.command // "") == "$HOME/.claude/skills/autowork/scripts/record-reviewer.sh prose")] | length' \
+    "1"
+  assert_json_eq "${impl}: exact identity installs flagged preflight beside foreign omitted-arg call" \
+    "${work}/identity-spoofs.json" \
+    '[.hooks.PostToolBatch[] | .hooks[]? | select((.command // "") == "$HOME/.claude/skills/autowork/scripts/closeout-preflight.sh --posttool-batch")] | length' \
+    "1"
 
   # Verify the new dimension-tracker matchers are present
   assert_json_eq "${impl}: fresh — metis matcher wired" \
@@ -481,6 +599,21 @@ DUPLICATE_MATCHER
     "${work}/settings.json" '.permissions.defaultMode' "bypassPermissions"
   assert_json_eq "${impl}: bypass — skipDangerousMode set" \
     "${work}/settings.json" '.skipDangerousModePermissionPrompt' "true"
+
+  work="${TEST_DIR}/${impl}-bypass-null-permissions"
+  mkdir -p "${work}"
+  printf '%s\n' '{"permissions":null}' > "${work}/settings.json"
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "true"
+  assert_json_eq "${impl}: bypass — null permissions normalizes to object" \
+    "${work}/settings.json" '.permissions.defaultMode' "bypassPermissions"
+
+  work="${TEST_DIR}/${impl}-bypass-permission-siblings"
+  mkdir -p "${work}"
+  printf '%s\n' '{"permissions":{"allow":["Read"]}}' \
+    > "${work}/settings.json"
+  run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "true"
+  assert_json_eq "${impl}: bypass — permission siblings survive" \
+    "${work}/settings.json" '.permissions.allow[0]' "Read"
 
   # -----------------------------------------------------------------------
   # Test 4: Preserves user's existing outputStyle and effortLevel
@@ -602,16 +735,44 @@ JSON
   assert_json_eq "${impl}: F-005c — opencode flips an existing executive-brief back to oh-my-claude" \
     "${work}/settings.json" '.outputStyle' "oh-my-claude"
 
-  # Sub-case 3: a custom user style is preserved even when executive
-  # pref is set. The bundled-sync only fires for bundled-name values;
-  # custom strings (Learning, Explanatory, user-named styles) are never
-  # overwritten. This is the load-bearing "custom styles win" guarantee.
-  work="${TEST_DIR}/${impl}-output-style-executive-custom-preserved"
+  # Sub-case 3: a typed explicit executive choice is user authority and
+  # replaces a prior custom setting. Only the implicit default preserves a
+  # custom style (covered by Test 4 above); `preserve` remains the explicit
+  # no-touch choice.
+  work="${TEST_DIR}/${impl}-output-style-executive-custom-replaced"
   mkdir -p "${work}"
   printf '{"outputStyle": "Learning"}' > "${work}/settings.json"
-  OMC_OUTPUT_STYLE_PREF="executive" run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_eq "${impl}: F-005c — executive preserves a custom user style" \
-    "${work}/settings.json" '.outputStyle' "Learning"
+  OMC_OUTPUT_STYLE_PREF="executive" OMC_OUTPUT_STYLE_PREF_EXPLICIT=1 \
+    run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — explicit executive replaces a custom user style" \
+    "${work}/settings.json" '.outputStyle' "executive-brief"
+
+  work="${TEST_DIR}/${impl}-output-style-opencode-custom-replaced"
+  mkdir -p "${work}"
+  printf '{"outputStyle": "Learning"}' > "${work}/settings.json"
+  OMC_OUTPUT_STYLE_PREF="opencode" OMC_OUTPUT_STYLE_PREF_EXPLICIT=1 \
+    run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+  assert_json_eq "${impl}: F-005c — explicit opencode replaces a custom user style" \
+    "${work}/settings.json" '.outputStyle' "oh-my-claude"
+
+  for foreign_style_kind in object array; do
+    work="${TEST_DIR}/${impl}-output-style-foreign-${foreign_style_kind}"
+    mkdir -p "${work}"
+    if [[ "${foreign_style_kind}" == "object" ]]; then
+      printf '{"outputStyle":{"custom":"custom"}}' > "${work}/settings.json"
+      foreign_query='.outputStyle.custom'
+    else
+      printf '{"outputStyle":["custom"]}' > "${work}/settings.json"
+      foreign_query='.outputStyle[0]'
+    fi
+    run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+    assert_json_eq "${impl}: implicit default preserves foreign ${foreign_style_kind} outputStyle" \
+      "${work}/settings.json" "${foreign_query}" "custom"
+    OMC_OUTPUT_STYLE_PREF="executive" OMC_OUTPUT_STYLE_PREF_EXPLICIT=1 \
+      run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
+    assert_json_eq "${impl}: explicit preference replaces foreign ${foreign_style_kind} outputStyle" \
+      "${work}/settings.json" '.outputStyle' "executive-brief"
+  done
 
   # Sub-case 4: legacy "OpenCode Compact" migrates to executive-brief
   # when the executive pref is set. Symmetric to F-005b's preserve case
@@ -683,8 +844,9 @@ JSON
   # pre-existing SubagentStop matchers (e.g. editor-critic pointing to
   # record-reviewer.sh without args) would APPEND the new version (with
   # args) instead of REPLACING, producing duplicate entries that fire
-  # incorrect dimension ticks. Signature must treat same-matcher + same
-  # script basename as the same entry regardless of trailing arguments.
+  # incorrect dimension ticks. Both command spellings were genuinely emitted
+  # by settings.patch.json and therefore map to the same finite managed script
+  # identity; arbitrary commands with different trailing argv do not.
   # -----------------------------------------------------------------------
   work="${TEST_DIR}/${impl}-upgrade"
   mkdir -p "${work}"
@@ -769,7 +931,7 @@ JSON
   # -----------------------------------------------------------------------
   # Test 8: Customization preservation — a user matcher with the same name
   # but pointing to a DIFFERENT script should NOT be clobbered by the
-  # upgrade-merge logic (different script_basename → different signature).
+  # upgrade-merge logic (different exact command identity).
   # -----------------------------------------------------------------------
   work="${TEST_DIR}/${impl}-user-custom"
   mkdir -p "${work}"
@@ -808,13 +970,13 @@ JSON
   # Test 9: Multi-hook matcher collision (metis finding #1).
   # Pre-existing bug class: under the old tuple-based signature, a base
   # entry containing multiple hooks and a patch entry containing fewer
-  # hooks (but sharing one of the base's script basenames) would
+  # hooks (but sharing one exact managed script identity) would
   # signature-differ because the hook-tuple sizes differed. Both entries
   # would survive the merge, causing the shared script to fire twice
   # per SubagentStop event (once via the base entry's copy, once via
   # the patch entry's copy). The fix consolidates them via the phase-2
   # overlap-based hook-level merge: the patch hook replaces the base
-  # hook with the matching basename in place, and the base's
+  # hook with the matching managed identity in place, and the base's
   # non-overlapping hooks (e.g., a user's legacy logger) are preserved.
   # -----------------------------------------------------------------------
   work="${TEST_DIR}/${impl}-multi-hook-collision"
@@ -901,7 +1063,7 @@ JSON
   # The shallow Test 9 case (one base entry, one patch entry) was closed
   # by the three-phase merge. This test exercises the migration path
   # where an older buggy installer left TWO `editor-critic` entries in
-  # base settings — the first matching the patch's basename set exactly
+  # base settings — the first matching the patch's managed identity set exactly
   # (so Phase 1 would short-circuit), the second still containing the
   # raw record-reviewer.sh alongside a user-preserved extra hook. Under
   # the bare three-phase loop, Phase 1 would replace the first entry
@@ -1057,8 +1219,8 @@ JSON
 }
 JSON
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  # null-command coalesces to basename "" which is disjoint from the
-  # patch's "record-reviewer.sh" basename, so Phase 3 appends the patch
+  # null-command coalesces to the empty foreign identity, disjoint from the
+  # patch-owned reviewer identity, so Phase 3 appends the patch
   # entry alongside the user's broken one (Test 8 customization-
   # preservation semantics applied to the null-command edge case).
   # What matters is: merger does not crash, the patch lands, and both
@@ -1145,13 +1307,9 @@ JSON
     "true"
 
   # -----------------------------------------------------------------------
-  # Test 13: Matcher rename. When a previous install wired a hook under one
-  # matcher (e.g. "Bash") and a later patch widens that matcher
-  # (e.g. "Bash|Edit|Write|MultiEdit") for the same script basename, the
-  # merge MUST replace the old entry rather than append a duplicate. Two
-  # entries pointing at the same script would fire the hook twice on every
-  # tool call covered by both matchers — corrupting block counters and
-  # producing duplicate deny responses.
+  # Test 13: A synthetic launcher change is not historical ownership. The
+  # foreign `bash ...` invocation survives, while the exact direct command
+  # from the patch is installed under its canonical matcher.
   # -----------------------------------------------------------------------
   work="${TEST_DIR}/${impl}-matcher-rename"
   mkdir -p "${work}"
@@ -1170,21 +1328,21 @@ JSON
 }
 JSON
   run_merge "${impl}" "${work}/settings.json" "${SETTINGS_PATCH}" "false"
-  assert_json_count "${impl}: matcher-rename — single pretool-intent-guard.sh entry" \
+  assert_json_count "${impl}: launcher variant — managed and foreign pretool entries coexist" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))]' \
-    "1"
-  assert_json_eq "${impl}: matcher-rename — entry uses new widened matcher" \
+    "2"
+  assert_json_eq "${impl}: launcher variant — exact patch command uses widened matcher" \
     "${work}/settings.json" \
-    '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh")) | .matcher] | .[0]' \
+    '[.hooks.PreToolUse[] | select(any(.hooks[]?; (.command // "") == "$HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh")) | .matcher] | .[0]' \
     "Bash|Edit|Write|MultiEdit|NotebookEdit|mcp__.*"
-  assert_json_eq "${impl}: matcher-rename — no leftover bare Bash entry for the renamed script" \
+  assert_json_eq "${impl}: launcher variant — foreign bash command remains on old matcher" \
     "${work}/settings.json" \
-    '[.hooks.PreToolUse[] | select((.matcher // "") == "Bash") | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))] | length' \
-    "0"
+    '[.hooks.PreToolUse[] | select((.matcher // "") == "Bash") | .hooks[]? | select((.command // "") == "bash $HOME/.claude/skills/autowork/scripts/pretool-intent-guard.sh")] | length' \
+    "1"
 
   # Matcher rename must not clobber an unrelated entry that happens to share
-  # the OLD matcher value but a disjoint basename set. User customization at
+  # the OLD matcher value but a disjoint identity set. User customization at
   # the old matcher value with different scripts stays intact.
   work="${TEST_DIR}/${impl}-matcher-rename-isolation"
   mkdir -p "${work}"
@@ -1213,10 +1371,10 @@ JSON
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("user-hook.sh"))] | length' \
     "1"
-  assert_json_eq "${impl}: matcher-rename isolation — single pretool-intent-guard.sh entry" \
+  assert_json_eq "${impl}: matcher-rename isolation — managed and foreign pretool entries coexist" \
     "${work}/settings.json" \
     '[.hooks.PreToolUse[] | select(.hooks[]?.command | tostring | contains("pretool-intent-guard.sh"))] | length' \
-    "1"
+    "2"
 
   printf '  %s implementation done.\n' "${impl}"
 done
@@ -1316,8 +1474,8 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
     }
   }'
 
-  # Duplicate basenames within a single entry (Finding 2 scenario).
-  cross_structural_assert "duplicate-basenames" '{
+  # Same basename but distinct exact command identities within one entry.
+  cross_structural_assert "same-basename-distinct-identities" '{
     "hooks": {
       "SubagentStop": [
         {
@@ -1348,6 +1506,58 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
       ]
     }
   }'
+  # Non-string commands are malformed but deliberately preserved. Their
+  # identity still has to be identical across implementations: object key
+  # order is semantically irrelevant, while boolean false is distinct from a
+  # missing/null command.
+  cross_structural_assert "object-command-key-order" '{
+    "hooks": {
+      "SubagentStop": [
+        {
+          "matcher": "foreign-object-command",
+          "hooks": [
+            {"type": "command", "command": {"a": 1, "b": {"x": 2, "y": 3}}},
+            {"type": "command", "command": {"b": {"y": 3, "x": 2}, "a": 1}}
+          ]
+        }
+      ]
+    }
+  }'
+  # Numeric command values are invalid. A deliberately coarse numeric-type
+  # identity avoids Python/jq lexical and IEEE-754 rendering differences.
+  cross_structural_assert "numeric-command-semantics" '{
+    "hooks": {
+      "SubagentStop": [
+        {
+          "matcher": "foreign-numeric-command",
+          "hooks": [
+            {"type": "command", "command": 1},
+            {"type": "command", "command": 1.0},
+            {"type": "command", "command": 1e0},
+            {"type": "command", "command": 9007199254740992},
+            {"type": "command", "command": 9007199254740993},
+            {"type": "command", "command": 1e20},
+            {"type": "command", "command": 1e308},
+            {"type": "command", "command": -0},
+            {"type": "command", "command": 0}
+          ]
+        }
+      ]
+    }
+  }'
+  cross_structural_assert "false-command-distinct-from-missing" '{
+    "hooks": {
+      "SubagentStop": [
+        {
+          "matcher": "foreign-boolean-command",
+          "hooks": [
+            {"type": "command", "command": false},
+            {"type": "command"}
+          ]
+        }
+      ]
+    }
+  }'
   cross_structural_assert "null-hook-in-entry" '{
     "hooks": {
       "SubagentStop": [
@@ -1372,7 +1582,7 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
     }
   }'
 
-  # Three same-matcher base entries, all with overlapping basenames —
+  # Three same-matcher base entries, all with overlapping managed identities —
   # the deeper migration state where an older buggy installer appended
   # the same matcher multiple times. normalize_base_entries must
   # collapse all three into one canonical entry.
@@ -1420,7 +1630,7 @@ if [[ ${#implementations[@]} -eq 2 ]]; then
   }'
 
   # Disjoint same-matcher entries — two editor-critic entries with
-  # completely disjoint basename sets must NOT be collapsed by
+  # completely disjoint identity sets must NOT be collapsed by
   # normalize_base_entries. This is the Test 8 customization-
   # preservation invariant as exercised through the new pre-pass.
   # Both impls should preserve both entries as separate.

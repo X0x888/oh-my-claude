@@ -21,6 +21,7 @@
 #   F-014: objective-completion contract gate (substantive arm)
 #   F-015: /goal relentless driver (user-armed arm + stuck-wall escape)
 #   F-016: Bash/Notebook edit-clock producer coverage
+#   F-017: malformed causal numeric state fails closed without arithmetic eval
 #
 # Each block runs its defense as a black-box: invoke the script with the
 # bypass shape, assert exit code + telemetry side effects.
@@ -138,30 +139,6 @@ gate_event_exists() {
   jq -rs --arg gate "${gate}" --arg event "${event}" \
     'map(select(.gate == $gate and .event == $event)) | length' \
     "${file}" 2>/dev/null
-}
-
-write_second_state_lock_barrier() {
-  local shim_dir="$1"
-  mkdir -p "${shim_dir}"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'dest=""' \
-    'for arg in "$@"; do dest="$arg"; done' \
-    'case "${dest}" in' \
-    '  */.state.lock.owner)' \
-    '    count=0' \
-    '    [ ! -f "${OMC_CAS_LOCK_COUNT}" ] || count=$(/bin/cat "${OMC_CAS_LOCK_COUNT}")' \
-    '    count=$((count + 1))' \
-    '    printf "%s\n" "${count}" >"${OMC_CAS_LOCK_COUNT}"' \
-    '    if [ "${count}" -eq 2 ]; then' \
-    '      /usr/bin/touch "${OMC_CAS_LOCK_READY}"' \
-    '      while [ ! -f "${OMC_CAS_LOCK_RELEASE}" ]; do /bin/sleep 0.01; done' \
-    '    fi' \
-    '    ;;' \
-    'esac' \
-    'exec /bin/ln "$@"' \
-    >"${shim_dir}/ln"
-  chmod +x "${shim_dir}/ln"
 }
 
 # ===========================================================================
@@ -466,6 +443,35 @@ assert_eq "non-advisory NOT in advisory counter" "" "${adv_count}"
 assert_eq "non-advisory IS in subagent total" "1" "${subagent_count}"
 teardown
 
+# Restored state counters are strings, not arithmetic authority. Invalid
+# expressions must deny the dispatch and roll back every causal ledger write
+# instead of being evaluated by Bash or silently normalized.
+setup
+write_state_field "subagent_dispatch_count" "1+1"
+out="$(echo "{\"session_id\":\"${SESSION_ID}\",\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"frontend-developer\",\"description\":\"test\"}}" \
+  | "${HOOK_DIR}/record-pending-agent.sh")"
+assert_contains "non-canonical total dispatch counter denies authorization" \
+  '"permissionDecision":"deny"' "${out}"
+assert_eq "denied malformed total counter remains byte-logically unchanged" \
+  "1+1" "$(read_state_field 'subagent_dispatch_count')"
+assert_eq "denied malformed total counter leaves no pending row" "0" \
+  "$([[ -e "${STATE_ROOT}/${SESSION_ID}/pending_agents.jsonl" ]] \
+    && printf 1 || printf 0)"
+teardown
+
+setup
+write_state_field "subagent_dispatch_count" "4"
+write_state_field "advisory_specialist_dispatch_count" "1+1"
+out="$(echo "{\"session_id\":\"${SESSION_ID}\",\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"metis\",\"description\":\"test\"}}" \
+  | "${HOOK_DIR}/record-pending-agent.sh")"
+assert_contains "non-canonical advisory counter denies authorization" \
+  '"permissionDecision":"deny"' "${out}"
+assert_eq "failed advisory increment rolls total counter back" "4" \
+  "$(read_state_field 'subagent_dispatch_count')"
+assert_eq "failed advisory increment preserves malformed source value" "1+1" \
+  "$(read_state_field 'advisory_specialist_dispatch_count')"
+teardown
+
 # ===========================================================================
 # F-010: rejected-finding validator — subjective bare tokens rejected
 # ===========================================================================
@@ -688,19 +694,18 @@ jq -n '{
   gate_skip_edit_ts:"1", edit_revision:"0", last_edit_ts:"1"
 }' >"${skip_cas_state}"
 touch "${STATE_ROOT}/${SESSION_ID}/.ulw_active"
-skip_cas_shim="${TEST_HOME}/skip-cas-shim"
 skip_cas_count="${TEST_HOME}/skip-cas-count"
 skip_cas_ready="${TEST_HOME}/skip-cas-ready"
 skip_cas_release="${TEST_HOME}/skip-cas-release"
 skip_cas_output="${TEST_HOME}/skip-cas-output"
-write_second_state_lock_barrier "${skip_cas_shim}"
+printf '0\n' >"${skip_cas_count}"
 skip_cas_payload="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid}')"
 (
   printf '%s' "${skip_cas_payload}" \
-    | env PATH="${skip_cas_shim}:${PATH}" \
-      OMC_CAS_LOCK_COUNT="${skip_cas_count}" \
-      OMC_CAS_LOCK_READY="${skip_cas_ready}" \
-      OMC_CAS_LOCK_RELEASE="${skip_cas_release}" \
+    | env OMC_TEST_STATE_LOCK_PREACQUIRE_TARGET=2 \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_COUNT_FILE="${skip_cas_count}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${skip_cas_ready}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${skip_cas_release}" \
       OMC_NO_DEFER_MODE=off \
       bash "${HOOK_DIR}/stop-guard.sh" >"${skip_cas_output}" 2>/dev/null
 ) &
@@ -744,19 +749,18 @@ jq -n '{
   last_code_edit_revision:"0", last_code_edit_ts:"1"
 }' >"${exhaust_cas_state}"
 touch "${STATE_ROOT}/${SESSION_ID}/.ulw_active"
-exhaust_cas_shim="${TEST_HOME}/exhaust-cas-shim"
 exhaust_cas_count="${TEST_HOME}/exhaust-cas-count"
 exhaust_cas_ready="${TEST_HOME}/exhaust-cas-ready"
 exhaust_cas_release="${TEST_HOME}/exhaust-cas-release"
 exhaust_cas_output="${TEST_HOME}/exhaust-cas-output"
-write_second_state_lock_barrier "${exhaust_cas_shim}"
+printf '0\n' >"${exhaust_cas_count}"
 exhaust_cas_payload="$(jq -nc --arg sid "${SESSION_ID}" '{session_id:$sid}')"
 (
   printf '%s' "${exhaust_cas_payload}" \
-    | env PATH="${exhaust_cas_shim}:${PATH}" \
-      OMC_CAS_LOCK_COUNT="${exhaust_cas_count}" \
-      OMC_CAS_LOCK_READY="${exhaust_cas_ready}" \
-      OMC_CAS_LOCK_RELEASE="${exhaust_cas_release}" \
+    | env OMC_TEST_STATE_LOCK_PREACQUIRE_TARGET=2 \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_COUNT_FILE="${exhaust_cas_count}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${exhaust_cas_ready}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${exhaust_cas_release}" \
       OMC_NO_DEFER_MODE=off \
       OMC_GUARD_EXHAUSTION_MODE=scorecard \
       bash "${HOOK_DIR}/stop-guard.sh" >"${exhaust_cas_output}" 2>/dev/null
@@ -869,7 +873,7 @@ grep -q '^OMC_ADVISORY_NO_FINDINGS_THRESHOLD="\${OMC_ADVISORY_NO_FINDINGS_THRESH
   && pass=$((pass + 1)) || { printf '  FAIL: common.sh default not 2\n'; fail=$((fail + 1)); }
 grep -q '^#advisory_no_findings_threshold=2' "${REPO_ROOT}/bundle/dot-claude/oh-my-claude.conf.example" \
   && pass=$((pass + 1)) || { printf '  FAIL: conf example default not 2\n'; fail=$((fail + 1)); }
-grep -q '^advisory_no_findings_threshold|int|2|' "${HOOK_DIR}/omc-config.sh" \
+grep -q '^advisory_no_findings_threshold|pint|2|' "${HOOK_DIR}/omc-config.sh" \
   && pass=$((pass + 1)) || { printf '  FAIL: omc-config default not 2\n'; fail=$((fail + 1)); }
 
 # ===========================================================================
@@ -1029,7 +1033,7 @@ done
 # via their user-level `${HOME}/.claude/oh-my-claude.conf`. The deny-
 # list is narrow: pretool_intent_guard, bg_spawn_gate, agent_first_gate,
 # no_defer_mode, quality_policy, model_tier, model_overrides, repo_lessons,
-# auto_tune. All other
+# auto_tune, plus machine-wide retention authorities. All other
 # flags can still be project-overridden.
 # ===========================================================================
 printf '\n=== F-013: project-conf security flag deny-list ===\n'
@@ -1039,7 +1043,7 @@ printf '\n=== F-013: project-conf security flag deny-list ===\n'
 # (case-statement marker) so a refactor that removed the actual
 # case-statement while leaving the bare comment block would NOT pass
 # this regression (quality-reviewer Wave 2 F3 follow-up).
-if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|definition_of_excellent|quality_constitution|taste_learning|quality_constitution_max_context_chars|model_tier|model_overrides|repo_lessons|auto_tune)' "${HOOK_DIR}/common.sh"; then
+if grep -q 'pretool_intent_guard|bg_spawn_gate|agent_first_gate|no_defer_mode|quality_policy|definition_of_excellent|quality_constitution|taste_learning|quality_constitution_max_context_chars|model_tier|model_overrides|council_deep_default|workflow_substrate|repo_lessons|auto_tune|output_style|resume_watchdog|resume_watchdog_cooldown_secs|resume_session_ttl_secs|resume_request_ttl_days|resume_scan_max_sessions|claude_bin|state_ttl_days|time_tracking_xs_retain_days|custom_verify_mcp_tools|custom_verify_patterns)' "${HOOK_DIR}/common.sh"; then
   pass=$((pass + 1))
 else
   printf '  FAIL: F-013a: common.sh case-statement must restrict enforcement, Definition/Constitution, model, and persistence authority flags from project conf\n' >&2
@@ -1252,6 +1256,257 @@ else
   fail=$((fail + 1))
 fi
 rm -rf "${_f013m_home}"
+
+# (n) Project config also cannot mutate or advertise machine-wide output and
+# daemon authorities. These consumers write ~/.claude/settings.json or run
+# outside the project cwd, and claude_bin is an executable trust decision.
+_f013n_home="$(mktemp -d)"
+mkdir -p "${_f013n_home}/.claude" "${_f013n_home}/repo/.claude"
+cat > "${_f013n_home}/.claude/oh-my-claude.conf" <<'CONF'
+output_style=executive
+resume_watchdog=off
+resume_watchdog_cooldown_secs=600
+resume_session_ttl_secs=7200
+claude_bin=/bin/sh
+state_ttl_days=7
+time_tracking_xs_retain_days=30
+CONF
+cat > "${_f013n_home}/repo/.claude/oh-my-claude.conf" <<'CONF'
+output_style=opencode
+resume_watchdog=on
+resume_watchdog_cooldown_secs=1
+resume_session_ttl_secs=1
+claude_bin=/bin/bash
+state_ttl_days=1
+time_tracking_xs_retain_days=1
+CONF
+_f013n_value="$(cd "${_f013n_home}/repo" \
+  && env -u OMC_OUTPUT_STYLE -u OMC_RESUME_WATCHDOG \
+     -u OMC_RESUME_WATCHDOG_COOLDOWN_SECS \
+     -u OMC_RESUME_SESSION_TTL_SECS -u OMC_CLAUDE_BIN \
+     -u OMC_STATE_TTL_DAYS -u OMC_TIME_TRACKING_XS_RETAIN_DAYS \
+     HOME="${_f013n_home}" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s|%s|%s|%s|%s|%s|%s' \
+       \"\${OMC_OUTPUT_STYLE:-}\" \"\${OMC_RESUME_WATCHDOG:-}\" \
+       \"\${OMC_RESUME_WATCHDOG_COOLDOWN_SECS:-}\" \
+       \"\${OMC_RESUME_SESSION_TTL_SECS:-}\" \"\${OMC_CLAUDE_BIN:-}\" \
+       \"\${OMC_STATE_TTL_DAYS:-}\" \
+       \"\${OMC_TIME_TRACKING_XS_RETAIN_DAYS:-}\"")"
+if [[ "${_f013n_value}" == "executive|off|600|7200|/bin/sh|7|30" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013n: project config changed user-global output/watchdog/retention authority (%s)\n' \
+    "${_f013n_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013n_home}"
+
+# (o-p) Sensitive persistence is a monotonic project overlay. A regulated
+# project may turn capture off, but an unfamiliar repo cannot turn it back on
+# over the user's opt-out. The resume artifact cap follows privacy ordering:
+# 0 is unlimited, and a project may retain no more artifacts than the user cap.
+_f013o_home="$(mktemp -d)"
+mkdir -p "${_f013o_home}/.claude" "${_f013o_home}/repo/.claude"
+cat > "${_f013o_home}/.claude/oh-my-claude.conf" <<'CONF'
+classifier_telemetry=off
+auto_memory=off
+prompt_persist=off
+stop_failure_capture=off
+transcript_archive=off
+time_tracking=off
+token_tracking=off
+model_drift_canary=off
+blindspot_inventory=off
+resume_request_per_cwd_cap=3
+CONF
+cat > "${_f013o_home}/repo/.claude/oh-my-claude.conf" <<'CONF'
+classifier_telemetry=on
+auto_memory=on
+prompt_persist=on
+stop_failure_capture=on
+transcript_archive=on
+time_tracking=on
+token_tracking=on
+model_drift_canary=on
+blindspot_inventory=on
+resume_request_per_cwd_cap=0
+CONF
+_f013o_value="$(cd "${_f013o_home}/repo" \
+  && env -u OMC_CLASSIFIER_TELEMETRY -u OMC_AUTO_MEMORY \
+     -u OMC_PROMPT_PERSIST -u OMC_STOP_FAILURE_CAPTURE \
+     -u OMC_TRANSCRIPT_ARCHIVE -u OMC_TIME_TRACKING \
+     -u OMC_TOKEN_TRACKING -u OMC_MODEL_DRIFT_CANARY \
+     -u OMC_BLINDSPOT_INVENTORY -u OMC_RESUME_REQUEST_PER_CWD_CAP \
+     HOME="${_f013o_home}" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+       \"\${OMC_CLASSIFIER_TELEMETRY:-}\" \"\${OMC_AUTO_MEMORY:-}\" \
+       \"\${OMC_PROMPT_PERSIST:-}\" \"\${OMC_STOP_FAILURE_CAPTURE:-}\" \
+       \"\${OMC_TRANSCRIPT_ARCHIVE:-}\" \"\${OMC_TIME_TRACKING:-}\" \
+       \"\${OMC_TOKEN_TRACKING:-}\" \"\${OMC_MODEL_DRIFT_CANARY:-}\" \
+       \"\${OMC_BLINDSPOT_INVENTORY:-}\" \
+       \"\${OMC_RESUME_REQUEST_PER_CWD_CAP:-}\"")"
+if [[ "${_f013o_value}" == "off|off|off|off|off|off|off|off|off|3" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013o: project re-enabled user-disabled persistence or unlimited resume retention (%s)\n' \
+    "${_f013o_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013o_home}"
+
+_f013p_home="$(mktemp -d)"
+mkdir -p "${_f013p_home}/.claude" "${_f013p_home}/repo/.claude"
+cat > "${_f013p_home}/.claude/oh-my-claude.conf" <<'CONF'
+classifier_telemetry=on
+auto_memory=on
+prompt_persist=on
+stop_failure_capture=on
+transcript_archive=on
+time_tracking=on
+token_tracking=on
+model_drift_canary=on
+blindspot_inventory=on
+resume_request_per_cwd_cap=3
+CONF
+cat > "${_f013p_home}/repo/.claude/oh-my-claude.conf" <<'CONF'
+classifier_telemetry=off
+auto_memory=off
+prompt_persist=off
+stop_failure_capture=off
+transcript_archive=off
+time_tracking=off
+token_tracking=off
+model_drift_canary=off
+blindspot_inventory=off
+resume_request_per_cwd_cap=2
+CONF
+_f013p_value="$(cd "${_f013p_home}/repo" \
+  && env -u OMC_CLASSIFIER_TELEMETRY -u OMC_AUTO_MEMORY \
+     -u OMC_PROMPT_PERSIST -u OMC_STOP_FAILURE_CAPTURE \
+     -u OMC_TRANSCRIPT_ARCHIVE -u OMC_TIME_TRACKING \
+     -u OMC_TOKEN_TRACKING -u OMC_MODEL_DRIFT_CANARY \
+     -u OMC_BLINDSPOT_INVENTORY -u OMC_RESUME_REQUEST_PER_CWD_CAP \
+     HOME="${_f013p_home}" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+       \"\${OMC_CLASSIFIER_TELEMETRY:-}\" \"\${OMC_AUTO_MEMORY:-}\" \
+       \"\${OMC_PROMPT_PERSIST:-}\" \"\${OMC_STOP_FAILURE_CAPTURE:-}\" \
+       \"\${OMC_TRANSCRIPT_ARCHIVE:-}\" \"\${OMC_TIME_TRACKING:-}\" \
+       \"\${OMC_TOKEN_TRACKING:-}\" \"\${OMC_MODEL_DRIFT_CANARY:-}\" \
+       \"\${OMC_BLINDSPOT_INVENTORY:-}\" \
+       \"\${OMC_RESUME_REQUEST_PER_CWD_CAP:-}\"")"
+if [[ "${_f013p_value}" == "off|off|off|off|off|off|off|off|off|2" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013p: project privacy reductions did not remain effective (%s)\n' \
+    "${_f013p_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013p_home}"
+
+# (q) Verification matcher extensions are proof-admission authority. A
+# repository cannot replace trusted user matchers with catch-alls that make an
+# arbitrary Bash/MCP call look like verification.
+_f013q_home="$(mktemp -d)"
+mkdir -p "${_f013q_home}/.claude" "${_f013q_home}/repo/.claude"
+cat > "${_f013q_home}/.claude/oh-my-claude.conf" <<'CONF'
+custom_verify_mcp_tools=mcp__trusted__*
+custom_verify_patterns=trusted-wrapper
+CONF
+cat > "${_f013q_home}/repo/.claude/oh-my-claude.conf" <<'CONF'
+custom_verify_mcp_tools=*
+custom_verify_patterns=.*
+CONF
+_f013q_value="$(cd "${_f013q_home}/repo" \
+  && env -u OMC_CUSTOM_VERIFY_MCP_TOOLS -u OMC_CUSTOM_VERIFY_PATTERNS \
+     HOME="${_f013q_home}" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s|%s' \
+       \"\${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}\" \
+       \"\${OMC_CUSTOM_VERIFY_PATTERNS:-}\"")"
+if [[ "${_f013q_value}" == "mcp__trusted__*|trusted-wrapper" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013q: project broadened verification proof admission (%s)\n' \
+    "${_f013q_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013q_home}"
+
+_f013q_clear_home="$(mktemp -d)"
+mkdir -p "${_f013q_clear_home}/.claude" \
+  "${_f013q_clear_home}/repo/.claude"
+cat > "${_f013q_clear_home}/.claude/oh-my-claude.conf" <<'CONF'
+custom_verify_mcp_tools=mcp__trusted__*
+custom_verify_mcp_tools=
+custom_verify_patterns=trusted-wrapper
+custom_verify_patterns=
+CONF
+cat > "${_f013q_clear_home}/repo/.claude/oh-my-claude.conf" <<'CONF'
+custom_verify_mcp_tools=*
+custom_verify_patterns=.*
+CONF
+_f013q_clear_value="$(cd "${_f013q_clear_home}/repo" \
+  && env -u OMC_CUSTOM_VERIFY_MCP_TOOLS -u OMC_CUSTOM_VERIFY_PATTERNS \
+     HOME="${_f013q_clear_home}" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s|%s' \
+       \"\${OMC_CUSTOM_VERIFY_MCP_TOOLS:-}\" \
+       \"\${OMC_CUSTOM_VERIFY_PATTERNS:-}\"")"
+if [[ "${_f013q_clear_value}" == "|" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013q: explicit empty user rows did not revoke proof admission (%s)\n' \
+    "${_f013q_clear_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013q_clear_home}"
+
+# (r) Resume claimability is machine-wide authority, while the stale-wave
+# commit exception is a monotonic authorization ceiling. Project hooks cannot
+# hide artifacts from the scheduler by narrowing TTL/scan breadth, and a repo
+# cannot widen the user's commit-authorization window. A safe wave reduction
+# remains useful and must survive a later rejected duplicate.
+_f013r_home="$(mktemp -d)"
+mkdir -p "${_f013r_home}/.claude" "${_f013r_home}/repo/.claude"
+cat > "${_f013r_home}/.claude/oh-my-claude.conf" <<'CONF'
+resume_request_ttl_days=7
+resume_scan_max_sessions=30
+wave_override_ttl_seconds=7200
+council_deep_default=on
+workflow_substrate=off
+self_audit_nudge=off
+whats_new_session_hint=false
+CONF
+cat > "${_f013r_home}/repo/.claude/oh-my-claude.conf" <<'CONF'
+resume_request_ttl_days=1
+resume_scan_max_sessions=1
+wave_override_ttl_seconds=600
+wave_override_ttl_seconds=9000
+council_deep_default=off
+workflow_substrate=on
+self_audit_nudge=on
+whats_new_session_hint=true
+CONF
+_f013r_value="$(cd "${_f013r_home}/repo" \
+  && env -u OMC_RESUME_REQUEST_TTL_DAYS -u OMC_RESUME_SCAN_MAX_SESSIONS \
+     -u OMC_WAVE_OVERRIDE_TTL_SECONDS -u OMC_COUNCIL_DEEP_DEFAULT \
+     -u OMC_WORKFLOW_SUBSTRATE -u OMC_SELF_AUDIT_NUDGE \
+     -u OMC_WHATS_NEW_SESSION_HINT HOME="${_f013r_home}" \
+     OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+     bash -c ". '${HOOK_DIR}/common.sh' >/dev/null 2>&1; printf '%s|%s|%s|%s|%s|%s|%s' \
+       \"\${OMC_RESUME_REQUEST_TTL_DAYS:-}\" \
+       \"\${OMC_RESUME_SCAN_MAX_SESSIONS:-}\" \
+       \"\${OMC_WAVE_OVERRIDE_TTL_SECONDS:-}\" \
+       \"\${OMC_COUNCIL_DEEP_DEFAULT:-}\" \
+       \"\${OMC_WORKFLOW_SUBSTRATE:-}\" \
+       \"\${OMC_SELF_AUDIT_NUDGE:-}\" \
+       \"\${OMC_WHATS_NEW_SESSION_HINT:-}\"")"
+if [[ "${_f013r_value}" == "7|30|600|on|off|off|false" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: F-013r: project split resume claimability or widened wave authorization (%s)\n' \
+    "${_f013r_value}" >&2
+  fail=$((fail + 1))
+fi
+rm -rf "${_f013r_home}"
 
 # ===========================================================================
 # F-014: objective-completion contract gate (v1.46-pre Codex /goal port).
@@ -1655,6 +1910,51 @@ assert_eq "F-016i2: failed verification-capable tools reach receipt writer" "1" 
   "$(jq '[.hooks.PostToolUseFailure[] | select(.matcher == "Bash|Read|Grep|mcp__.*") | .hooks[] | select(.command | contains("record-verification.sh"))] | length' "${_f016_patch}")"
 assert_eq "F-016j: successful Bash dispatcher remains universal" "1" \
   "$(jq '[.hooks.PostToolUse[] | select((.matcher // "") == "") | .hooks[] | select(.command | contains("posttool-dispatch.sh"))] | length' "${_f016_patch}")"
+
+# ===========================================================================
+# F-017: numeric state is data, never a Bash arithmetic expression
+# ===========================================================================
+printf '\n=== F-017: malformed causal numeric state fails closed ===\n'
+setup
+write_state_field "task_intent" "execution"
+write_state_field "current_objective" "finish the implementation"
+_f017_marker="${TEST_HOME}/stop-guard-arithmetic-executed"
+_f017_poison="x[\$(touch ${_f017_marker})]"
+write_state_field "session_handoff_blocks" "${_f017_poison}"
+_f017_out="$(jq -nc --arg sid "${SESSION_ID}" \
+  '{session_id:$sid,last_assistant_message:"Done."}' \
+  | "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-017: malformed causal counter blocks release" \
+  '"decision":"block"' "${_f017_out}"
+assert_contains "F-017: block names invalid numeric state" \
+  'invalid numeric state' "${_f017_out}"
+assert_eq "F-017: poison is preserved for explicit recovery" \
+  "${_f017_poison}" "$(read_state_field "session_handoff_blocks")"
+assert_eq "F-017: poisoned arithmetic did not execute" "0" \
+  "$([[ -e "${_f017_marker}" ]] && printf 1 || printf 0)"
+teardown
+
+# A malformed/future completion lease is not permission to release a waiver.
+# It must remain a busy recovery fence instead of comparing greater than the
+# cutoff through jq's permissive number/string ordering.
+setup
+write_state_field "task_intent" "execution"
+write_state_field "current_objective" "finish the implementation"
+write_state_field "gate_skip_reason" "operator-approved test waiver"
+write_state_int "gate_skip_edit_ts" 0
+printf '%s\n' \
+  '{"agent_type":"general-purpose","completion_claim_id":"claim-oversized","completion_claim_ts":1000000000000000000,"completion_claim_effects_complete":false}' \
+  >"${STATE_ROOT}/${SESSION_ID}/pending_agents.jsonl"
+_f017_claim_out="$(jq -nc --arg sid "${SESSION_ID}" \
+  '{session_id:$sid,last_assistant_message:"Done."}' \
+  | "${HOOK_DIR}/stop-guard.sh")"
+assert_contains "F-017: oversized claim blocks skip release" \
+  '"decision":"block"' "${_f017_claim_out}"
+assert_contains "F-017: oversized claim is surfaced as busy authority" \
+  'subagent completion is still publishing' "${_f017_claim_out}"
+assert_eq "F-017: blocked skip remains registered" \
+  "operator-approved test waiver" "$(read_state_field "gate_skip_reason")"
+teardown
 
 # ===========================================================================
 # Sentinel: every coordination rule met (file existence + bundle wiring)

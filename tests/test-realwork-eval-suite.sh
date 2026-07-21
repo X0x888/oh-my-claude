@@ -490,6 +490,68 @@ if [[ "${declared_count}" -gt 0 && "${resolved_count}" -eq 0 ]]; then
   printf '  PASS: T22: all %d scenarios declare unresolved fixture paths\n' "${declared_count}"
 fi
 
+# The live evaluator's semantic validator already requires the five exact
+# dimension IDs in canonical order and de-duplicates campaign tiers. Keep the
+# public Draft 2020-12 schema equally strict so external tooling cannot admit a
+# probe that the evaluator later rejects (or count a duplicated tier twice).
+printf 'Test 23: quality schema rejects duplicate dimensions and model tiers\n'
+QUALITY_SCHEMA="${REPO_ROOT}/evals/realwork/quality-schema.json"
+schema_uniqueness_contract="$(jq -r '
+  .properties.rubric.properties.dimensions.uniqueItems == true
+  and .properties.rubric.properties.dimensions.minItems == 5
+  and .properties.rubric.properties.dimensions.maxItems == 5
+  and .properties.campaign.properties.model_tiers.uniqueItems == true
+' "${QUALITY_SCHEMA}")"
+assert_eq "quality schema declares both uniqueness constraints" \
+  "true" "${schema_uniqueness_contract}"
+
+if python3 -c 'from jsonschema import Draft202012Validator' >/dev/null 2>&1; then
+  schema_duplicate_result="$(python3 - \
+    "${REPO_ROOT}/evals/realwork" <<'PY'
+import copy
+import json
+import pathlib
+import sys
+
+from jsonschema import Draft202012Validator, ValidationError
+
+root = pathlib.Path(sys.argv[1])
+schema = json.loads((root / "quality-schema.json").read_text())
+Draft202012Validator.check_schema(schema)
+validator = Draft202012Validator(schema)
+probe = json.loads(
+    (root / "quality-probes" / "quality-config-diagnostics.json").read_text()
+)
+validator.validate(probe)
+
+duplicate_dimensions = copy.deepcopy(probe)
+duplicate_dimensions["rubric"]["dimensions"][-1] = copy.deepcopy(
+    duplicate_dimensions["rubric"]["dimensions"][0]
+)
+duplicate_tiers = copy.deepcopy(probe)
+duplicate_tiers["campaign"]["model_tiers"].append(
+    duplicate_tiers["campaign"]["model_tiers"][0]
+)
+
+for label, malformed in (
+    ("dimensions", duplicate_dimensions),
+    ("model_tiers", duplicate_tiers),
+):
+    try:
+        validator.validate(malformed)
+    except ValidationError:
+        continue
+    raise SystemExit(f"Draft 2020-12 schema accepted duplicate {label}")
+
+print("rejected-both")
+PY
+)"
+  assert_eq "Draft 2020-12 validator rejects both duplicate classes" \
+    "rejected-both" "${schema_duplicate_result}"
+else
+  printf '  INFO: python jsonschema unavailable; CI runs the Draft 2020-12 regression\n'
+fi
+
 printf '\nReal-work eval suite tests: %d passed, %d failed\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

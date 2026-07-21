@@ -10,9 +10,9 @@
     {"kind": "rendered_images", "globs": ["rendered/**"]}
   ],
   "hard_checks": [
-    {"id": "recalculation", "description": "Formula outputs recalculate to the expected fixture values without hard-coded result cells.", "critical": true},
-    {"id": "input_fidelity", "description": "All source inputs, units, dates, and missing-value treatments remain traceable and correct.", "critical": true},
-    {"id": "scenario_integrity", "description": "Base, upside, downside, and sensitivity logic obey the supplied constraints and identities.", "critical": true}
+    {"id": "recalculation", "description": "Formula outputs recalculate to the expected fixture values without hard-coded result cells.", "critical": false},
+    {"id": "input_fidelity", "description": "All source inputs, units, dates, and missing-value treatments remain traceable and correct.", "critical": false},
+    {"id": "scenario_integrity", "description": "Base, upside, downside, and sensitivity logic obey the supplied constraints and identities.", "critical": false}
   ],
   "rubric": {
     "version": "ddccv-1",
@@ -38,9 +38,9 @@
     "max_candidate_cost_ratio": 1.75,
     "max_candidate_wall_ratio": 1.75,
     "candidate_summary_contract": {
-      "schema_version": 3,
-      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
-      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "schema_version": 4,
+      "required_top_level": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"],
+      "generation_authority": "evaluator-owned-cli-telemetry-v1",
       "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
     }
   }

@@ -40,13 +40,10 @@ AUTO_TUNE_FILE="${QP_ROOT}/auto-tune.jsonl"
 # state.
 session_state_is_resume_transferred() {
   local state_file="${1:-}" transferred_to=""
-  [[ -f "${state_file}" ]] || return 1
-  transferred_to="$(jq -r '
-    (.resume_transferred_to // "")
-    | if type == "string" then . else "" end
-  ' "${state_file}" 2>/dev/null || true)"
+  transferred_to="$(_omc_read_valid_session_id_field \
+    "${state_file}" "resume_transferred_to" 2>/dev/null || true)"
   [[ -n "${transferred_to}" ]] || return 1
-  validate_session_id "${transferred_to}" 2>/dev/null
+  return 0
 }
 
 # Dynamic labels from local or merged ledgers are untrusted render input.
@@ -612,8 +609,11 @@ filter_by_window() {
       tail -n 1 "${file}"
     fi
   else
-    jq -c --argjson cutoff "${cutoff_ts}" \
-      "select((${ts_path} // 0 | tonumber) >= \$cutoff)" "${file}" 2>/dev/null || true
+    jq -c --argjson cutoff "${cutoff_ts}" --argjson current "${now}" \
+      "select(((${ts_path}) | type) == \"number\" and
+        ((${ts_path}) | floor) == (${ts_path}) and
+        (${ts_path}) >= \$cutoff and (${ts_path}) <= \$current)" \
+      "${file}" 2>/dev/null || true
   fi
 }
 

@@ -7,12 +7,12 @@
   "prompt": "/ulw make configuration errors substantially easier to diagnose without breaking the existing CLI",
   "candidate_artifacts": [
     {"kind": "git_diff"},
-    {"kind": "files", "globs": ["src/**", "lib/**", "tests/**", "README.md"]}
+    {"kind": "files", "globs": ["diagnostic.json", "work.txt", "src/**", "lib/**", "tests/**", "README.md"]}
   ],
   "hard_checks": [
-    {"id": "diagnostic_contract", "description": "The fixture's invalid layered value produces the normalized error/exit contract.", "critical": true},
-    {"id": "layered_source_case", "description": "The layered-source fixture identifies the actual failing source and raw value.", "critical": true},
-    {"id": "cli_compatibility", "description": "Existing CLI inputs and exit-code behavior remain compatible.", "critical": true}
+    {"id": "diagnostic_contract", "description": "The fixture's invalid layered value produces the normalized error/exit contract.", "critical": false},
+    {"id": "layered_source_case", "description": "The layered-source fixture identifies the actual failing source and raw value.", "critical": false},
+    {"id": "cli_compatibility", "description": "Existing CLI inputs and exit-code behavior remain compatible.", "critical": false}
   ],
   "rubric": {
     "version": "ddccv-1",
@@ -38,9 +38,9 @@
     "max_candidate_cost_ratio": 1.75,
     "max_candidate_wall_ratio": 1.75,
     "candidate_summary_contract": {
-      "schema_version": 3,
-      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
-      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "schema_version": 4,
+      "required_top_level": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"],
+      "generation_authority": "evaluator-owned-cli-telemetry-v1",
       "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
     }
   }

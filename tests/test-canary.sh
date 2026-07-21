@@ -33,6 +33,7 @@ source "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/lib/canary.sh"
 
 pass=0
 fail=0
+TEST_FINALIZER_CLAIM_ID="finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 cleanup() {
   rm -rf "${_test_state_root}" "${_test_home}"
@@ -77,6 +78,21 @@ _setup_session() {
     --arg msg "${assistant_msg}" \
     '{prompt_seq: ($ps | tonumber), last_assistant_message: $msg}' \
     > "${_test_state_root}/${sid}/session_state.json"
+}
+
+_seed_finalizer_claim() {
+  local sid="$1" claim_id="${2:-${TEST_FINALIZER_CLAIM_ID}}"
+  local claimed_ts="${3:-$(date +%s)}"
+  jq --arg claim "${claim_id}" --argjson claimed_ts "${claimed_ts}" '
+    . + {review_cycle_id:"1",prompt_revision:"1",session_outcome:"completed",
+      closeout_finalized_token:"1:1:completed",
+      closeout_finalization_status:"claimed",
+      closeout_finalization_claimed_ts:$claimed_ts,
+      closeout_finalization_claim_id:$claim}
+  ' "${_test_state_root}/${sid}/session_state.json" \
+    >"${_test_state_root}/${sid}/session_state.json.tmp"
+  mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+    "${_test_state_root}/${sid}/session_state.json"
 }
 
 _add_tool_call() {
@@ -176,6 +192,14 @@ assert_eq "tools without tool_use_id still count" "6" "$(canary_count_verificati
 _add_tool_call "${sid}" 4 Read r3
 assert_eq "prompt_seq=3 unaffected by ps=4" "6" "$(canary_count_verification_tools "${sid}" 3)"
 assert_eq "prompt_seq=4 sees its own"       "1" "$(canary_count_verification_tools "${sid}" 4)"
+
+printf '%s\n' \
+  '{"kind":"start","tool":"Bash","prompt_seq":3,"tool_use_id":"missing-ts"}' \
+  '{"kind":"start","ts":1002,"tool":"Bash","prompt_seq":"3","tool_use_id":"string-seq"}' \
+  '{"kind":"start","ts":1002,"tool":"Bash","prompt_seq":3,"tool_use_id":42}' \
+  '{torn' >>"${_test_state_root}/${sid}/timing.jsonl"
+assert_eq "malformed/torn timing rows cannot fabricate verification calls" \
+  "6" "$(canary_count_verification_tools "${sid}" 3)"
 
 # Missing timing.jsonl must return 0, not error.
 assert_eq "missing timing.jsonl"           "0" "$(canary_count_verification_tools "nonexistent-session" 1)"
@@ -439,12 +463,53 @@ assert_eq "T15: hook produced unverified verdict" "unverified" \
 sid="t15b-$$"
 _setup_session "${sid}" 20 "I read /path/A.swift. I verified /path/B.ts. I checked /path/C.go."
 _init_timing "${sid}" 20
+_seed_finalizer_claim "${sid}"
 rm -f "${STATE_ROOT}/.ulw_active"
 hook_payload="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
 printf '%s' "${hook_payload}" \
-  | OMC_STOP_ACCEPTED=1 bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+  | OMC_STOP_ACCEPTED=1 \
+      OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
       >/dev/null 2>&1 || true
 assert_true "T15b: accepted dispatcher handoff audits after sentinel removal" \
+  '[[ -f "${_test_state_root}/${sid}/canary.jsonl" ]]'
+
+# A decoded NUL must not alias an invalid Stop payload to a live session.
+# canary-claim-audit uses the same envelope-wide json_get boundary as the
+# publication hooks, so no per-session or cross-session evidence is emitted.
+sid="t15c-$$"
+_setup_session "${sid}" 22 "I read /path/A.swift."
+_init_timing "${sid}" 22
+jq '. + {workflow_mode:"ultrawork"}' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+touch "${STATE_ROOT}/.ulw_active"
+hook_payload="$(jq -nc --arg sid "${sid}" \
+  '{session_id:($sid + "\u0000")}')"
+printf '%s' "${hook_payload}" \
+  | bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+    >/dev/null 2>&1 || true
+assert_false "T15c: NUL-bearing Stop identity publishes no canary row" \
+  '[[ -f "${_test_state_root}/${sid}/canary.jsonl" ]]'
+
+# Persisted prompt identity is also authority: a decoded NUL must be rejected
+# before it can alias prompt 24 and bind that prompt's timing rows.
+sid="t15d-$$"
+_setup_session "${sid}" 24 \
+  "I read /path/A.swift. I verified /path/B.ts. I checked /path/C.go."
+_init_timing "${sid}" 24
+jq '. + {workflow_mode:"ultrawork", prompt_seq:("24" + "\u0000")}' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+hook_payload="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
+printf '%s' "${hook_payload}" \
+  | bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+    >/dev/null 2>&1 || true
+assert_false "T15d: NUL-bearing persisted prompt publishes no canary row" \
   '[[ -f "${_test_state_root}/${sid}/canary.jsonl" ]]'
 
 # ----------------------------------------------------------------------
@@ -495,6 +560,388 @@ case "${hook_out2}" in
   *"DRIFT WARNING"*) printf '  FAIL: T17 — alert RE-FIRED on second hook call (should be one-shot)\n' >&2; fail=$((fail + 1)) ;;
   *) pass=$((pass + 1)) ;;
 esac
+
+# ----------------------------------------------------------------------
+printf 'Test 18: stale-generation audit cannot publish after waiting for the state lock\n'
+sid="t18-$$"
+_setup_session "${sid}" 25 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 25
+jq '. + {ulw_enforcement_generation:"1801"}' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+audit_ready="${_test_state_root}/t18.ready"
+audit_release="${_test_state_root}/t18.release"
+(
+  export SESSION_ID="${sid}"
+  export _OMC_ULW_CAPTURED_GENERATION="1801"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${audit_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${audit_release}"
+  canary_run_audit "${sid}"
+) &
+audit_pid=$!
+audit_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${audit_ready}" ]]; then
+    audit_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "T18: audit reached deterministic pre-acquire barrier" "1" \
+  "${audit_barrier_seen}"
+jq '.ulw_enforcement_generation="1802"' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+: >"${audit_release}"
+wait "${audit_pid}" || true
+assert_false "T18: stale audit wrote no per-session row" \
+  '[[ -f "${_test_state_root}/${sid}/canary.jsonl" ]]'
+assert_eq "T18: stale audit wrote no cross-session row" "0" \
+  "$(jq -sr --arg sid "${sid}" '[.[] | select(.session_id == $sid)] | length' \
+      "${HOME}/.claude/quality-pack/canary.jsonl" 2>/dev/null || printf 0)"
+assert_false "T18: stale audit emitted no gate event" \
+  '[[ -f "${_test_state_root}/${sid}/gate_events.jsonl" ]]'
+
+# ----------------------------------------------------------------------
+printf 'Test 19: stale-generation alert cannot win the one-shot claim\n'
+sid="t19-$$"
+mkdir -p "${_test_state_root}/${sid}"
+printf '%s\n' \
+  '{"verdict":"unverified","claim_count":2}' \
+  '{"verdict":"unverified","claim_count":2}' \
+  >"${_test_state_root}/${sid}/canary.jsonl"
+printf '%s\n' '{"ulw_enforcement_generation":"1901"}' \
+  >"${_test_state_root}/${sid}/session_state.json"
+claim_ready="${_test_state_root}/t19.ready"
+claim_release="${_test_state_root}/t19.release"
+claim_output="${_test_state_root}/t19.output"
+(
+  export SESSION_ID="${sid}"
+  export _OMC_ULW_CAPTURED_GENERATION="1901"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${claim_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${claim_release}"
+  canary_claim_alert "${sid}" >"${claim_output}"
+) &
+claim_pid=$!
+claim_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${claim_ready}" ]]; then
+    claim_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "T19: claim reached deterministic pre-acquire barrier" "1" \
+  "${claim_barrier_seen}"
+jq '.ulw_enforcement_generation="1902"' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+: >"${claim_release}"
+wait "${claim_pid}" || true
+assert_eq "T19: stale claim emitted no alert count" "" \
+  "$(<"${claim_output}")"
+assert_eq "T19: stale claim did not set one-shot state" "" \
+  "$(jq -r '.drift_warning_emitted // ""' \
+      "${_test_state_root}/${sid}/session_state.json")"
+
+# ----------------------------------------------------------------------
+printf 'Test 20: accepted child propagates publish failure; standalone stays fail-open\n'
+sid="t20-$$"
+_setup_session "${sid}" 26 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 26
+_seed_finalizer_claim "${sid}"
+touch "${STATE_ROOT}/.ulw_active"
+jq '. + {workflow_mode:"ultrawork"}' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+hook_payload="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
+missing_claim_rc=0
+printf '%s' "${hook_payload}" \
+  | OMC_STOP_ACCEPTED=1 \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+      >/dev/null 2>&1 || missing_claim_rc=$?
+assert_true "T20: accepted canary child requires an exact claimant ID" \
+  '[[ "${missing_claim_rc}" -ne 0 ]]'
+accepted_publish_rc=0
+printf '%s' "${hook_payload}" \
+  | OMC_STOP_ACCEPTED=1 OMC_TEST_CANARY_PUBLISH_FAIL=1 \
+      OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+      >/dev/null 2>&1 || accepted_publish_rc=$?
+assert_true "T20: accepted canary child reports locked publish failure" \
+  '[[ "${accepted_publish_rc}" -ne 0 ]]'
+standalone_publish_rc=0
+printf '%s' "${hook_payload}" \
+  | OMC_TEST_CANARY_PUBLISH_FAIL=1 \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/canary-claim-audit.sh" \
+      >/dev/null 2>&1 || standalone_publish_rc=$?
+assert_eq "T20: standalone canary remains fail-open" "0" \
+  "${standalone_publish_rc}"
+assert_false "T20: failed publications leave no per-session evidence" \
+  '[[ -f "${_test_state_root}/${sid}/canary.jsonl" ]]'
+
+# ----------------------------------------------------------------------
+printf 'Test 21: global canary append and cap are one locked transaction\n'
+sid_a="t21-a-$$"
+sid_b="t21-b-$$"
+_setup_session "${sid_a}" 27 "I read /path/A.swift. I verified /path/B.ts."
+_setup_session "${sid_b}" 28 "I read /path/C.swift. I verified /path/D.ts."
+_init_timing "${sid_a}" 27
+_init_timing "${sid_b}" 28
+_seed_finalizer_claim "${sid_a}"
+_seed_finalizer_claim "${sid_b}"
+global_canary="${HOME}/.claude/quality-pack/canary.jsonl"
+rm -f "${global_canary}"
+xs_ready="${_test_state_root}/t21.ready"
+xs_release="${_test_state_root}/t21.release"
+xs_b_done="${_test_state_root}/t21-b.done"
+(
+  export SESSION_ID="${sid_a}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  export OMC_TEST_CANARY_XS_READY_FILE="${xs_ready}"
+  export OMC_TEST_CANARY_XS_RELEASE_FILE="${xs_release}"
+  canary_run_audit "${sid_a}"
+) &
+xs_a_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${xs_ready}" ]] && break
+  sleep 0.01
+done
+assert_true "T21: first writer reaches deterministic global publish barrier" \
+  '[[ -e "${xs_ready}" ]]'
+(
+  export SESSION_ID="${sid_b}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  canary_run_audit "${sid_b}"
+  : >"${xs_b_done}"
+) &
+xs_b_pid=$!
+sleep 0.1
+assert_false "T21: second writer waits for global canary mutex" \
+  '[[ -e "${xs_b_done}" ]]'
+: >"${xs_release}"
+wait "${xs_a_pid}"
+wait "${xs_b_pid}"
+assert_eq "T21: both session rows survive global publication" "2" \
+  "$(jq -s --arg a "${sid_a}" --arg b "${sid_b}" \
+    '[.[] | select(.session_id == $a or .session_id == $b)] | length' \
+    "${global_canary}")"
+
+# ----------------------------------------------------------------------
+printf 'Test 22: partial session publication is retryable across audit timestamps\n'
+sid="t22-$$"
+_setup_session "${sid}" 29 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 29
+_seed_finalizer_claim "${sid}" "${TEST_FINALIZER_CLAIM_ID}" 1000
+partial_rc=0
+(
+  now_epoch() { printf '1000'; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  export OMC_TEST_CANARY_FAIL_AFTER_SESSION_APPEND=1
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || partial_rc=$?
+assert_true "T22: injected post-session failure propagates" \
+  '[[ "${partial_rc}" -ne 0 ]]'
+assert_eq "T22: partial attempt leaves exactly one semantic session row" "1" \
+  "$(jq -s 'length' "${_test_state_root}/${sid}/canary.jsonl")"
+retry_rc=0
+(
+  now_epoch() { printf '1001'; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  unset OMC_TEST_CANARY_FAIL_AFTER_SESSION_APPEND
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || retry_rc=$?
+assert_eq "T22: retry with a fresh audit timestamp succeeds" "0" "${retry_rc}"
+assert_eq "T22: retry does not duplicate per-session row" "1" \
+  "$(jq -s 'length' "${_test_state_root}/${sid}/canary.jsonl")"
+assert_eq "T22: retry publishes one cross-session row" "1" \
+  "$(jq -s --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid and (.prompt_seq | tostring) == "29")] | length' \
+    "${global_canary}")"
+assert_eq "T22: retry reuses the durable session timestamp globally" "1000" \
+  "$(jq -sr --arg sid "${sid}" '
+      [.[] | select(.session_id == $sid
+        and (.prompt_seq | tostring) == "29")][0].ts
+    ' "${global_canary}")"
+
+sid="t22b-$$"
+_setup_session "${sid}" 291 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 291
+_seed_finalizer_claim "${sid}" "${TEST_FINALIZER_CLAIM_ID}" 1100
+global_partial_rc=0
+(
+  now_epoch() { printf '1100'; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  export OMC_TEST_CANARY_FAIL_AFTER_GLOBAL_APPEND=1
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || global_partial_rc=$?
+assert_true "T22b: injected post-global failure propagates" \
+  '[[ "${global_partial_rc}" -ne 0 ]]'
+global_retry_rc=0
+(
+  now_epoch() { printf '1101'; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  unset OMC_TEST_CANARY_FAIL_AFTER_GLOBAL_APPEND
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || global_retry_rc=$?
+assert_eq "T22b: retry after global boundary succeeds" "0" \
+  "${global_retry_rc}"
+assert_eq "T22b: global-boundary retry keeps one session row" "1" \
+  "$(jq -s 'length' "${_test_state_root}/${sid}/canary.jsonl")"
+assert_eq "T22b: global-boundary retry keeps one global row" "1" \
+  "$(jq -s --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${global_canary}")"
+assert_eq "T22b: global-boundary retry preserves first timestamp" "1100" \
+  "$(jq -s -r --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)][0].ts' "${global_canary}")"
+
+sid="t22c-$$"
+_setup_session "${sid}" 292 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 292
+_seed_finalizer_claim "${sid}" "${TEST_FINALIZER_CLAIM_ID}" 1200
+gate_partial_rc=0
+(
+  now_epoch() { printf '1200'; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  export OMC_TEST_CANARY_FAIL_AFTER_GATE_EVENT=1
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || gate_partial_rc=$?
+assert_true "T22c: injected post-gate failure propagates" \
+  '[[ "${gate_partial_rc}" -ne 0 ]]'
+gate_retry_rc=0
+(
+  now_epoch() { printf '1201'; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  unset OMC_TEST_CANARY_FAIL_AFTER_GATE_EVENT
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || gate_retry_rc=$?
+assert_eq "T22c: retry after gate boundary succeeds" "0" \
+  "${gate_retry_rc}"
+assert_eq "T22c: gate-boundary retry keeps one session row" "1" \
+  "$(jq -s 'length' "${_test_state_root}/${sid}/canary.jsonl")"
+assert_eq "T22c: gate-boundary retry keeps one global row" "1" \
+  "$(jq -s --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${global_canary}")"
+assert_eq "T22c: gate-boundary retry keeps one gate event" "1" \
+  "$(jq -s --arg ps "292" '
+      [.[] | select(.gate == "canary" and .event == "unverified_claim"
+        and ((.details.prompt_seq // "") | tostring) == $ps)] | length
+    ' "${_test_state_root}/${sid}/gate_events.jsonl")"
+
+# ----------------------------------------------------------------------
+printf 'Test 23: malformed legacy global telemetry is skipped without blocking publication\n'
+sid="t23-$$"
+_setup_session "${sid}" 30 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 30
+_seed_finalizer_claim "${sid}"
+legacy_valid_row='{ "ts": 7, "project_key": "legacy", "session_id": "legacy-valid", "prompt_seq": "1", "claim_count": 0, "tool_count": 0, "ratio_pct": 100, "verdict": "clean" }'
+printf '%s\n' \
+  "${legacy_valid_row}" \
+  '{malformed legacy telemetry' >"${global_canary}"
+malformed_publish_rc=0
+(
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}"
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || malformed_publish_rc=$?
+assert_eq "T23: malformed legacy row does not block accepted publication" "0" \
+  "${malformed_publish_rc}"
+assert_eq "T23: valid legacy row is preserved exactly once" "1" \
+  "$(jq -s '[.[] | select(.session_id == "legacy-valid")] | length' \
+    "${global_canary}")"
+assert_eq "T23: valid legacy row bytes are preserved" "1" \
+  "$(grep -Fxc -- "${legacy_valid_row}" "${global_canary}")"
+assert_eq "T23: accepted current row is published exactly once" "1" \
+  "$(jq -s --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${global_canary}")"
+assert_eq "T23: rewritten global ledger contains only valid objects" "true" \
+  "$(jq -s 'all(.[]; type == "object")' "${global_canary}")"
+
+# ----------------------------------------------------------------------
+printf 'Test 24: expired claimant A cannot globally publish after replacement B\n'
+sid="t24-$$"
+claim_a="${TEST_FINALIZER_CLAIM_ID}"
+_setup_session "${sid}" 31 "I read /path/A.swift. I verified /path/B.ts."
+_init_timing "${sid}" 31
+_seed_finalizer_claim "${sid}" "${claim_a}" 1000
+xs_ready="${_test_state_root}/t24.ready"
+xs_release="${_test_state_root}/t24.release"
+xs_rc_file="${_test_state_root}/t24.rc"
+xs_clock_file="${_test_state_root}/t24.clock"
+printf '1000\n' >"${xs_clock_file}"
+(
+  xs_a_rc=0
+  now_epoch() { tr -d '[:space:]' <"${xs_clock_file}"; }
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${claim_a}"
+  export OMC_TEST_CANARY_XS_READY_FILE="${xs_ready}"
+  export OMC_TEST_CANARY_XS_RELEASE_FILE="${xs_release}"
+  canary_run_audit "${sid}" >/dev/null 2>&1 || xs_a_rc=$?
+  printf '%s\n' "${xs_a_rc}" >"${xs_rc_file}"
+) &
+xs_a_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${xs_ready}" ]] && break
+  sleep 0.01
+done
+assert_true "T24: claimant A reached global publication boundary" \
+  '[[ -e "${xs_ready}" ]]'
+printf '1121\n' >"${xs_clock_file}"
+: >"${xs_release}"
+wait "${xs_a_pid}" || true
+assert_true "T24: expired claimant A reports publication failure" \
+  '[[ "$(<"${xs_rc_file}")" -ne 0 ]]'
+assert_eq "T24: claimant A leaves one reusable session row" "1" \
+  "$(jq -s 'length' "${_test_state_root}/${sid}/canary.jsonl")"
+assert_eq "T24: claimant A writes no global row after replacement" "0" \
+  "$(jq -s --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${global_canary}")"
+export SESSION_ID="${sid}"
+claim_b="$(closeout_claim_finalization)"
+assert_true "T24: expired claim is replaced by a fresh exact claimant" \
+  '[[ "${claim_b}" =~ ^finalizer-[a-f0-9]{48}$ \
+      && "${claim_b}" != "${claim_a}" ]]'
+replacement_rc=0
+(
+  export SESSION_ID="${sid}"
+  export OMC_STOP_ACCEPTED=1
+  export OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${claim_b}"
+  unset OMC_TEST_CANARY_XS_READY_FILE OMC_TEST_CANARY_XS_RELEASE_FILE
+  canary_run_audit "${sid}"
+) >/dev/null 2>&1 || replacement_rc=$?
+assert_eq "T24: replacement claimant B publishes successfully" "0" \
+  "${replacement_rc}"
+assert_eq "T24: claimant B owns one global row" "1" \
+  "$(jq -s --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${global_canary}")"
+assert_eq "T24: claimant B reuses claimant A durable timestamp" \
+  "$(jq -r '.ts' "${_test_state_root}/${sid}/canary.jsonl")" \
+  "$(jq -s -r --arg sid "${sid}" \
+    '[.[] | select(.session_id == $sid)][0].ts' "${global_canary}")"
 
 # ----------------------------------------------------------------------
 printf '\n'

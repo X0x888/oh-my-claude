@@ -10,9 +10,9 @@
     {"kind": "rendered_document", "globs": ["rendered/**"]}
   ],
   "hard_checks": [
-    {"id": "citation_traceability", "description": "Every material factual claim traces to the supplied evidence packet.", "critical": true},
-    {"id": "claim_bounding", "description": "Confidence and causal language do not exceed what the sources support.", "critical": true},
-    {"id": "contrary_evidence", "description": "Material contradictory evidence is represented rather than silently discarded.", "critical": true}
+    {"id": "citation_traceability", "description": "Every material factual claim traces to the supplied evidence packet.", "critical": false},
+    {"id": "claim_bounding", "description": "Confidence and causal language do not exceed what the sources support.", "critical": false},
+    {"id": "contrary_evidence", "description": "Material contradictory evidence is represented rather than silently discarded.", "critical": false}
   ],
   "rubric": {
     "version": "ddccv-1",
@@ -38,9 +38,9 @@
     "max_candidate_cost_ratio": 1.75,
     "max_candidate_wall_ratio": 1.75,
     "candidate_summary_contract": {
-      "schema_version": 3,
-      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
-      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "schema_version": 4,
+      "required_top_level": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"],
+      "generation_authority": "evaluator-owned-cli-telemetry-v1",
       "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
     }
   }

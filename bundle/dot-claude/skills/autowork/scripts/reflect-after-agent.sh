@@ -2,6 +2,7 @@
 
 set -euo pipefail
 
+_OMC_HOOK_CALLER_PATH="${PATH:-}"
 # Fast-path: skip if ULW was never activated in this environment
 [[ -f "${HOME}/.claude/quality-pack/state/.ulw_active" ]] || exit 0
 
@@ -10,13 +11,25 @@ set -euo pipefail
 export OMC_LAZY_CLASSIFIER=1
 export OMC_LAZY_TIMING=1
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
 
 if [[ -z "${SESSION_ID}" ]]; then
+  exit 0
+fi
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  jq -nc '{hookSpecificOutput:{hookEventName:"PostToolUse",
+    additionalContext:"LIFECYCLE RECOVERY DEGRADED: a prior Agent authorization transaction is interrupted, so this Agent return cannot be mapped to trustworthy causal authority. Do not integrate the raw result, resume or rebind the call, wait for another notification, or dispatch a duplicate. Use the exact /ulw-off reset before reactivating and dispatching any still-required role."}}'
   exit 0
 fi
 
@@ -32,6 +45,23 @@ if [[ "${tool_name}" != "Agent" ]]; then
   exit 0
 fi
 
+# A synchronous Agent PostTool wake may be the only live callback able to
+# classify its exact retained completion claim. Publish the native identity to
+# the universal lock fence before even the stall-counter write; common.sh then
+# derives a capability only when one current lifecycle/claim/message digest
+# matches. Malformed or ambiguous claims still fail closed and this hook emits
+# no recovery capsule from untrusted state.
+_publication_agent_posttool_native_id="$(json_get '.tool_response.agentId')"
+[[ -n "${_publication_agent_posttool_native_id}" ]] \
+  || _publication_agent_posttool_native_id="$(json_get '.tool_response.agent_id')"
+if [[ "$(json_get '.tool_input.run_in_background')" != "true" \
+    && "$(json_get '.tool_response.status')" != "async_launched" \
+    && "$(json_get '.tool_response.isAsync')" != "true" \
+    && "${_publication_agent_posttool_native_id}" \
+      =~ ^[A-Za-z0-9._:-]{1,128}$ ]]; then
+  export OMC_PUBLICATION_AGENT_POSTTOOL_NATIVE_ID="${_publication_agent_posttool_native_id}"
+fi
+
 # P4: Halve stall counter on agent delegation rather than full reset.
 # Full reset allowed Claude to cycle Read-Agent-Read-Agent indefinitely
 # without triggering stall detection. Halving credits the agent dispatch
@@ -43,9 +73,14 @@ _halve_stall_counter() {
   is_ultrawork_mode || return 0
   stall_counter="$(read_state "stall_counter")"
   stall_counter="${stall_counter:-0}"
+  _omc_canonical_uint_in_range \
+    "${stall_counter}" 0 999999999999999 || return 1
   write_state "stall_counter" "$(( stall_counter / 2 ))"
 }
-with_state_lock _halve_stall_counter
+_agent_lifecycle_recovery_failed=0
+if ! with_state_lock _halve_stall_counter; then
+  _agent_lifecycle_recovery_failed=1
+fi
 
 # P3: emit a structured completion capsule, not a second copy of the native
 # Agent result. PostToolUse already exposes the result to the parent context;
@@ -78,6 +113,26 @@ if [[ "${requested_description}" =~ (^|[[:space:]])\[review-rebind:([A-Za-z0-9][
   requested_dispatch_id="${BASH_REMATCH[2]}"
 fi
 
+# A PostToolUse delivery can be retried after the hook process dies. Bind its
+# one-shot completion outcome to the platform tool-use identity before removing
+# that outcome from the causal FIFO. Older clients without tool_use_id use an
+# exact-body digest; either key is stable for redelivery of the same callback.
+_agent_posttool_tool_use_id="$(json_get '.tool_use_id')"
+# POSIX ERE implementations commonly cap interval expressions at 255
+# (RE_DUP_MAX), so `{1,256}` silently fails on macOS Bash. Bound length
+# separately and keep the character-class match portable.
+if [[ -n "${_agent_posttool_tool_use_id}" \
+    && ${#_agent_posttool_tool_use_id} -le 256 \
+    && "${_agent_posttool_tool_use_id}" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+  _agent_posttool_notification_key="agent-posttool|tool:${_agent_posttool_tool_use_id}"
+else
+  _agent_posttool_body_digest="$(_omc_token_digest \
+    "${HOOK_JSON}" 2>/dev/null || true)"
+  [[ "${_agent_posttool_body_digest}" =~ ^[A-Fa-f0-9]{16,128}$ ]] \
+    || exit 0
+  _agent_posttool_notification_key="agent-posttool|body:${_agent_posttool_body_digest}"
+fi
+
 # SubagentStop records one causal outcome for every completion, including
 # ignored abandoned/missing-identity returns. Consume that one-shot row here
 # instead of selecting a historical same-agent summary. For an older in-flight
@@ -87,8 +142,10 @@ _completion_outcome_json=""
 _completion_outcomes_present=0
 _completion_outcome_rejected_reason=""
 _completion_cleanup_reconcile_failed=0
+_completion_posttool_receipt_replayed=0
 _consume_completion_outcome_unlocked() {
-  local outcomes_file bundle temp selected changed
+  local outcomes_file bundle temp selected changed receipt protected_receipt_ids
+  local receipt_replay receipt_claim existing_receipt selected_for_receipt
   local selected_generation selected_cycle selected_objective_ts
   local current_cycle current_objective_ts selected_agent selected_status
   local selected_verdict selected_revision current_plan_revision
@@ -98,13 +155,28 @@ _consume_completion_outcome_unlocked() {
   [[ -f "${outcomes_file}" ]] || return 0
   _completion_outcomes_present=1
   [[ -s "${outcomes_file}" ]] || return 0
-  bundle="$(jq -sc \
+  receipt_claim="$(omc_notification_receipt_claim_unlocked \
+    "${outcomes_file}" "${_agent_posttool_notification_key}" \
+    "agent-posttool" "${requested_agent}" "${requested_native_agent_id}" \
+    "${requested_dispatch_id}" "")" || return 1
+  existing_receipt="$(jq -c '.receipt' <<<"${receipt_claim}" \
+    2>/dev/null)" || return 1
+  if ! bundle="$(jq -sc \
     --arg agent "${requested_agent}" \
     --arg dispatch_id "${requested_dispatch_id}" \
     --arg native_id "${requested_native_agent_id}" \
+    --arg notification_key "${_agent_posttool_notification_key}" \
+    --argjson existing_receipt "${existing_receipt}" \
     --arg generation "${_OMC_ULW_CAPTURED_GENERATION:-migration}" '
+      def notification_shaped($row):
+        (($row | type) == "object")
+        and (($row | has("notification_receipt"))
+          or ($row | has("notification_kind"))
+          or ($row | has("notification_key"))
+          or ($row | has("completion_outcome")));
       def causal_outcome($row):
-        (($row.notification_receipt // false) != true);
+        (($row | type) == "object")
+        and (notification_shaped($row) | not);
       def literal_agent_match($row):
         if $agent == "" then true
         else (($row.agent_type // "") == $agent) end;
@@ -138,70 +210,146 @@ _consume_completion_outcome_unlocked() {
           | select(native_agent_match(.[$i]))
           | select((.[$i].review_dispatch_id // "") == "")
           | $i];
-      (if $dispatch_id == "" then
-         (literal_no_id_indexes) as $indexes
-         | {idx:(if $native_id != "" then ($indexes[0] // null)
-                   elif ($indexes | length) == 1 then $indexes[0]
-                   else null end),
-            retire:(if $native_id == "" and ($indexes | length) > 1
-                    then $indexes else [] end)}
-       else
-         {idx:(exact_indexes[0]
-               // literal_no_id_indexes[-1]
-               // alias_no_id_indexes[-1]
-               // null),
-          retire:[]}
-       end) as $choice
-      | ($choice.idx) as $idx
-      | {
-          selected:(if $idx == null then null else .[$idx] end),
-          changed:($idx != null or (($choice.retire | length) > 0)),
-          retired:[range(0; length) as $i
-                   | select(($choice.retire | index($i)) != null)
-                   | .[$i]],
-          remaining:[range(0; length) as $i
-                     | select($i != $idx
-                         and (($choice.retire | index($i)) == null))
-                     | .[$i]]
-        }
-    ' "${outcomes_file}" 2>/dev/null || true)"
-  [[ -n "${bundle}" ]] || return 0
+      if $existing_receipt != null then
+          {receipt_replay:true,
+           selected:($existing_receipt.completion_outcome // null),
+           changed:false,retired:[],remaining:.}
+        else
+          (if $dispatch_id == "" then
+             (literal_no_id_indexes) as $indexes
+             | {idx:(if $native_id != "" then ($indexes[0] // null)
+                       elif ($indexes | length) == 1 then $indexes[0]
+                       else null end),
+                retire:(if $native_id == "" and ($indexes | length) > 1
+                        then $indexes else [] end)}
+           else
+             {idx:(exact_indexes[0]
+                   // literal_no_id_indexes[-1]
+                   // alias_no_id_indexes[-1]
+                   // null),
+              retire:[]}
+           end) as $choice
+          | ($choice.idx) as $idx
+          | {
+              receipt_replay:false,
+              selected:(if $idx == null then null else .[$idx] end),
+              changed:($idx != null or (($choice.retire | length) > 0)),
+              retired:[range(0; length) as $i
+                       | select(($choice.retire | index($i)) != null)
+                       | .[$i]],
+              remaining:[range(0; length) as $i
+                         | select($i != $idx
+                             and (($choice.retire | index($i)) == null))
+                         | .[$i]]
+            }
+        end
+    ' "${outcomes_file}" 2>/dev/null)"; then
+    return 1
+  fi
+  [[ -n "${bundle}" ]] || return 1
+  receipt_replay="$(jq -r '.receipt_replay // false' \
+    <<<"${bundle}" 2>/dev/null || true)"
   selected="$(jq -c '.selected // empty' \
     <<<"${bundle}" 2>/dev/null || true)"
   changed="$(jq -r '.changed // false' \
     <<<"${bundle}" 2>/dev/null || true)"
+  if [[ "${receipt_replay}" == "true" ]]; then
+    # The first delivery already committed both the FIFO consumption and its
+    # replay authority. Re-emit only that nested outcome; a null receipt records
+    # an intentional legacy non-attribution and must not consume a later row or
+    # spend the parent hard-limit recovery budget again.
+    _completion_posttool_receipt_replayed=1
+  fi
   [[ -n "${selected}" || "${changed}" == "true" ]] || return 0
-  # An ignored cleanup outcome doubles as the crash-recovery journal for its
-  # exact pending/start pair. Roll that retirement forward before consuming
-  # the outcome, including ambiguous legacy no-ID rows that are discarded
-  # without attribution. If reconciliation fails, leave every outcome intact
-  # so the next callback can retry instead of advertising a blocked replacement.
-  if [[ -n "${selected}" ]]; then
-    if ! omc_reconcile_ignored_completion_cleanup_unlocked "${selected}"; then
-      _completion_cleanup_reconcile_failed=1
+  if [[ "${receipt_replay}" != "true" ]]; then
+    # An ignored cleanup outcome doubles as the crash-recovery journal for its
+    # exact pending/start pair. Roll that retirement forward before consuming
+    # the outcome, including ambiguous legacy no-ID rows that are discarded
+    # without attribution. If reconciliation fails, leave every outcome intact
+    # so the next callback can retry instead of advertising a blocked replacement.
+    if [[ -n "${selected}" ]]; then
+      if ! omc_reconcile_ignored_completion_cleanup_unlocked "${selected}"; then
+        _completion_cleanup_reconcile_failed=1
+        return 1
+      fi
+    fi
+    while IFS= read -r retired_outcome; do
+      [[ -n "${retired_outcome}" ]] || continue
+      if ! omc_reconcile_ignored_completion_cleanup_unlocked \
+          "${retired_outcome}"; then
+        _completion_cleanup_reconcile_failed=1
+        return 1
+      fi
+    done < <(jq -c '.retired[]?' <<<"${bundle}" 2>/dev/null || true)
+    # Project the compact outcome on the receipt as well as nesting it. Exact
+    # callback replay reads completion_outcome; dedicated reviewer/plan waiter
+    # recovery can still prove the lifecycle/status after the causal row is no
+    # longer eligible for another PostToolUse consumer.
+    protected_receipt_ids="$(
+      omc_completion_receipt_protected_lifecycle_ids_unlocked
+    )" || return 1
+    selected_for_receipt="${selected:-null}"
+    receipt="$(jq -nc --argjson ts "$(now_epoch)" \
+      --arg key "${_agent_posttool_notification_key}" \
+      --arg agent "${requested_agent}" \
+      --arg native_id "${requested_native_agent_id}" \
+      --arg dispatch_id "${requested_dispatch_id}" \
+      --argjson outcome "${selected_for_receipt}" '
+        ($outcome // {}) + {
+          ts:$ts,notification_receipt:true,
+          notification_kind:"agent-posttool",notification_key:$key,
+          notification_agent_type:$agent,
+          notification_native_agent_id:$native_id,
+          notification_review_dispatch_id:$dispatch_id,
+          completion_outcome:$outcome
+        }
+      ' 2>/dev/null)" || return 1
+    # Re-read the live ledger immediately before publication. Reconciliation
+    # helpers above can roll durable cleanup forward, and any receipt that has
+    # appeared since selection invalidates this callback's append authority.
+    # Only a globally unused Agent PostTool key may mint a new receipt. Count
+    # every object claiming the key, not only schema-valid receipts, so a
+    # malformed claim appearing before publication cannot be overwritten.
+    receipt_claim="$(omc_notification_receipt_claim_unlocked \
+      "${outcomes_file}" "${_agent_posttool_notification_key}" \
+      "agent-posttool" "${requested_agent}" "${requested_native_agent_id}" \
+      "${requested_dispatch_id}" "")" || return 1
+    [[ "$(jq -r '.claimed' <<<"${receipt_claim}" 2>/dev/null)" \
+        == "false" ]] || return 1
+    temp="$(mktemp "${outcomes_file}.XXXXXX")" || return 1
+    if ! jq -cr --argjson receipt "${receipt}" \
+        --argjson protected "${protected_receipt_ids}" '
+        def protected_receipt:
+          (.lifecycle_dispatch_id // "") as $id
+          | $id != "" and (($protected | index($id)) != null);
+        [.remaining[]
+          | select((.notification_receipt // false) != true)] as $causal
+        | [.remaining[]
+            | select((.notification_receipt // false) == true)] as $receipts
+        | [$receipts[] | select(protected_receipt)] as $live
+        | [$receipts[] | select(protected_receipt | not)] as $history
+        | (127 - ($live | length)) as $history_slots
+        | if $history_slots < 0 then error("live receipt cap")
+          else
+            ($history
+              | if $history_slots == 0 then []
+                elif length > $history_slots then .[-$history_slots:]
+                else . end) as $kept_history
+            | ($causal + $kept_history + $live + [$receipt])[]
+          end
+      ' <<<"${bundle}" >"${temp}" \
+        || ! mv -f "${temp}" "${outcomes_file}"; then
+      rm -f "${temp}"
       return 1
     fi
-  fi
-  while IFS= read -r retired_outcome; do
-    [[ -n "${retired_outcome}" ]] || continue
-    if ! omc_reconcile_ignored_completion_cleanup_unlocked \
-        "${retired_outcome}"; then
-      _completion_cleanup_reconcile_failed=1
-      return 1
+    if [[ "${OMC_TEST_AGENT_POSTTOOL_KILL_AFTER_RECEIPT:-0}" == "1" ]]; then
+      kill -9 "$$"
     fi
-  done < <(jq -c '.retired[]?' <<<"${bundle}" 2>/dev/null || true)
-  temp="$(mktemp "${outcomes_file}.XXXXXX")" || return 1
-  if ! jq -cr '.remaining[]' <<<"${bundle}" >"${temp}"; then
-    rm -f "${temp}"
-    return 1
   fi
-  if ! mv -f "${temp}" "${outcomes_file}"; then
-    rm -f "${temp}"
-    return 1
-  fi
-  # Publish the selected capsule only after its one-shot row was durably
-  # removed. A failed rewrite therefore cannot replay the same completion on a
-  # later, unrelated PostToolUse event.
+  # Validate and publish the selected capsule only after the atomic rewrite has
+  # replaced its causal row with exact replay authority. A crash after rename
+  # therefore re-emits this outcome instead of consuming a resumed call's next
+  # same-native FIFO row.
   if [[ -n "${selected}" ]]; then
     selected_generation="$(jq -r \
       '.ulw_enforcement_generation // "migration"' \
@@ -316,9 +464,12 @@ _find_retained_contract_pending_unlocked() {
   local pending_file line row_type row_native row_cycle row_objective_ts
   local current_cycle current_objective_ts candidate="" candidate_original
   local retry_count updated temp_file claim_id claim_ts claim_effects now
+  local row_abandoned row_abandon_reason row_last_posttool_key
+  local candidate_replays_tombstone=0 last_posttool_key persisted_rebind
   is_ultrawork_mode || return 0
   pending_file="$(session_file "pending_agents.jsonl")"
   [[ -s "${pending_file}" && ! -L "${pending_file}" ]] || return 0
+  omc_dispatch_authority_ledger_shell_safe "${pending_file}" || return 1
   current_cycle="$(read_state "review_cycle_id")"
   [[ "${current_cycle}" =~ ^[0-9]+$ ]] || current_cycle=0
   current_objective_ts="$(read_state "review_cycle_prompt_ts")"
@@ -334,8 +485,6 @@ _find_retained_contract_pending_unlocked() {
       <<<"${line}" 2>/dev/null || true)"
     [[ -z "${requested_native_agent_id}" \
         || "${row_native}" == "${requested_native_agent_id}" ]] || continue
-    [[ "$(jq -r '.review_dispatch_abandoned // false' \
-      <<<"${line}" 2>/dev/null || true)" != "true" ]] || continue
     row_cycle="$(jq -r '.objective_cycle_id // 0' \
       <<<"${line}" 2>/dev/null || true)"
     row_objective_ts="$(jq -r '.objective_prompt_ts // 0' \
@@ -346,11 +495,44 @@ _find_retained_contract_pending_unlocked() {
     (( current_objective_ts == 0 || row_objective_ts == current_objective_ts )) \
       || continue
     omc_pending_stateful_generation_current "${line}" || continue
-    [[ -z "${candidate}" ]] || return 0
+    row_abandoned="$(jq -r '.review_dispatch_abandoned // false' \
+      <<<"${line}" 2>/dev/null || true)"
+    if [[ "${row_abandoned}" == "true" ]]; then
+      row_abandon_reason="$(jq -r \
+        '.review_dispatch_abandonment_reason // empty' \
+        <<<"${line}" 2>/dev/null || true)"
+      row_last_posttool_key="$(jq -r \
+        '.terminal_contract_last_posttool_key // empty' \
+        <<<"${line}" 2>/dev/null || true)"
+      if [[ "${row_last_posttool_key}" == \
+          "${_agent_posttool_notification_key}" ]] \
+          && [[ "${row_abandon_reason}" == \
+              "terminal-contract-parent-retry-exhausted" \
+            || "${row_abandon_reason}" == "expired-completion-claim" ]]; then
+        [[ -z "${candidate}" ]] || return 1
+        candidate="${line}"
+        candidate_replays_tombstone=1
+      fi
+      continue
+    fi
+    [[ -z "${candidate}" ]] || return 1
     candidate="${line}"
   done <"${pending_file}"
   [[ -n "${candidate}" ]] || return 0
   candidate_original="${candidate}"
+  if [[ "${candidate_replays_tombstone}" -eq 1 ]]; then
+    _retained_contract_pending_json="${candidate}"
+    _retained_contract_retry_exhausted=1
+    _retained_contract_rebind_id="$(jq -r \
+      '.terminal_contract_rebind_id // empty' \
+      <<<"${candidate}" 2>/dev/null || true)"
+    if [[ "$(jq -r '.review_dispatch_abandonment_reason // empty' \
+        <<<"${candidate}" 2>/dev/null || true)" == \
+        "expired-completion-claim" ]]; then
+      _retained_contract_recovery_kind="expired-claim"
+    fi
+    return 0
+  fi
   claim_id="$(jq -r '.completion_claim_id // empty' \
     <<<"${candidate}" 2>/dev/null || true)"
   claim_ts="$(jq -r '.completion_claim_ts // 0' \
@@ -360,6 +542,11 @@ _find_retained_contract_pending_unlocked() {
   [[ "${claim_ts}" =~ ^[0-9]+$ ]] || claim_ts=0
   now="$(now_epoch)"
   [[ "${now}" =~ ^[0-9]+$ ]] || now=0
+  persisted_rebind="hard-limit-$(_omc_token_digest \
+    "${SESSION_ID}|${requested_native_agent_id}|${_agent_posttool_notification_key}" \
+    2>/dev/null | cut -c1-16)"
+  [[ "${persisted_rebind}" =~ ^hard-limit-[A-Fa-f0-9]{16}$ ]] \
+    || return 1
   if [[ -n "${claim_id}" && "${claim_effects}" == "true" ]]; then
     _retained_contract_pending_json="${candidate}"
     _retained_contract_recovery_kind="effects-complete"
@@ -371,11 +558,15 @@ _find_retained_contract_pending_unlocked() {
     _retained_contract_recovery_kind="claim-settling"
     return 0
   elif [[ -n "${claim_id}" ]]; then
-    updated="$(jq -c --argjson abandoned_ts "${now}" '
+    updated="$(jq -c --argjson abandoned_ts "${now}" \
+      --arg posttool_key "${_agent_posttool_notification_key}" \
+      --arg rebind_id "${persisted_rebind}" '
         .review_dispatch_abandoned = true
         | .review_dispatch_abandonment_reason =
             "expired-completion-claim"
         | .review_dispatch_abandoned_ts = $abandoned_ts
+        | .terminal_contract_last_posttool_key = $posttool_key
+        | .terminal_contract_rebind_id = $rebind_id
       ' <<<"${candidate}" 2>/dev/null || true)"
     _retained_contract_retry_exhausted=1
     _retained_contract_recovery_kind="expired-claim"
@@ -383,20 +574,35 @@ _find_retained_contract_pending_unlocked() {
     retry_count="$(jq -r '.terminal_contract_retry_count // 0' \
       <<<"${candidate}" 2>/dev/null || true)"
     [[ "${retry_count}" =~ ^[0-9]+$ ]] || retry_count=0
+    last_posttool_key="$(jq -r \
+      '.terminal_contract_last_posttool_key // empty' \
+      <<<"${candidate}" 2>/dev/null || true)"
+    if [[ "${last_posttool_key}" == \
+        "${_agent_posttool_notification_key}" ]]; then
+      _retained_contract_pending_json="${candidate}"
+      return 0
+    fi
     retry_count=$((retry_count + 1))
     if (( retry_count >= 3 )); then
     updated="$(jq -c --argjson count "${retry_count}" \
-      --argjson abandoned_ts "${now}" '
+      --argjson abandoned_ts "${now}" \
+      --arg posttool_key "${_agent_posttool_notification_key}" \
+      --arg rebind_id "${persisted_rebind}" '
         .terminal_contract_retry_count = $count
         | .review_dispatch_abandoned = true
         | .review_dispatch_abandonment_reason =
             "terminal-contract-parent-retry-exhausted"
         | .review_dispatch_abandoned_ts = $abandoned_ts
+        | .terminal_contract_last_posttool_key = $posttool_key
+        | .terminal_contract_rebind_id = $rebind_id
       ' <<<"${candidate}" 2>/dev/null || true)"
     _retained_contract_retry_exhausted=1
     else
       updated="$(jq -c --argjson count "${retry_count}" \
-        '.terminal_contract_retry_count = $count' \
+        --arg posttool_key "${_agent_posttool_notification_key}" '
+        .terminal_contract_retry_count = $count
+        | .terminal_contract_last_posttool_key = $posttool_key
+      ' \
         <<<"${candidate}" 2>/dev/null || true)"
     fi
   fi
@@ -420,19 +626,23 @@ _find_retained_contract_pending_unlocked() {
     rm -f "${temp_file}"
     return 1
   }
+  if [[ "${OMC_TEST_AGENT_POSTTOOL_KILL_AFTER_RETRY_WRITE:-0}" == "1" ]]; then
+    kill -9 "$$"
+  fi
   _retained_contract_pending_json="${updated}"
   if [[ "${_retained_contract_retry_exhausted}" -eq 1 ]]; then
-    _retained_contract_rebind_id="hard-limit-$(_omc_token_digest \
-      "${requested_native_agent_id}|$(now_epoch)" 2>/dev/null \
-      | cut -c1-16)"
+    _retained_contract_rebind_id="${persisted_rebind}"
   fi
 }
 if [[ "${agent_return_is_background_launch}" -ne 1 \
     && -z "${_completion_outcome_json}" \
+    && "${_completion_posttool_receipt_replayed}" -ne 1 \
     && "${_completion_cleanup_reconcile_failed}" -ne 1 ]] \
-    && [[ -n "$(omc_enforced_terminal_contract_kind \
+    && [[ -n "$(omc_completion_recovery_kind \
       "${requested_agent}" 2>/dev/null || true)" ]]; then
-  with_state_lock _find_retained_contract_pending_unlocked || true
+  if ! with_state_lock _find_retained_contract_pending_unlocked; then
+    _agent_lifecycle_recovery_failed=1
+  fi
   if [[ -n "${_retained_contract_pending_json}" ]]; then
     _retained_native_id="$(jq -r '.native_agent_id // empty' \
       <<<"${_retained_contract_pending_json}" 2>/dev/null || true)"
@@ -455,7 +665,9 @@ if [[ "${agent_return_is_background_launch}" -ne 1 \
 fi
 
 if [[ "${_completion_cleanup_reconcile_failed}" -eq 1 ]]; then
-  agent_return_recovery=" LIFECYCLE RECOVERY DEGRADED: the durable cleanup journal could not safely reconcile its exact pending/start artifacts, so it was left unconsumed. Do not integrate the raw result, wait for another notification, resume or rebind that call, or dispatch a duplicate. Re-evaluate the current lifecycle state and retry journal convergence; if it still fails, surface the concrete hook/state error instead of promising automatic resume."
+  agent_return_recovery=" LIFECYCLE RECOVERY DEGRADED: the completion-outcome ledger or its durable cleanup journal could not be parsed and reconciled safely, so it was left unconsumed. Do not integrate the raw result, wait for another notification, resume or rebind that call, or dispatch a duplicate. Re-evaluate the current lifecycle state and retry journal convergence; if it still fails, surface the concrete hook/state error instead of promising automatic resume."
+elif [[ "${_agent_lifecycle_recovery_failed}" -eq 1 ]]; then
+  agent_return_recovery=" LIFECYCLE RECOVERY DEGRADED: the exact Agent completion authority, retained recovery row, or state-lock barrier could not be resolved uniquely, so no recovery action was authorized. Do not integrate the raw result, wait for another notification, resume or rebind that call, or dispatch a duplicate. Inspect and reconcile the retained lifecycle state before continuing."
 fi
 
 latest_summary=""

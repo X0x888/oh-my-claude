@@ -305,7 +305,7 @@ When in doubt, copy the frontmatter shape from an existing reviewer of the same 
 
 **FINDINGS_JSON contract (finding-emitting reviewers only — those that surface defects/gaps with severity):**
 
-1. Add the contract instruction to the agent's `.md` file (model emits a single-line `FINDINGS_JSON: [...]` block immediately before the `VERDICT:` line).
+1. Add the contract instruction to the agent's `.md` file (model emits a single-line `FINDINGS_JSON: [...]` block immediately before the optional dispatch ID and final `VERDICT:`; if another mandatory terminal metadata line applies, such as the Definition-aware excellence review's `QUALITY_REVIEW_JSON`, document that ordering explicitly).
 2. Add the agent to the contract-presence regression net in `tests/test-findings-json.sh`.
 3. If the agent's findings should feed the discovered-scope gate, add it to `discovered_scope_capture_targets` in `bundle/dot-claude/skills/autowork/scripts/common.sh`.
 4. Document the agent in AGENTS.md under "Structured FINDINGS_JSON contract (v1.28.0)".

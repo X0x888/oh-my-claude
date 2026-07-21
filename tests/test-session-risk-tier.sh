@@ -108,6 +108,15 @@ write_state "task_risk_tier" "low"
 printf '{"findings":[]}' >"$(session_file "findings.json")"
 assert_eq "B4 empty findings array → no escalation" "low" "$(current_session_risk_tier)"
 
+fresh_session "B5"
+write_state "task_risk_tier" "low"
+printf '{"findings":[{"severity":"low"}],"padding":1\0}\n' \
+  >"$(session_file "findings.json")"
+assert_eq "B5 raw-NUL findings authority fails into strict risk" \
+  "high" "$(current_session_risk_tier)"
+assert_eq "B5 corrupt findings factor is explicit" \
+  "invalid_findings_authority" "$(read_state "session_risk_factors")"
+
 # ---------------------------------------------------------------
 # Part C: escalator 2 — edited-surface regex
 # ---------------------------------------------------------------
@@ -133,6 +142,14 @@ write_state "task_risk_tier" "low"
 # author.go contains "author" but not the bounded auth keyword
 printf '%s\n' "src/blog/author.go" >"$(session_file "edited_files.log")"
 assert_eq "C4 'author' substring does NOT escalate (bounded match)" "low" "$(current_session_risk_tier)"
+
+fresh_session "C5"
+write_state "task_risk_tier" "low"
+printf 'src/blog/author.go\0\n' >"$(session_file "edited_files.log")"
+assert_eq "C5 raw-NUL edit authority fails into strict risk" \
+  "high" "$(current_session_risk_tier)"
+assert_eq "C5 corrupt edit factor is explicit" \
+  "invalid_edited_files_authority" "$(read_state "session_risk_factors")"
 
 # ---------------------------------------------------------------
 # Part D: escalator 3 — verify confidence
@@ -186,6 +203,16 @@ write_state "task_risk_tier" "low"
   printf '{"id":"S3","status":"shipped"}\n'
 } >"$(session_file "discovered_scope.jsonl")"
 assert_eq "E3 3 non-pending items → no escalation" "low" "$(current_session_risk_tier)"
+
+fresh_session "E4"
+write_state "task_risk_tier" "low"
+printf '{"id":"S1","status":"shipped","padding":1\0}\n' \
+  >"$(session_file "discovered_scope.jsonl")"
+assert_eq "E4 raw-NUL discovered scope fails into strict risk" \
+  "high" "$(current_session_risk_tier)"
+assert_eq "E4 corrupt scope factor is explicit" \
+  "invalid_discovered_scope_authority" \
+  "$(read_state "session_risk_factors")"
 
 # ---------------------------------------------------------------
 # Part F: de-escalation — medium + all-docs edits

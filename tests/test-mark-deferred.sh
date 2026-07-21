@@ -12,7 +12,8 @@
 # Coverage:
 #   1. Empty / whitespace-only reason rejected (exit 2)
 #   2. Missing SESSION_ID + no discoverable session rejected (exit 2)
-#   2b. SESSION_ID unset but session discoverable → fallback works (exit 0)
+#   2b. SESSION_ID unset but current-project session discoverable → works
+#   2c. SESSION_ID unset with only a foreign-project session → rejected
 #   3. Missing scope file rejected (exit 2)
 #   4. No pending rows is a no-op (exit 0)
 #   5. Pending rows flipped to deferred with reason + ts_updated
@@ -115,15 +116,15 @@ assert_eq "missing session exit 2" "2" "${rc}"
 assert_contains "session_id message" "no active session" "${out}"
 
 # ===========================================================================
-# Test 3b: SESSION_ID unset but session discoverable → fallback succeeds
-# Proves the discover_latest_session fallback introduced for the /mark-deferred
-# skill invocation path (where hooks don't inject SESSION_ID via env).
+# Test 3b: SESSION_ID unset but current-project session discoverable succeeds.
+# Manual mutators may discover authority only through an exact cwd match.
 # ===========================================================================
 printf 'SESSION_ID unset but session discoverable — fallback works:\n'
 export SESSION_ID="test-discover-fallback"
 ensure_session_dir
 scope_fb="$(session_file "discovered_scope.jsonl")"
 printf '%s\n' '{"id":"fb00001","source":"metis","summary":"fallback test","severity":"high","status":"pending","reason":"","ts":"100"}' > "${scope_fb}"
+jq -n --arg cwd "${PWD}" '{cwd:$cwd}' >"$(session_file "${STATE_JSON}")"
 set +e
 out="$(env -u SESSION_ID bash "${MARK_DEFERRED}" "requires specialist — testing discover_latest_session fallback" 2>&1)"; rc=$?
 set -e
@@ -131,6 +132,23 @@ assert_eq "discover fallback exit 0" "0" "${rc}"
 assert_contains "discover fallback: row deferred" "Deferred 1 pending finding" "${out}"
 post_status_fb="$(jq -r '.status' "${scope_fb}")"
 assert_eq "discover fallback: row flipped to deferred" "deferred" "${post_status_fb}"
+
+# ===========================================================================
+# Test 3c: an unrelated newest session cannot be adopted for mutation
+# ===========================================================================
+printf 'SESSION_ID unset with only a foreign-project session is rejected:\n'
+export SESSION_ID="test-foreign-fallback"
+ensure_session_dir
+foreign_scope="$(session_file "discovered_scope.jsonl")"
+printf '%s\n' '{"id":"foreign1","source":"metis","summary":"foreign","severity":"high","status":"pending","reason":"","ts":"100"}' >"${foreign_scope}"
+jq -n '{cwd:"/definitely/a/different/project"}' >"$(session_file "${STATE_JSON}")"
+foreign_before="$(<"${foreign_scope}")"
+set +e
+out="$(env -u SESSION_ID bash "${MARK_DEFERRED}" "must not cross projects" 2>&1)"; rc=$?
+set -e
+assert_eq "foreign fallback exit 2" "2" "${rc}"
+assert_contains "foreign fallback message" "no active session" "${out}"
+assert_eq "foreign session remains byte-identical" "${foreign_before}" "$(<"${foreign_scope}")"
 
 # ===========================================================================
 # Test 4: missing scope file rejected (exit 2 — nothing to do)

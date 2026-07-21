@@ -76,6 +76,23 @@ read_st() {
     "${TEST_HOME}/.claude/quality-pack/state/${sid}/session_state.json" 2>/dev/null || true
 }
 
+test_token_digest() {
+  local token="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s' "${token}" \
+      | shasum -a 256 2>/dev/null \
+      | awk '{print substr($1,1,24)}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "${token}" \
+      | sha256sum 2>/dev/null \
+      | awk '{print substr($1,1,24)}'
+  else
+    printf '%s' "${token}" \
+      | cksum 2>/dev/null \
+      | awk '{printf "%08x-%s", $1, $2}'
+  fi
+}
+
 set_agent_first_satisfied() {
   local sid="$1" agent="${2:-quality-planner}"
   local state_dir="${TEST_HOME}/.claude/quality-pack/state/${sid}"
@@ -329,6 +346,10 @@ sim_edit "s1" "/src/auth.ts"
 
 assert_not_empty "mark-edit: last_edit_ts set" "$(read_st "s1" "last_edit_ts")"
 assert_eq "mark-edit: guard counters reset" "0" "$(read_st "s1" "stop_guard_blocks")"
+assert_eq "mark-edit: missing edit revision starts at one" \
+  "1" "$(read_st "s1" "edit_revision")"
+assert_eq "mark-edit: missing code counter starts at one" \
+  "1" "$(read_st "s1" "code_edit_count")"
 
 # Verify edited_files.log was written
 edited_log="${TEST_HOME}/.claude/quality-pack/state/s1/edited_files.log"
@@ -338,6 +359,31 @@ else
   printf '  FAIL: edited_files.log should contain /src/auth.ts\n' >&2
   fail=$((fail + 1))
 fi
+teardown_test
+
+# Numeric session fields are untrusted strings. A poisoned revision/counter
+# must neither execute through Bash arithmetic nor wrap/reset to a falsely
+# fresh generation. mark-edit saturates these causal clocks conservatively.
+setup_test
+init_session "s1numeric"
+numeric_marker="${TEST_HOME}/mark-edit-arithmetic-executed"
+jq --arg poison "x[\$(touch ${numeric_marker})]" '
+  .edit_revision=$poison
+  | .prompt_revision="08"
+  | .code_edit_count=$poison
+' "${TEST_HOME}/.claude/quality-pack/state/s1numeric/session_state.json" \
+  >"${TEST_HOME}/.claude/quality-pack/state/s1numeric/session_state.json.tmp"
+mv "${TEST_HOME}/.claude/quality-pack/state/s1numeric/session_state.json.tmp" \
+  "${TEST_HOME}/.claude/quality-pack/state/s1numeric/session_state.json"
+sim_edit "s1numeric" "/src/numeric.ts"
+assert_eq "mark-edit: poisoned revision becomes a fail-closed sentinel" \
+  "overflow" "$(read_st "s1numeric" "edit_revision")"
+assert_eq "mark-edit: poisoned unique counter saturates conservatively" \
+  "999999999999999999" "$(read_st "s1numeric" "code_edit_count")"
+assert_eq "mark-edit: malformed prompt revision is never normalized into authority" \
+  "" "$(read_st "s1numeric" "last_edit_prompt_revision")"
+assert_eq "mark-edit: poisoned arithmetic did not execute" "0" \
+  "$([[ -e "${numeric_marker}" ]] && printf 1 || printf 0)"
 teardown_test
 
 
@@ -353,6 +399,102 @@ assert_eq "verify(pass): outcome is passed" "passed" "$(read_st "s2" "last_verif
 assert_eq "verify(pass): command recorded" "npm test" "$(read_st "s2" "last_verify_cmd")"
 assert_not_empty "verify(pass): confidence recorded" "$(read_st "s2" "last_verify_confidence")"
 assert_not_empty "verify(pass): method recorded" "$(read_st "s2" "last_verify_method")"
+teardown_test
+
+# Decoded NUL bytes may not join adversarial output fragments into a passing
+# count/outcome signal. The clean start remains available for an authentic
+# redelivery; the poisoned completion publishes and consumes nothing.
+setup_test
+init_session "s2-nul"
+nul_verify_start="$(jq -nc '{
+  session_id:"s2-nul",tool_name:"Bash",tool_use_id:"s2-nul-verify",
+  tool_input:{command:"pytest -q"},tool_response:""
+}')"
+nul_verify_result="$(jq -nc '{
+  session_id:"s2-nul",tool_name:"Bash",tool_use_id:"s2-nul-verify",
+  tool_input:{command:"pytest -q"},
+  tool_response:("1" + "\u0000" + " passed")
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${nul_verify_start}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${nul_verify_result}"
+assert_empty "verify(NUL output): no pass outcome is minted" \
+  "$(read_st "s2-nul" "last_verify_outcome")"
+assert_eq "verify(NUL output): no receipt is minted" "0" \
+  "$([[ -e "${TEST_HOME}/.claude/quality-pack/state/s2-nul/verification_receipts.jsonl" ]] \
+    && wc -l \
+      <"${TEST_HOME}/.claude/quality-pack/state/s2-nul/verification_receipts.jsonl" \
+      | tr -d '[:space:]' || printf 0)"
+assert_eq "verify(NUL output): clean causal start is not consumed" "1" \
+  "$(find "${TEST_HOME}/.claude/quality-pack/state/s2-nul/.verification-starts" \
+      -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l | tr -d '[:space:]')"
+teardown_test
+
+# Persisted one-shot start snapshots must validate every causal coordinate
+# before jq raw output crosses into Bash. Each mutation below would normalize
+# to the authentic start under the old post-projection checks.
+for snapshot_poison in tool_use_id tool_name code_revision input_digest; do
+  setup_test
+  snapshot_sid="s2-start-${snapshot_poison}"
+  init_session "${snapshot_sid}"
+  snapshot_payload="$(jq -nc --arg sid "${snapshot_sid}" \
+    --arg id "${snapshot_sid}-verify" '{
+      session_id:$sid,tool_name:"Bash",tool_use_id:$id,
+      tool_input:{command:"pytest -q"},tool_response:"2 passed"
+    }')"
+  run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${snapshot_payload}"
+  snapshot_file="$(find \
+    "${TEST_HOME}/.claude/quality-pack/state/${snapshot_sid}/.verification-starts" \
+    -maxdepth 1 -type f -name '*.json' -print -quit)"
+  case "${snapshot_poison}" in
+    tool_use_id)
+      jq '.tool_use_id += "\u0000"' "${snapshot_file}" \
+        >"${snapshot_file}.tmp"
+      ;;
+    tool_name)
+      jq '.tool_name += "\u0000"' "${snapshot_file}" \
+        >"${snapshot_file}.tmp"
+      ;;
+    code_revision)
+      jq '.code_revision = ((.code_revision | tostring) + "\u0000")' \
+        "${snapshot_file}" >"${snapshot_file}.tmp"
+      ;;
+    input_digest)
+      jq '.input_digest += "\u0000"' "${snapshot_file}" \
+        >"${snapshot_file}.tmp"
+      ;;
+  esac
+  mv "${snapshot_file}.tmp" "${snapshot_file}"
+  run_hook "${HOOK_DIR}/record-verification.sh" "${snapshot_payload}"
+  assert_empty "verify(start ${snapshot_poison}): no outcome is minted" \
+    "$(read_st "${snapshot_sid}" "last_verify_outcome")"
+  assert_eq "verify(start ${snapshot_poison}): no receipt is minted" "0" \
+    "$([[ -e "${TEST_HOME}/.claude/quality-pack/state/${snapshot_sid}/verification_receipts.jsonl" ]] \
+      && wc -l \
+        <"${TEST_HOME}/.claude/quality-pack/state/${snapshot_sid}/verification_receipts.jsonl" \
+        | tr -d '[:space:]' || printf 0)"
+  teardown_test
+done
+
+# User-authorized wrapper patterns use canonical config precedence. A later
+# malformed duplicate cannot erase the last valid row, and project config
+# cannot broaden proof admission with a catch-all.
+setup_test
+{
+  printf 'custom_verify_patterns=trusted-wrapper\n'
+  printf 'custom_verify_patterns=[\n'
+} > "${TEST_HOME}/.claude/oh-my-claude.conf"
+mkdir -p "${TEST_HOME}/work/.claude"
+printf 'custom_verify_patterns=.*\n' \
+  > "${TEST_HOME}/work/.claude/oh-my-claude.conf"
+cd "${TEST_HOME}/work"
+init_session "s2-custom"
+sim_verify "s2-custom" "trusted-wrapper --ci" "Checks: 2 passed"
+assert_eq "verify(custom wrapper): trusted user matcher records proof" \
+  "passed" "$(read_st "s2-custom" "last_verify_outcome")"
+init_session "s2-project-catchall"
+sim_verify "s2-project-catchall" "plain-command --ci" "command succeeded"
+assert_empty "verify(custom wrapper): project catch-all is ignored" \
+  "$(read_st "s2-project-catchall" "last_verify_ts")"
 teardown_test
 
 
@@ -490,12 +632,197 @@ assert_eq "verify(causal): post-edit rerun is accepted" "2" \
 assert_eq "verify(causal): post-edit rerun updates command" "pytest -q" \
   "$(read_st "s4a" "last_verify_cmd")"
 
+# A matching tool-use ID/name is not enough: completion arguments must be
+# byte-equivalent after canonical JSON normalization to those seen at start.
+input_start_payload="$(jq -nc '{
+  session_id:"s4a",tool_name:"Bash",tool_use_id:"s4a-input-bound",
+  tool_input:{command:"npm test",timeout:120000},
+  tool_response:"Tests: 99 passed, 0 failed"
+}')"
+input_changed_payload="$(jq -c '
+  .tool_input.command="npm test -- --runDifferentSuite"
+' <<<"${input_start_payload}")"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${input_start_payload}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${input_changed_payload}"
+assert_eq "verify(causal): changed completion input fails closed" "tool_input_changed" \
+  "$(read_st "s4a" "last_stale_verify_reason")"
+assert_eq "verify(causal): changed completion input preserves accepted command" "pytest -q" \
+  "$(read_st "s4a" "last_verify_cmd")"
+
+# A completion from the prior objective is stale even when Definition mode is
+# disabled and no code revision changed between the two prompts.
+cycle_state="${TEST_HOME}/.claude/quality-pack/state/s4a/session_state.json"
+jq '.review_cycle_id="20"' "${cycle_state}" >"${cycle_state}.tmp" \
+  && mv "${cycle_state}.tmp" "${cycle_state}"
+cycle_payload="$(jq -nc '{
+  session_id:"s4a",tool_name:"Bash",tool_use_id:"s4a-cycle-bound",
+  tool_input:{command:"npm test -- --runCycleSuite"},
+  tool_response:"Tests: 99 passed, 0 failed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${cycle_payload}"
+jq '.review_cycle_id="21"' "${cycle_state}" >"${cycle_state}.tmp" \
+  && mv "${cycle_state}.tmp" "${cycle_state}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${cycle_payload}"
+assert_eq "verify(causal): prior-objective completion fails closed" \
+  "review_cycle_changed" "$(read_st "s4a" "last_stale_verify_reason")"
+assert_eq "verify(causal): prior-objective completion preserves accepted command" \
+  "pytest -q" "$(read_st "s4a" "last_verify_cmd")"
+
+# The causal snapshot itself must remain a regular file beneath a regular
+# directory. Replacing it with a symlink cannot smuggle start authority.
+unsafe_payload="$(jq -nc '{
+  session_id:"s4a",tool_name:"Bash",tool_use_id:"s4a-unsafe-start",
+  tool_input:{command:"npm test -- --runInBand"},
+  tool_response:"Tests: 99 passed, 0 failed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${unsafe_payload}"
+unsafe_sidecar="$(find \
+  "${TEST_HOME}/.claude/quality-pack/state/s4a/.verification-starts" \
+  -type f -name '*.json' -print -quit)"
+cp "${unsafe_sidecar}" "${TEST_HOME}/unsafe-verification-start.json"
+rm -f "${unsafe_sidecar}"
+ln -s "${TEST_HOME}/unsafe-verification-start.json" "${unsafe_sidecar}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${unsafe_payload}"
+assert_eq "verify(causal): symlink start snapshot fails closed" "invalid_start_snapshot" \
+  "$(read_st "s4a" "last_stale_verify_reason")"
+assert_eq "verify(causal): unsafe start preserves accepted command" "pytest -q" \
+  "$(read_st "s4a" "last_verify_cmd")"
+
 # Replaying a completion cannot reuse consumed dispatch evidence.
+stale_count_marker="${TEST_HOME}/stale-count-arithmetic-executed"
+jq --arg poison "x[\$(touch ${stale_count_marker})]" \
+  '.stale_verify_count=$poison' "${cycle_state}" >"${cycle_state}.tmp" \
+  && mv "${cycle_state}.tmp" "${cycle_state}"
 run_hook "${HOOK_DIR}/record-verification.sh" "${stale_payload}"
 assert_eq "verify(causal): missing snapshot fails closed" "missing_start_snapshot" \
   "$(read_st "s4a" "last_stale_verify_reason")"
 assert_eq "verify(causal): replay does not advance accepted revision" "2" \
   "$(read_st "s4a" "last_verify_code_revision")"
+assert_eq "verify(causal): poisoned stale counter saturates conservatively" \
+  "999999999999999999" "$(read_st "s4a" "stale_verify_count")"
+assert_eq "verify(causal): poisoned stale counter did not execute" "0" \
+  "$([[ -e "${stale_count_marker}" ]] && printf 1 || printf 0)"
+
+# The live causal clock and the consumed snapshot are both untrusted state.
+# Malformed numeric text must reject the result before JSON-number publication
+# and must never be evaluated as a Bash arithmetic expression.
+numeric_verify_payload="$(jq -nc '{
+  session_id:"s4a",tool_name:"Bash",tool_use_id:"s4a-numeric-state",
+  tool_input:{command:"npm test -- --runNumericState"},
+  tool_response:"Tests: 99 passed, 0 failed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${numeric_verify_payload}"
+numeric_verify_marker="${TEST_HOME}/verify-current-arithmetic-executed"
+numeric_verify_poison="x[\$(touch ${numeric_verify_marker})]"
+jq --arg poison "${numeric_verify_poison}" \
+  '.last_code_edit_revision=$poison' "${cycle_state}" >"${cycle_state}.tmp" \
+  && mv "${cycle_state}.tmp" "${cycle_state}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${numeric_verify_payload}"
+assert_eq "verify(causal): malformed live revision fails closed" \
+  "invalid_current_numeric_state" "$(read_st "s4a" "last_stale_verify_reason")"
+assert_eq "verify(causal): malformed live revision preserves accepted command" \
+  "pytest -q" "$(read_st "s4a" "last_verify_cmd")"
+assert_eq "verify(causal): malformed live revision did not execute" "0" \
+  "$([[ -e "${numeric_verify_marker}" ]] && printf 1 || printf 0)"
+teardown_test
+
+
+# -------------------------------------------------------
+# Test 4b: verification start authority is one-shot and path-safe
+# -------------------------------------------------------
+setup_test
+init_session "s4b"
+one_shot_payload="$(jq -nc '{
+  session_id:"s4b",tool_name:"Bash",tool_use_id:"s4b-one-shot",
+  tool_input:{command:"npm test -- --runReplayOnce"},
+  tool_response:"Tests: 7 passed, 0 failed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${one_shot_payload}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${one_shot_payload}"
+one_shot_receipts="${TEST_HOME}/.claude/quality-pack/state/s4b/verification_receipts.jsonl"
+assert_eq "verify(authority): first completion is accepted" \
+  "npm test -- --runReplayOnce" "$(read_st "s4b" "last_verify_cmd")"
+assert_eq "verify(authority): first completion mints exactly one receipt" "1" \
+  "$(jq -s '[.[] | select(.tool_use_id == "s4b-one-shot")] | length' \
+    "${one_shot_receipts}" 2>/dev/null || printf '0')"
+
+# The public sidecar pathname was atomically consumed before publication. An
+# identical duplicate PostTool envelope has no authority and cannot append the
+# same evidence a second time.
+run_hook "${HOOK_DIR}/record-verification.sh" "${one_shot_payload}"
+assert_eq "verify(authority): successful completion replay fails closed" \
+  "missing_start_snapshot" "$(read_st "s4b" "last_stale_verify_reason")"
+assert_eq "verify(authority): successful completion replay mints no receipt" "1" \
+  "$(jq -s '[.[] | select(.tool_use_id == "s4b-one-shot")] | length' \
+    "${one_shot_receipts}" 2>/dev/null || printf '0')"
+assert_eq "verify(authority): consumed private nodes are removed" "0" \
+  "$(find "${TEST_HOME}/.claude/quality-pack/state/s4b/.verification-starts" \
+    -mindepth 1 -name '.verification-consumed.*' 2>/dev/null \
+    | wc -l | tr -d '[:space:]')"
+
+# A failed atomic rename is a hard rejection: no result state or receipt is
+# published from a snapshot that remains at its public lookup pathname.
+consume_fail_payload="$(jq -nc '{
+  session_id:"s4b",tool_name:"Bash",tool_use_id:"s4b-consume-fail",
+  tool_input:{command:"pytest -q tests/consume_fail.py"},
+  tool_response:"1 passed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${consume_fail_payload}"
+consume_fail_sidecar="$(find \
+  "${TEST_HOME}/.claude/quality-pack/state/s4b/.verification-starts" \
+  -maxdepth 1 -type f -name '*.json' -print -quit)"
+printf '%s' "${consume_fail_payload}" \
+  | env OMC_TEST_VERIFICATION_CONSUME_RENAME_FAIL=1 \
+    bash "${HOOK_DIR}/record-verification.sh" 2>/dev/null || true
+assert_eq "verify(authority): consume rename failure is explicit" \
+  "start_snapshot_consume_failed" \
+  "$(read_st "s4b" "last_stale_verify_reason")"
+assert_eq "verify(authority): consume failure preserves accepted result" \
+  "npm test -- --runReplayOnce" "$(read_st "s4b" "last_verify_cmd")"
+assert_eq "verify(authority): consume failure publishes no receipt" "0" \
+  "$(jq -s '[.[] | select(.tool_use_id == "s4b-consume-fail")] | length' \
+    "${one_shot_receipts}" 2>/dev/null || printf '0')"
+if [[ -n "${consume_fail_sidecar}" && -f "${consume_fail_sidecar}" \
+    && ! -L "${consume_fail_sidecar}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: verify(authority): failed rename must not parse or remove public authority\n' >&2
+  fail=$((fail + 1))
+fi
+teardown_test
+
+setup_test
+init_session "s4c"
+foreign_starts="${TEST_HOME}/foreign-verification-starts"
+starts_boundary="${TEST_HOME}/.claude/quality-pack/state/s4c/.verification-starts"
+mkdir -p "${foreign_starts}"
+printf 'foreign sentinel\n' >"${foreign_starts}/sentinel"
+ln -s "${foreign_starts}" "${starts_boundary}"
+foreign_payload="$(jq -nc '{
+  session_id:"s4c",tool_name:"Bash",tool_use_id:"s4c-foreign-dir",
+  tool_input:{command:"npm test"},tool_response:"Tests: 3 passed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${foreign_payload}"
+assert_eq "verify(authority): foreign symlink start directory stays a symlink" \
+  "yes" "$([[ -L "${starts_boundary}" ]] && printf 'yes' || printf 'no')"
+assert_eq "verify(authority): foreign symlink directory receives no snapshot" "1" \
+  "$(find "${foreign_starts}" -mindepth 1 -maxdepth 1 \
+    | wc -l | tr -d '[:space:]')"
+assert_eq "verify(authority): rejected foreign start creates no result" "" \
+  "$(read_st "s4c" "last_verify_cmd")"
+
+rm -f "${starts_boundary}"
+printf 'not a directory\n' >"${starts_boundary}"
+non_dir_before="$(cksum "${starts_boundary}")"
+non_dir_payload="$(jq -nc '{
+  session_id:"s4c",tool_name:"Bash",tool_use_id:"s4c-nondirectory",
+  tool_input:{command:"pytest -q"},tool_response:"2 passed"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${non_dir_payload}"
+assert_eq "verify(authority): non-directory start boundary is unchanged" \
+  "${non_dir_before}" "$(cksum "${starts_boundary}")"
+assert_eq "verify(authority): non-directory boundary creates no result" "" \
+  "$(read_st "s4c" "last_verify_cmd")"
 teardown_test
 
 
@@ -1546,31 +1873,17 @@ jq '.review_cycle_prompt_ts=.last_user_prompt_ts
     | .review_cycle_broad_scope="0"' \
   "${state_file}" >"${state_file}.tmp" && mv "${state_file}.tmp" "${state_file}"
 
-cas_shim_dir="${TEST_HOME}/cas-shim"
 cas_ready="${TEST_HOME}/cas-ready"
 cas_release="${TEST_HOME}/cas-release"
 cas_output="${TEST_HOME}/cas-stop-output"
-cas_edit_log="${TEST_HOME}/.claude/quality-pack/state/su5c/edited_files.log"
-mkdir -p "${cas_shim_dir}"
-printf '%s\n' \
-  '#!/bin/sh' \
-  'if [ "${3:-}" = "${OMC_CAS_TEST_LOG:-}" ]; then' \
-  '  /usr/bin/touch "${OMC_CAS_TEST_READY}"' \
-  '  while [ ! -f "${OMC_CAS_TEST_RELEASE}" ]; do /bin/sleep 0.01; done' \
-  'fi' \
-  'exec /usr/bin/tail "$@"' \
-  >"${cas_shim_dir}/tail"
-chmod +x "${cas_shim_dir}/tail"
 
 cas_message="$(structured_closeout "su5c" "Updated /src/before-stop.ts and validated it.")"
 cas_payload="$(jq -nc --arg s "su5c" --arg m "${cas_message}" \
   '{session_id:$s,last_assistant_message:$m}')"
 (
   printf '%s' "${cas_payload}" \
-    | env PATH="${cas_shim_dir}:${PATH}" \
-      OMC_CAS_TEST_LOG="${cas_edit_log}" \
-      OMC_CAS_TEST_READY="${cas_ready}" \
-      OMC_CAS_TEST_RELEASE="${cas_release}" \
+    | env OMC_TEST_STOP_PATH_SCAN_READY_FILE="${cas_ready}" \
+      OMC_TEST_STOP_PATH_SCAN_RELEASE_FILE="${cas_release}" \
       OMC_GATE_LEVEL=basic \
       OMC_NO_DEFER_MODE=off \
       OMC_INFERRED_CONTRACT=off \
@@ -1814,21 +2127,24 @@ teardown_test
 # -------------------------------------------------------
 printf '\nLow-confidence verification:\n'
 
-# Sequence LC: shellcheck-only verification (confidence=30) should NOT
-# satisfy the verify gate at default threshold (40). The user must run
-# a real test suite.
+# Sequence LC: a passive browser observation on a non-UI edit (confidence=25)
+# should NOT satisfy the verify gate at default threshold (40). The user must
+# run a real test suite.
 setup_test
 init_session "slc"
 sim_edit "slc" "/src/app.ts"
 
-# Verify with shellcheck — scores 30 (framework keyword only, no output signals)
-sim_verify "slc" "shellcheck src/app.ts" ""
+# A content-bearing DOM snapshot is a passed observation, but without a UI
+# edit it remains below the coding verification threshold.
+sim_mcp_verify "slc" \
+  "mcp__plugin_playwright_playwright__browser_snapshot" \
+  "DOM content: static source"
 
 # Review passes
 sim_review "slc" "Looks clean.
 VERDICT: CLEAN"
 
-# Stop should block because confidence (30) < threshold (40)
+# Stop should block because confidence (25) < threshold (40).
 out="$(sim_stop "slc")"
 assert_contains "seq-LC: low-confidence blocks" '"decision":"block"' "${out}"
 assert_contains "seq-LC: mentions low confidence" "low confidence" "${out}"
@@ -1871,11 +2187,11 @@ sim_mcp_verify "smv3" "mcp__plugin_playwright_playwright__browser_network_reques
 assert_eq "mcp-v3: 401 = failed" "failed" "$(read_st "smv3" "last_verify_outcome")"
 teardown_test
 
-# Test MCP-V4: empty snapshot = passed (but low confidence, gate blocks)
+# Test MCP-V4: absent snapshot result is a failed observation
 setup_test
 init_session "smv4"
 sim_mcp_verify "smv4" "mcp__plugin_playwright_playwright__browser_snapshot" ""
-assert_eq "mcp-v4: empty output = passed" "passed" "$(read_st "smv4" "last_verify_outcome")"
+assert_eq "mcp-v4: empty output = failed" "failed" "$(read_st "smv4" "last_verify_outcome")"
 # Without UI context, base confidence should be 25 (below threshold)
 assert_eq "mcp-v4: low confidence" "25" "$(read_st "smv4" "last_verify_confidence")"
 teardown_test
@@ -1894,7 +2210,7 @@ out="$(sim_stop "smv5" "$(structured_closeout "smv5" "Updated /src/App.tsx for t
 assert_empty "mcp-v5: full MCP cycle allows stop" "${out}"
 teardown_test
 
-# Test MCP-V6: passive MCP without UI edit blocks at stop
+# Test MCP-V6: an empty passive MCP result is failed verification and blocks.
 setup_test
 init_session "smv6"
 sim_edit "smv6" "/src/utils.ts"
@@ -1902,7 +2218,7 @@ sim_mcp_verify "smv6" "mcp__plugin_playwright_playwright__browser_snapshot" ""
 sim_review "smv6" "Summary: The code looks good. No issues found."
 out="$(sim_stop "smv6")"
 assert_not_empty "mcp-v6: passive MCP on non-UI file blocks" "${out}"
-assert_contains "mcp-v6: mentions low confidence" "low confidence" "${out}"
+assert_contains "mcp-v6: mentions failed verification" "Verification failed" "${out}"
 teardown_test
 
 # Test MCP-V7: computer-use screenshot records as visual_check
@@ -1920,6 +2236,25 @@ setup_test
 init_session "smv8"
 sim_mcp_verify "smv8" "mcp__plugin_playwright_playwright__browser_run_code" "42"
 assert_empty "mcp-v8: run_code cannot self-verify" "$(read_st "smv8" "last_verify_method")"
+teardown_test
+
+# Test MCP-V9: optional filename persistence is a mutation, not observation.
+setup_test
+init_session "smv9"
+smv9_payload="$(jq -nc '{
+  session_id:"smv9",
+  tool_name:"mcp__plugin_playwright_playwright__browser_snapshot",
+  tool_use_id:"smv9-filename-save",
+  tool_input:{filename:"proof/snapshot.md",target:"#checkout"},
+  tool_response:"Snapshot saved to proof/snapshot.md"
+}')"
+run_hook "${HOOK_DIR}/record-tool-start-revision.sh" "${smv9_payload}"
+run_hook "${HOOK_DIR}/mark-edit.sh" "${smv9_payload}"
+run_hook "${HOOK_DIR}/record-verification.sh" "${smv9_payload}"
+assert_eq "mcp-v9: filename save advances mutation generation" "1" \
+  "$(read_st "smv9" "edit_revision")"
+assert_empty "mcp-v9: filename save cannot self-verify" \
+  "$(read_st "smv9" "last_verify_method")"
 teardown_test
 
 
@@ -2323,6 +2658,204 @@ fi
 teardown_test
 
 # -------------------------------------------------------
+# Gap 3 authority boundary: JSON objects in the tolerant pending ledger may
+# not normalize consequence-bearing fields after Bash extraction.
+# -------------------------------------------------------
+for pending_poison in agent_type abandoned claim_ts; do
+  setup_test
+  setup_compact_tests
+  pending_sid="cg3-byte-${pending_poison}"
+  init_session "${pending_sid}" "coding"
+  sim_pre_agent_dispatch "${pending_sid}" "quality-researcher" \
+    "original byte-bound dispatch" >/dev/null
+  pending_byte_file="${TEST_HOME}/.claude/quality-pack/state/${pending_sid}/pending_agents.jsonl"
+  case "${pending_poison}" in
+    agent_type)
+      jq -c '.agent_type += "\u0000"' "${pending_byte_file}" \
+        >"${pending_byte_file}.tmp"
+      ;;
+    abandoned)
+      jq -c '.review_dispatch_abandoned = ("true" + "\u0000")' \
+        "${pending_byte_file}" >"${pending_byte_file}.tmp"
+      ;;
+    claim_ts)
+      jq -c '. + {
+        completion_claim_id:"completion-byte-boundary-12345678",
+        completion_claim_ts:("1" + "\u0000"),
+        completion_claim_effects_complete:false,
+        completion_claim_digest:("a" * 64),
+        completion_claim_message:"sealed callback"}' \
+        "${pending_byte_file}" >"${pending_byte_file}.tmp"
+      ;;
+  esac
+  mv "${pending_byte_file}.tmp" "${pending_byte_file}"
+  cp "${pending_byte_file}" "${pending_byte_file}.before"
+  pending_byte_payload="$(jq -nc --arg s "${pending_sid}" \
+    '{session_id:$s,tool_name:"Agent",tool_input:{
+      subagent_type:"quality-researcher",description:"must stay fenced",
+      prompt:"do not admit over malformed authority"}}')"
+  pending_byte_rc=0
+  printf '%s' "${pending_byte_payload}" \
+    | bash "${HOOK_DIR}/record-pending-agent.sh" \
+      >/dev/null 2>&1 || pending_byte_rc=$?
+  assert_eq "gap3-byte: ${pending_poison} row fails closed" \
+    "1" "${pending_byte_rc}"
+  assert_eq "gap3-byte: ${pending_poison} row remains byte-exact" "yes" \
+    "$(cmp -s "${pending_byte_file}.before" "${pending_byte_file}" \
+      && printf yes || printf no)"
+  assert_eq "gap3-byte: ${pending_poison} admits no replacement" "1" \
+    "$(wc -l <"${pending_byte_file}" | tr -d '[:space:]')"
+  teardown_test
+done
+
+# Raw NUL in any member of the dispatch-authority set must be rejected before
+# SubagentStart arms tracking or changes a causal ledger. Exercise the actual
+# byte (not only a JSON `\u0000` escape), because Bash would otherwise discard
+# it before a later field comparison.
+for native_poison_ledger in pending_agents agent_dispatch_starts native_agent_bindings; do
+  setup_test
+  setup_compact_tests
+  native_poison_sid="cg3-native-byte-${native_poison_ledger}"
+  init_session "${native_poison_sid}" "coding"
+  sim_pre_agent_dispatch "${native_poison_sid}" "quality-reviewer" \
+    "review byte authority" >/dev/null
+  native_poison_dir="${TEST_HOME}/.claude/quality-pack/state/${native_poison_sid}"
+  native_poison_file="${native_poison_dir}/${native_poison_ledger}.jsonl"
+  if [[ "${native_poison_ledger}" == "native_agent_bindings" ]]; then
+    printf '%s\n' \
+      '{"native_agent_id":"native-prior-safe","agent_type":"quality-reviewer","review_dispatch_id":"","lifecycle_dispatch_id":"dispatch-priorsafebinding123","objective_cycle_id":0,"ts":1}' \
+      >"${native_poison_file}"
+  fi
+  printf '\0' >>"${native_poison_file}"
+  cp "${native_poison_file}" "${native_poison_file}.before"
+  cp "${native_poison_dir}/session_state.json" \
+    "${native_poison_dir}/session_state.json.before"
+  native_poison_payload="$(jq -nc --arg s "${native_poison_sid}" \
+    '{session_id:$s,agent_id:"native-byte-start",agent_type:"quality-reviewer"}')"
+  native_poison_rc=0
+  printf '%s' "${native_poison_payload}" \
+    | bash "${HOOK_DIR}/record-pending-agent.sh" start \
+      >/dev/null 2>&1 || native_poison_rc=$?
+  assert_eq "gap3-native-byte: ${native_poison_ledger} fails closed" \
+    "1" "${native_poison_rc}"
+  assert_eq "gap3-native-byte: ${native_poison_ledger} remains byte-exact" \
+    "yes" "$(cmp -s "${native_poison_file}.before" \
+      "${native_poison_file}" && printf yes || printf no)"
+  assert_eq "gap3-native-byte: ${native_poison_ledger} mutates no state" \
+    "yes" "$(cmp -s "${native_poison_dir}/session_state.json.before" \
+      "${native_poison_dir}/session_state.json" && printf yes || printf no)"
+  assert_eq "gap3-native-byte: no pending native authority is published" \
+    "0" "$(jq -Rs '
+      [split("\n")[] | select(length > 0)
+        | (try fromjson catch {})
+        | select((.native_agent_id // "") == "native-byte-start")]
+      | length
+    ' "${native_poison_dir}/pending_agents.jsonl")"
+  native_poison_dispatch_payload="$(jq -nc --arg s "${native_poison_sid}" '
+    {session_id:$s,tool_name:"Agent",tool_input:{
+      subagent_type:"librarian",description:"must not cross corrupt authority",
+      prompt:"inspect without admission"}}
+  ')"
+  native_poison_dispatch_rc=0
+  printf '%s' "${native_poison_dispatch_payload}" \
+    | bash "${HOOK_DIR}/record-pending-agent.sh" \
+      >/dev/null 2>&1 || native_poison_dispatch_rc=$?
+  assert_eq "gap3-native-byte: ${native_poison_ledger} also fences dispatch" \
+    "1" "${native_poison_dispatch_rc}"
+  assert_eq "gap3-native-byte: dispatch preserves ${native_poison_ledger}" \
+    "yes" "$(cmp -s "${native_poison_file}.before" \
+      "${native_poison_file}" && printf yes || printf no)"
+  assert_eq "gap3-native-byte: dispatch mutates no state" \
+    "yes" "$(cmp -s "${native_poison_dir}/session_state.json.before" \
+      "${native_poison_dir}/session_state.json" && printf yes || printf no)"
+  teardown_test
+done
+
+# A duplicate start lifecycle is individually well-formed JSON but ambiguous
+# authority. The binder must reject it without choosing one row or publishing
+# a native registry entry.
+setup_test
+setup_compact_tests
+init_session "cg3-native-duplicate" "coding"
+sim_pre_agent_dispatch "cg3-native-duplicate" "quality-reviewer" \
+  "review duplicate authority" >/dev/null
+native_duplicate_dir="${TEST_HOME}/.claude/quality-pack/state/cg3-native-duplicate"
+native_duplicate_pending="${native_duplicate_dir}/pending_agents.jsonl"
+native_duplicate_starts="${native_duplicate_dir}/agent_dispatch_starts.jsonl"
+native_duplicate_line="$(sed -n '1p' "${native_duplicate_starts}")"
+printf '%s\n' "${native_duplicate_line}" >>"${native_duplicate_starts}"
+cp "${native_duplicate_pending}" "${native_duplicate_pending}.before"
+cp "${native_duplicate_starts}" "${native_duplicate_starts}.before"
+native_duplicate_payload="$(jq -nc \
+  '{session_id:"cg3-native-duplicate",agent_id:"native-duplicate-start",agent_type:"quality-reviewer"}')"
+native_duplicate_rc=0
+printf '%s' "${native_duplicate_payload}" \
+  | bash "${HOOK_DIR}/record-pending-agent.sh" start \
+    >/dev/null 2>&1 || native_duplicate_rc=$?
+assert_eq "gap3-native-duplicate: ambiguous start lifecycle fails closed" \
+  "1" "${native_duplicate_rc}"
+assert_eq "gap3-native-duplicate: pending ledger remains byte-exact" "yes" \
+  "$(cmp -s "${native_duplicate_pending}.before" \
+    "${native_duplicate_pending}" && printf yes || printf no)"
+assert_eq "gap3-native-duplicate: start ledger remains byte-exact" "yes" \
+  "$(cmp -s "${native_duplicate_starts}.before" \
+    "${native_duplicate_starts}" && printf yes || printf no)"
+assert_eq "gap3-native-duplicate: no binding registry is published" "0" \
+  "$([[ -s "${native_duplicate_dir}/native_agent_bindings.jsonl" ]] \
+    && printf 1 || printf 0)"
+teardown_test
+
+# The dedicated reviewer callback may inherit an effects-complete summary
+# claim. A raw-NUL sibling byte must not be ignored while selecting that
+# otherwise exact role/native/message tuple, or the callback could acquire a
+# publication capability from a ledger Bash cannot represent faithfully.
+setup_test
+setup_compact_tests
+init_session "cg3-reviewer-claim-byte" "coding"
+sim_pre_agent_dispatch "cg3-reviewer-claim-byte" "quality-reviewer" \
+  "review claimed result" >/dev/null
+reviewer_claim_start_payload="$(jq -nc \
+  '{session_id:"cg3-reviewer-claim-byte",agent_id:"native-reviewer-claim-byte",agent_type:"quality-reviewer"}')"
+printf '%s' "${reviewer_claim_start_payload}" \
+  | bash "${HOOK_DIR}/record-pending-agent.sh" start >/dev/null 2>&1
+reviewer_claim_dir="${TEST_HOME}/.claude/quality-pack/state/cg3-reviewer-claim-byte"
+reviewer_claim_pending="${reviewer_claim_dir}/pending_agents.jsonl"
+reviewer_claim_message='Reviewed the requested change.
+VERDICT: CLEAN'
+reviewer_claim_digest="$(test_token_digest "${reviewer_claim_message}")"
+jq -c --arg message "${reviewer_claim_message}" \
+  --arg digest "${reviewer_claim_digest}" '
+    . + {completion_claim_id:"completion-reviewer-byte-12345678",
+      completion_claim_ts:1,completion_claim_effects_complete:true,
+      completion_claim_digest:$digest,completion_claim_message:$message}
+  ' "${reviewer_claim_pending}" >"${reviewer_claim_pending}.tmp"
+mv "${reviewer_claim_pending}.tmp" "${reviewer_claim_pending}"
+printf '\0' >>"${reviewer_claim_pending}"
+cp "${reviewer_claim_pending}" "${reviewer_claim_pending}.before"
+cp "${reviewer_claim_dir}/session_state.json" \
+  "${reviewer_claim_dir}/session_state.json.before"
+reviewer_claim_callback="$(jq -nc --arg message "${reviewer_claim_message}" '
+  {session_id:"cg3-reviewer-claim-byte",agent_id:"native-reviewer-claim-byte",
+   agent_type:"quality-reviewer",last_assistant_message:$message}
+')"
+reviewer_claim_rc=0
+printf '%s' "${reviewer_claim_callback}" \
+  | bash "${HOOK_DIR}/record-reviewer.sh" \
+    >/dev/null 2>&1 || reviewer_claim_rc=$?
+assert_eq "gap3-reviewer-claim-byte: malformed claim grants no capability" \
+  "0" "${reviewer_claim_rc}"
+assert_eq "gap3-reviewer-claim-byte: pending claim remains byte-exact" "yes" \
+  "$(cmp -s "${reviewer_claim_pending}.before" \
+    "${reviewer_claim_pending}" && printf yes || printf no)"
+assert_eq "gap3-reviewer-claim-byte: reviewer state remains byte-exact" "yes" \
+  "$(cmp -s "${reviewer_claim_dir}/session_state.json.before" \
+    "${reviewer_claim_dir}/session_state.json" && printf yes || printf no)"
+assert_eq "gap3-reviewer-claim-byte: no reviewer receipt is published" "0" \
+  "$([[ -s "${reviewer_claim_dir}/reviewer_publication_outcomes.jsonl" ]] \
+    && printf 1 || printf 0)"
+teardown_test
+
+# -------------------------------------------------------
 # Gap 3 edge case: same-exact-type concurrency is denied before FIFO ambiguity
 # -------------------------------------------------------
 setup_test
@@ -2453,30 +2986,14 @@ review_starts_before="${TEST_HOME}/.claude/quality-pack/state/culw/agent_dispatc
 # active-mode checks, then pause its state-lock acquisition. Deactivation must
 # clear the sentinel/state first; when the old hook resumes, its in-lock recheck
 # must refuse to recreate .verification-starts.
-deactivate_race_shim="${TEST_HOME}/deactivate-race-shim"
 deactivate_race_ready="${TEST_HOME}/deactivate-race-ready"
 deactivate_race_release="${TEST_HOME}/deactivate-race-release"
-mkdir -p "${deactivate_race_shim}"
-printf '%s\n' \
-  '#!/bin/sh' \
-  'dest=""' \
-  'for arg in "$@"; do dest="$arg"; done' \
-  'case "${dest}" in' \
-  '  */.state.lock.owner)' \
-  '    /usr/bin/touch "${OMC_DEACTIVATE_RACE_READY}"' \
-  '    while [ ! -f "${OMC_DEACTIVATE_RACE_RELEASE}" ]; do /bin/sleep 0.01; done' \
-  '    ;;' \
-  'esac' \
-  'exec /bin/ln "$@"' \
-  >"${deactivate_race_shim}/ln"
-chmod +x "${deactivate_race_shim}/ln"
 deactivate_race_payload="$(jq -nc --arg s "culw" \
   '{session_id:$s,tool_name:"Bash",tool_use_id:"deactivate-race",tool_input:{command:"npm test"}}')"
 (
   printf '%s' "${deactivate_race_payload}" \
-    | env PATH="${deactivate_race_shim}:${PATH}" \
-      OMC_DEACTIVATE_RACE_READY="${deactivate_race_ready}" \
-      OMC_DEACTIVATE_RACE_RELEASE="${deactivate_race_release}" \
+    | env OMC_TEST_VERIFICATION_START_LOCK_READY_FILE="${deactivate_race_ready}" \
+      OMC_TEST_VERIFICATION_START_LOCK_RELEASE_FILE="${deactivate_race_release}" \
       bash "${HOOK_DIR}/record-tool-start-revision.sh" >/dev/null 2>&1
 ) &
 deactivate_race_pid=$!
@@ -2551,6 +3068,156 @@ assert_empty "ulw-off: bound same reviewer dispatches after reactivation" \
 teardown_test
 
 # -------------------------------------------------------
+# Delayed compact callbacks cannot cross /ulw-off + reactivation
+# -------------------------------------------------------
+wait_for_compact_publish_barrier() {
+  local pid="$1" ready_file="$2" label="$3" attempt
+  for attempt in $(seq 1 500); do
+    [[ -f "${ready_file}" ]] && break
+    kill -0 "${pid}" 2>/dev/null || break
+    sleep 0.01
+  done
+  if [[ -f "${ready_file}" ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s did not reach its controlled publication barrier\n' \
+      "${label}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+deactivate_and_reactivate_compact_session() {
+  local sid="$1" state_file
+  state_file="${TEST_HOME}/.claude/quality-pack/state/${sid}/session_state.json"
+  printf '{}' | bash "${HOOK_DIR}/ulw-deactivate.sh" "${sid}" \
+    >/dev/null 2>&1 || true
+  touch "${TEST_HOME}/.claude/quality-pack/state/.ulw_active"
+  jq '.workflow_mode="ultrawork"
+      | .ulw_enforcement_active="1"
+      | .session_outcome=""
+      | .ulw_enforcement_generation = (
+          ((((.ulw_enforcement_generation // "0") | tonumber?) // 0) + 1)
+          | tostring
+        )' "${state_file}" >"${state_file}.tmp" \
+    && mv "${state_file}.tmp" "${state_file}"
+}
+
+# PreCompact has finished rendering but has not published. Reset/reactivation
+# retires its interval; releasing the old process must publish neither artifact
+# nor compact-adjacent state into the new active generation.
+setup_test
+setup_compact_tests
+init_session "compact-race-pre" "coding"
+compact_race_pre_dir="${TEST_HOME}/.claude/quality-pack/state/compact-race-pre"
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="101"' \
+  "${compact_race_pre_dir}/session_state.json" \
+  >"${compact_race_pre_dir}/session_state.json.tmp" \
+  && mv "${compact_race_pre_dir}/session_state.json.tmp" \
+    "${compact_race_pre_dir}/session_state.json"
+compact_pre_ready="${TEST_HOME}/compact-pre-ready"
+compact_pre_release="${TEST_HOME}/compact-pre-release"
+compact_pre_payload="$(jq -nc --arg s "compact-race-pre" \
+  '{session_id:$s,trigger:"auto",custom_instructions:"",cwd:"/tmp",hook_event_name:"PreCompact"}')"
+(
+  printf '%s' "${compact_pre_payload}" \
+    | env OMC_TEST_PRECOMPACT_PUBLISH_READY_FILE="${compact_pre_ready}" \
+      OMC_TEST_PRECOMPACT_PUBLISH_RELEASE_FILE="${compact_pre_release}" \
+      bash "${QUALITY_PACK_DIR}/pre-compact-snapshot.sh" >/dev/null 2>&1
+) &
+compact_pre_pid=$!
+wait_for_compact_publish_barrier "${compact_pre_pid}" "${compact_pre_ready}" \
+  "delayed PreCompact"
+deactivate_and_reactivate_compact_session "compact-race-pre"
+touch "${compact_pre_release}"
+wait "${compact_pre_pid}" 2>/dev/null || true
+[[ ! -e "${compact_race_pre_dir}/precompact_snapshot.md" ]] \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: delayed PreCompact recreated its retired snapshot\n' >&2; fail=$((fail + 1)); }
+assert_empty "delayed PreCompact does not republish request clocks" \
+  "$(read_st "compact-race-pre" "last_compact_request_ts")"
+assert_empty "delayed PreCompact does not republish review continuity" \
+  "$(read_st "compact-race-pre" "review_pending_at_compact")"
+teardown_test
+
+# PostCompact has already read the old snapshot and rendered its wrapper. The
+# same interval transition must reject both wrapper publication and its paired
+# just_compacted clocks.
+setup_test
+setup_compact_tests
+init_session "compact-race-post" "coding"
+compact_race_post_dir="${TEST_HOME}/.claude/quality-pack/state/compact-race-post"
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="201"' \
+  "${compact_race_post_dir}/session_state.json" \
+  >"${compact_race_post_dir}/session_state.json.tmp" \
+  && mv "${compact_race_post_dir}/session_state.json.tmp" \
+    "${compact_race_post_dir}/session_state.json"
+sim_pre_compact "compact-race-post"
+compact_post_ready="${TEST_HOME}/compact-post-ready"
+compact_post_release="${TEST_HOME}/compact-post-release"
+compact_post_payload="$(jq -nc --arg s "compact-race-post" \
+  '{session_id:$s,trigger:"auto",compact_summary:"old summary",cwd:"/tmp",hook_event_name:"PostCompact"}')"
+(
+  printf '%s' "${compact_post_payload}" \
+    | env OMC_TEST_POSTCOMPACT_PUBLISH_READY_FILE="${compact_post_ready}" \
+      OMC_TEST_POSTCOMPACT_PUBLISH_RELEASE_FILE="${compact_post_release}" \
+      bash "${QUALITY_PACK_DIR}/post-compact-summary.sh" >/dev/null 2>&1
+) &
+compact_post_pid=$!
+wait_for_compact_publish_barrier "${compact_post_pid}" \
+  "${compact_post_ready}" "delayed PostCompact"
+deactivate_and_reactivate_compact_session "compact-race-post"
+touch "${compact_post_release}"
+wait "${compact_post_pid}" 2>/dev/null || true
+[[ ! -e "${compact_race_post_dir}/compact_handoff.md" ]] \
+  && pass=$((pass + 1)) \
+  || { printf '  FAIL: delayed PostCompact recreated its retired handoff\n' >&2; fail=$((fail + 1)); }
+assert_empty "delayed PostCompact does not republish continuation flag" \
+  "$(read_st "compact-race-post" "just_compacted")"
+assert_empty "delayed PostCompact does not republish summary clock" \
+  "$(read_st "compact-race-post" "last_compact_summary_ts")"
+teardown_test
+
+# SessionStart has rendered the exact old context but has not stamped/emitted it.
+# Reset/reactivation must make the old callback silent and leave no rehydrate
+# state in the new generation.
+setup_test
+setup_compact_tests
+init_session "compact-race-start" "coding"
+compact_race_start_dir="${TEST_HOME}/.claude/quality-pack/state/compact-race-start"
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="301"' \
+  "${compact_race_start_dir}/session_state.json" \
+  >"${compact_race_start_dir}/session_state.json.tmp" \
+  && mv "${compact_race_start_dir}/session_state.json.tmp" \
+    "${compact_race_start_dir}/session_state.json"
+sim_pre_compact "compact-race-start"
+sim_post_compact "compact-race-start" "auto" "old summary"
+compact_start_ready="${TEST_HOME}/compact-start-ready"
+compact_start_release="${TEST_HOME}/compact-start-release"
+compact_start_output="${TEST_HOME}/compact-start-output"
+compact_start_payload="$(jq -nc --arg s "compact-race-start" \
+  '{session_id:$s,source:"compact",cwd:"/tmp",hook_event_name:"SessionStart"}')"
+(
+  printf '%s' "${compact_start_payload}" \
+    | env OMC_TEST_COMPACT_REHYDRATE_READY_FILE="${compact_start_ready}" \
+      OMC_TEST_COMPACT_REHYDRATE_RELEASE_FILE="${compact_start_release}" \
+      bash "${QUALITY_PACK_DIR}/session-start-compact-handoff.sh" \
+      >"${compact_start_output}" 2>/dev/null
+) &
+compact_start_pid=$!
+wait_for_compact_publish_barrier "${compact_start_pid}" \
+  "${compact_start_ready}" "delayed compact SessionStart"
+deactivate_and_reactivate_compact_session "compact-race-start"
+touch "${compact_start_release}"
+wait "${compact_start_pid}" 2>/dev/null || true
+assert_empty "delayed compact SessionStart emits no old-generation context" \
+  "$(cat "${compact_start_output}" 2>/dev/null || true)"
+assert_empty "delayed compact SessionStart does not republish rehydrate clock" \
+  "$(read_st "compact-race-start" "last_compact_rehydrate_ts")"
+assert_empty "delayed compact SessionStart does not force current context" \
+  "$(read_st "compact-race-start" "directive_context_force_full")"
+teardown_test
+
+# -------------------------------------------------------
 # ulw-off addresses an exact session and fails closed on ambiguity/failure
 # -------------------------------------------------------
 setup_test
@@ -2583,6 +3250,30 @@ assert_contains "ulw-off environment reports the addressed session" \
   "session off-env-target" "${off_env_out}"
 assert_empty "ulw-off environment clears its exact target" \
   "$(read_st "off-env-target" "workflow_mode")"
+teardown_test
+
+setup_test
+init_session "off-valid-byte-cwd" "coding"
+init_session "off-nul-byte-cwd" "coding"
+for off_sid in off-valid-byte-cwd off-nul-byte-cwd; do
+  off_state="${TEST_HOME}/.claude/quality-pack/state/${off_sid}/session_state.json"
+  jq --arg cwd "${PWD}" \
+    '.cwd=$cwd | .ulw_enforcement_active="1"' \
+    "${off_state}" >"${off_state}.tmp" && mv "${off_state}.tmp" "${off_state}"
+done
+off_nul_state="${TEST_HOME}/.claude/quality-pack/state/off-nul-byte-cwd/session_state.json"
+jq '.cwd = (.cwd + "\u0000")' "${off_nul_state}" \
+  >"${off_nul_state}.tmp" && mv "${off_nul_state}.tmp" "${off_nul_state}"
+off_byte_rc=0
+off_byte_out="$(env -u CLAUDE_CODE_SESSION_ID -u SESSION_ID \
+  bash "${HOOK_DIR}/ulw-deactivate.sh" 2>&1)" || off_byte_rc=$?
+assert_eq "ulw-off ignores NUL-aliased cwd candidate" "0" "${off_byte_rc}"
+assert_contains "ulw-off selects the exact safe cwd candidate" \
+  "session off-valid-byte-cwd" "${off_byte_out}"
+assert_empty "ulw-off deactivates safe cwd candidate" \
+  "$(read_st "off-valid-byte-cwd" "workflow_mode")"
+assert_eq "ulw-off preserves malformed cwd candidate" "ultrawork" \
+  "$(read_st "off-nul-byte-cwd" "workflow_mode")"
 teardown_test
 
 setup_test
@@ -2620,10 +3311,10 @@ assert_eq "ulw-off missing exact ID creates no phantom session directory" "no" \
 init_session "off-cleanup-failure" "coding"
 cleanup_failure_dir="${TEST_HOME}/.claude/quality-pack/state/off-cleanup-failure"
 cleanup_failure_state="${cleanup_failure_dir}/session_state.json"
-jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="cleanup-generation"' \
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="70"' \
   "${cleanup_failure_state}" >"${cleanup_failure_state}.tmp" \
   && mv "${cleanup_failure_state}.tmp" "${cleanup_failure_state}"
-touch "${cleanup_failure_dir}/.ulw_active"
+printf '%s\n' '70' >"${cleanup_failure_dir}/.ulw_active"
 printf '%s\n' '{"agent_type":"quality-researcher"}' \
   >"${TEST_HOME}/cleanup-failure-pending.jsonl"
 ln -s "${TEST_HOME}/cleanup-failure-pending.jsonl" \
@@ -2631,16 +3322,25 @@ ln -s "${TEST_HOME}/cleanup-failure-pending.jsonl" \
 off_cleanup_rc=0
 off_cleanup_out="$(bash "${HOOK_DIR}/ulw-deactivate.sh" \
   "off-cleanup-failure" 2>&1)" || off_cleanup_rc=$?
-assert_eq "ulw-off transient cleanup failure returns non-zero" "1" \
+assert_eq "ulw-off untrusted transient converges" "0" \
   "${off_cleanup_rc}"
-assert_contains "ulw-off transient cleanup failure is explicit" \
-  "could not clear transient state" "${off_cleanup_out}"
-assert_eq "ulw-off cleanup failure keeps workflow active" "ultrawork" \
+assert_contains "ulw-off untrusted transient reports exact session" \
+  "session off-cleanup-failure" "${off_cleanup_out}"
+assert_empty "ulw-off untrusted transient clears workflow" \
   "$(read_st "off-cleanup-failure" "workflow_mode")"
-assert_eq "ulw-off cleanup failure keeps enforcement active" "1" \
+assert_eq "ulw-off untrusted transient closes enforcement" "0" \
   "$(read_st "off-cleanup-failure" "ulw_enforcement_active")"
-assert_eq "ulw-off cleanup failure retains the session marker" "yes" \
-  "$([[ -f "${cleanup_failure_dir}/.ulw_active" ]] && printf yes || printf no)"
+assert_eq "ulw-off untrusted transient removes live symlink" "no" \
+  "$([[ -e "${cleanup_failure_dir}/pending_agents.jsonl" \
+        || -L "${cleanup_failure_dir}/pending_agents.jsonl" ]] \
+    && printf yes || printf no)"
+assert_eq "ulw-off untrusted transient preserves external target" \
+  '{"agent_type":"quality-researcher"}' \
+  "$(<"${TEST_HOME}/cleanup-failure-pending.jsonl")"
+assert_eq "ulw-off untrusted transient retires session marker" "no" \
+  "$([[ -e "${cleanup_failure_dir}/.ulw_active" \
+        || -L "${cleanup_failure_dir}/.ulw_active" ]] \
+    && printf yes || printf no)"
 teardown_test
 
 # -------------------------------------------------------
@@ -2650,10 +3350,10 @@ setup_test
 init_session "off-summary-lease" "coding"
 summary_lease_dir="${TEST_HOME}/.claude/quality-pack/state/off-summary-lease"
 summary_lease_state="${summary_lease_dir}/session_state.json"
-jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="summary-generation"' \
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="71"' \
   "${summary_lease_state}" >"${summary_lease_state}.tmp" \
   && mv "${summary_lease_state}.tmp" "${summary_lease_state}"
-touch "${summary_lease_dir}/.ulw_active"
+printf '%s\n' '71' >"${summary_lease_dir}/.ulw_active"
 sim_pre_agent_dispatch "off-summary-lease" "quality-researcher" \
   "research the exact lifecycle contract" >/dev/null
 summary_claim_ready="${TEST_HOME}/summary-claim-ready"
@@ -2736,10 +3436,10 @@ setup_test
 init_session "off-summary-forced-close" "coding"
 forced_summary_dir="${TEST_HOME}/.claude/quality-pack/state/off-summary-forced-close"
 forced_summary_state="${forced_summary_dir}/session_state.json"
-jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="forced-summary-generation"' \
+jq '.ulw_enforcement_active="1" | .ulw_enforcement_generation="72"' \
   "${forced_summary_state}" >"${forced_summary_state}.tmp" \
   && mv "${forced_summary_state}.tmp" "${forced_summary_state}"
-touch "${forced_summary_dir}/.ulw_active"
+printf '%s\n' '72' >"${forced_summary_dir}/.ulw_active"
 sim_pre_agent_dispatch "off-summary-forced-close" "frontend-developer" \
   "return a UI contract with one discovered finding" >/dev/null
 forced_summary_ready="${TEST_HOME}/forced-summary-ready"

@@ -18,17 +18,38 @@ jobs:
       - name: Check bash syntax
         run: |
           find bundle/ -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n evals/realwork/pairwise.sh
 
-      - name: Install shellcheck
-        run: sudo apt-get install -y shellcheck
+      - name: Install lint dependencies
+        run: sudo apt-get install -y shellcheck python3-jsonschema
 
       - name: Run shellcheck
         run: |
           find bundle/ -name '*.sh' -print0 | xargs -0 shellcheck -x --severity=warning
+          shellcheck -x --severity=warning evals/realwork/pairwise.sh
 
       - name: Validate JSON files
         run: |
           find . -name '*.json' -not -path './.git/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
+
+      - name: Validate real-work JSON Schemas
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          from jsonschema import Draft202012Validator
+
+          root = pathlib.Path("evals/realwork")
+          quality_schema = json.loads((root / "quality-schema.json").read_text())
+          Draft202012Validator.check_schema(quality_schema)
+          quality_validator = Draft202012Validator(quality_schema)
+          for probe in sorted((root / "quality-probes").glob("*.json")):
+              quality_validator.validate(json.loads(probe.read_text()))
+          Draft202012Validator.check_schema(
+              json.loads((root / "judge-schema.json").read_text())
+          )
+          PY
+          bash evals/realwork/pairwise.sh validate
 
       - name: Check flag coordination (3-site SoT parity)
         run: bash tools/check-flag-coordination.sh
@@ -148,6 +169,12 @@ jobs:
       - name: Run Definition of Excellent lifecycle tests
         run: bash tests/test-definition-of-excellent-e2e.sh
 
+      - name: Run crash-safe planner publication tests
+        run: bash tests/test-plan-publication-transaction.sh
+
+      - name: Run crash-safe reviewer publication tests
+        run: bash tests/test-reviewer-publication-transaction.sh
+
       - name: Run Definition of Excellent observability tests
         run: bash tests/test-definition-observability.sh
 
@@ -164,4 +191,6 @@ jobs:
         run: bash tests/test-realwork-pairwise.sh
 
       - name: Check bash syntax (BSD vs GNU shape)
-        run: find bundle/ -name '*.sh' -print0 | xargs -0 -n1 bash -n
+        run: |
+          find bundle/ -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n evals/realwork/pairwise.sh

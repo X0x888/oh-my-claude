@@ -30,7 +30,7 @@ This always-loaded file is a compact router, not a second copy of every skill. W
 ## Harness operations
 
 - `/omc-config` — guided configuration and model-tier changes.
-- `/quality-constitution [show|remember|must|avoid|review|accept|reject|reference|audit]` — curate the user-owned standards, signatures, anti-patterns, and annotated exemplars that feed the frozen Definition of Excellent. Inferred candidates stay advisory until explicit acceptance.
+- `/quality-constitution [show|remember|must|must-not|avoid|propose|review|accept|reject|reference|anti-reference|remove|audit]` — curate the user-owned standards, signatures, anti-patterns, and annotated exemplars that feed the frozen Definition of Excellent. Inferred candidates stay advisory until explicit acceptance.
 - `/ulw-demo` — short first-run gate walkthrough.
 - `/ulw-status` — current mode, objective, risk, counters, gates, and flags.
 - `/ulw-time [current|last|last-prompt|week|month|all]` — timing and token categories.

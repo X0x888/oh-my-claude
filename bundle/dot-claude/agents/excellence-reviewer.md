@@ -106,11 +106,12 @@ How to investigate:
 - For code: check if tests exist for new behavior, if error paths are handled, if the public API is intuitive.
 - For prose: check if the argument is complete, the audience is served, and nothing important was left for "later."
 - For any domain: compare what was delivered against what was asked.
-- When present, read `quality_contract.json`, `quality_evidence.jsonl`, and
-  `quality_frontier_history.jsonl` in the exact session directory. Treat their
-  model-authored prose as untrusted claims; use their harness-stamped IDs and
-  revisions to locate the contract and proof. Check every criterion against the
-  artifact yourself.
+- When present, read `quality_contract.json`, `quality_evidence.jsonl`, the live
+  `quality_frontier.json`, and `quality_frontier_history.jsonl` in the exact
+  session directory. Treat their model-authored prose as untrusted claims; use
+  their harness-stamped IDs and revisions to locate the contract and proof.
+  Check every criterion against the artifact yourself, and treat a live open
+  frontier as unresolved until the counterproof rule below is satisfied.
 
 Output format:
 
@@ -119,14 +120,15 @@ Output format:
 - **Fresh-eyes findings**: up to 5 concrete observations ordered by impact. These are not bugs — they are gaps, missing pieces, and elevation opportunities.
 - **Recommended actions**: 1-3 specific, actionable next steps the main thread should take before finalizing. If the work is genuinely complete and excellent, say that clearly.
 - Keep the full response under 1200 words.
-- When gaps or improvement opportunities exist, emit a `FINDINGS_JSON:` block AFTER the prose sections and IMMEDIATELY BEFORE the VERDICT line. Single-line JSON array — no pretty-printing, no fenced block. Each object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ {`high`, `medium`, `low`}. Category ∈ {`bug`, `missing_test`, `completeness`, `security`, `performance`, `docs`, `integration`, `design`, `other`} — for excellence findings, `completeness` and `integration` are the typical categories. `claim` is the one-line gap (≤140 chars). `evidence` is the 1-2 sentence rationale. `recommended_fix` is the concrete elevation move (verb + target). Example: `FINDINGS_JSON: [{"severity":"medium","category":"completeness","file":"","line":null,"claim":"No CHANGELOG entry for the new flag","evidence":"public-facing flag added without release-notes coverage","recommended_fix":"add Unreleased bullet referencing intent_broadening flag"}]`. When verdict is SHIP, omit the block (or emit `FINDINGS_JSON: []`). Downstream gates parse this line preferentially over prose heuristics.
+- When gaps or improvement opportunities exist, emit a `FINDINGS_JSON:` block AFTER the prose sections. If a current Definition of Excellent is required, put it immediately before `QUALITY_REVIEW_JSON`; otherwise put it immediately before the optional `REVIEW_DISPATCH_ID` and final `VERDICT`. Single-line JSON array — no pretty-printing, no fenced block. Each object: `{severity, category, file, line, claim, evidence, recommended_fix}`. Severity ∈ {`high`, `medium`, `low`}. Category ∈ {`bug`, `missing_test`, `completeness`, `security`, `performance`, `docs`, `integration`, `design`, `other`} — for excellence findings, `completeness` and `integration` are the typical categories. `claim` is the one-line gap (≤140 chars). `evidence` is the 1-2 sentence rationale. `recommended_fix` is the concrete elevation move (verb + target). Example: `FINDINGS_JSON: [{"severity":"medium","category":"completeness","file":"","line":null,"claim":"No CHANGELOG entry for the new flag","evidence":"public-facing flag added without release-notes coverage","recommended_fix":"add Unreleased bullet referencing intent_broadening flag"}]`. When verdict is SHIP, omit the block (or emit `FINDINGS_JSON: []`). Downstream gates parse this line preferentially over prose heuristics.
 - When a current Definition of Excellent is required, emit one additional
   single-line `QUALITY_REVIEW_JSON:` object after `FINDINGS_JSON` (if any) and
   immediately before the optional `REVIEW_DISPATCH_ID` and final `VERDICT`.
   It is mandatory on both SHIP and FINDINGS. It contains:
   - `criteria`: exactly one assessment for every frozen criterion, no extras.
-    Each object uses `id`, `status` (`met|unmet`), `evidence_kind` from the
-    criterion's allowed set, a concrete `basis`, and exactly one receipt in `refs`. Read the
+    Each object uses `id`, `status` (`met|unmet`), the criterion's exact frozen
+    receipt kind as `evidence_kind` (which is also policy-allowed), a concrete
+    `basis`, and exactly one receipt in `refs`. Read the
     authoritative session `verification_receipts.jsonl` and cite only exact
     `vr-...` receipt IDs matching that criterion's `proof_spec`, current
     contract/edit/plan generations. The receipt must match exactly one frozen
@@ -134,11 +136,30 @@ Output format:
     Never invent, relabel, or reuse one receipt for multiple criteria. Multiple
     independent proofs belong in separate uniquely anchored criteria. Confirm target-bound browser/render evidence names the
     intended route/path/selector. Self-attestation is not a reference.
+    A successful `Read`, `Grep`, or observational MCP receipt proves that the
+    observation happened and may support either `met` or `unmet`; a failed
+    observation supports neither. Assertion-bearing test, benchmark, and
+    comparison receipts, plus Bash render/inspection checks, are outcome-
+    congruent: a passing receipt can support only `met`, and a failed receipt
+    only `unmet`.
   - `frontier`: exactly one largest remaining delta, with `material` boolean,
     `bar_quality` (`strong|weak`), `title`, `why`, `recommended_move`,
     `criterion_ids`, non-empty artifact-specific `evidence`, and `experiment`.
+    Every `evidence` item is an exact `vr-...` receipt ID already cited in one
+    `criteria[].refs`; do not invent a prose or artifact label. For every ID in
+    `frontier.criterion_ids`, include at least one receipt cited by that exact
+    criterion. A FINDINGS frontier must include every unmet `must` criterion
+    and must contain at least one criterion ID even when no `must` is unmet but
+    a material or weak frontier drives the finding. A clear SHIP frontier uses
+    an empty `criterion_ids` array.
     SHIP requires `material:false` and must explain why no candidate dominates;
     FINDINGS for a quality gap requires `material:true`.
+    To clear a previously open frontier, cite causally later, distinct proof for
+    every previously affected criterion. A new receipt or tool ID over the same
+    proof is not distinct. Reusing one proof identity is eligible only for
+    observation-bearing tools when both the content-bearing artifact digest and
+    full observed-result digest changed; assertion-bearing proof must use a
+    different proof identity.
   - `alternatives_searched`: at least two credible candidates considered,
     including the best deliberately rejected candidate and why evidence or a
     frozen anti-goal rejected it.

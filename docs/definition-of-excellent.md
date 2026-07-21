@@ -90,7 +90,7 @@ with `current_plan.md` as `quality_contract.json`.
       "kind": "user|profile|repo|domain|external",
       "reference": "source of the standard (the exact compiled statement for profile)",
       "rationale": "why it applies",
-      "profile_entry_id": "required only when kind is profile"
+      "profile_entry_id": "required when kind is profile; omit for every other kind"
     }
   ],
   "anti_goals": ["specific thing the solution must not become"],
@@ -122,10 +122,18 @@ with `current_plan.md` as `quality_contract.json`.
 }
 ```
 
+`standards` always includes at least one `kind: "user"` row for the current
+user direction. `profile_entry_id` is required on every `profile` row and is
+forbidden on `user`, `repo`, `domain`, and `external` rows; it is not a globally
+optional field.
+
 The harness adds the schema version, contract ID and digest, objective digest,
 prompt timestamp/revision, review-cycle ID, enforcement generation, plan
-revision, creation time, planner native identity, lifecycle dispatch identity,
-and whether the contract was late. At the first mutation, the harness freezes an
+revision, verification-confidence threshold, creation time, planner native
+identity, lifecycle dispatch identity, and whether the contract was late. The
+first contract captures the then-current threshold; additive revisions inherit
+that sealed value, and receipt matching continues to use it even if live settings
+later change. At the first mutation, the harness freezes an
 immutable floor containing the contract's north star, audience, stakes,
 ambition boundary, axes, standards, anti-goals, and criteria. A later revision
 may raise that bar or add genuinely new scope, but cannot rewrite or remove any
@@ -133,12 +141,25 @@ frozen commitment. Every accepted revision invalidates prior proof. A new
 objective starts a new contract generation; post-hoc deletion or weakening is
 never allowed inside the current generation.
 
+Envelope validity and live authority are deliberately separate. The sealed
+payload, payload digest, planner identity, and causal coordinates remain
+intrinsically verifiable even if a later verifier-threshold setting, repository
+test command, or Constitution wording changes. New contract construction applies
+the current verifier policy; current-contract validation separately applies the
+live Constitution binding. If a frozen profile statement
+is removed or reworded, additive replanning retains the byte-exact historical
+standard and adds the exact current statement, even when both share one durable
+profile ID. The old floor therefore cannot disappear, while a stale wording
+cannot impersonate current user authority. The immediately preceding sealed
+contract is the only source of historical profile rows; planner prose cannot
+invent them.
+
 Every axis must appear in `axes` and have at least one mandatory criterion with
 empirical proof and independent review. The first freeze needs five to ten
 criteria and deliberately reserves ten more slots for additive scope revisions
 (twenty total). Reaching that explicit revision ceiling fails closed and
 requires a human rescope or new objective; a planner cannot hide a scope addition
-in prose because the first contract consumed all structural capacity. Criteria
+in prose once the contract has reached its structural capacity. Criteria
 use unique stable IDs, distinct task-bound proof anchors and failure signals, a
 non-empty anti-goal, and every active explicit blocking Constitution statement
 is bound by exact ID and text. Bare wildcards, generic surfaces such as
@@ -149,43 +170,139 @@ evidence; “make it innovative” is invalid.
 Each criterion has `minimum: 1`, exactly one receipt kind, exactly one tool
 pattern, and consumes exactly one receipt that matches exactly one frozen
 `proof_spec`. When the finish line needs alternative or multiple independent
-proofs, the planner creates separate criteria with distinct anchors. This avoids
-both union-cover deadlocks and pretending shell aliases, wrappers, or path
-spellings are a decidable semantic identity: a combined receipt that matches
-multiple criteria certifies none.
+proofs, the planner creates separate criteria with distinct anchors and
+harness-observable proof targets. This avoids both union-cover deadlocks and
+argv-decoration laundering: one custom script remains one proof target even when
+labels, timing, evidence-kind words, launch spelling, or canonical path aliases
+vary. Mutable symlink execution spellings are not proof-capable: every lexical
+component must be non-symlinked before canonicalization. Bash witness selection
+ranks a structured runner with its real selector
+above an explicitly pathed custom verifier, and that above a bare custom command;
+different feasible targets at the same rank are ambiguous and rejected, while a
+lower-ranked interpretation cannot make a precise runner proof ambiguous. Source
+and MCP aliases are canonicalized and duplicate same-method targets are rejected
+too. A combined receipt that matches multiple criteria certifies none. These
+freeze-time checks prevent proof-identity conflicts from surviving until closeout
+as an unfinishable evidence floor.
 
 The validator also proves that every frozen receipt language can intrinsically
-reach the configured confidence threshold through the installed hooks: `Bash`
+reach the contract's sealed confidence threshold through the installed hooks: `Bash`
 can mint test, benchmark, comparison, inspection, or executable-render receipts
 without an artifact target; `Read` can mint source receipts; `Grep` can mint
 inspection receipts; and recognized non-mutating MCP observations can mint
 render or inspection receipts when their built-in score reaches that threshold.
 Freeze-time MCP scoring assumes empty output and no contingent UI-edit history,
-so a passive screenshot or DOM snapshot cannot become an impossible default-40
-proof merely because an unrelated edit *might* later add confidence. A user may
-deliberately configure a compatible lower threshold, but the planner cannot
-assume incidental context. Silent Bash render commands likewise remain below
-the bar; result-bearing authoritative render runs can cross it. Unknown tools,
-impossible kind/tool pairs, and Bash-only artifact targets are rejected.
+so a passive Playwright screenshot (intrinsic score 20) or DOM snapshot (25)
+cannot become an impossible default-40 proof merely because an unrelated edit
+*might* later add confidence. A user may deliberately configure a compatible
+lower threshold for those supported, target-bound Playwright observations, but
+the planner cannot assume incidental context or rely on a later threshold
+change. A computer-use screenshot scores 15 in generic verification, but it has
+no Definition target-witness schema and cannot freeze at any threshold. Bash feasibility
+uses a kind-specific synthetic result, but runtime proof must produce its own
+positive observation: measured timing/throughput for a benchmark, comparison
+counts or delta for a comparison, or a produced render path/count/digest for a
+render. Silence and generic PASS prose are recorded as failed specialized
+evidence even when the process exits zero, so they supersede rather than reuse an
+older green proof. Unknown tools, impossible kind/tool pairs, and Bash-only
+artifact targets are rejected.
 Mutation-capable browser operations
 such as `browser_evaluate` and `browser_run_code` advance the edit clock and
 never mint proof, even though legacy scoring can classify their output. For
 `Bash`, the validator also sends a synthetic witness containing every frozen
 command anchor through the production authoritative-execution parser and
-receipt-kind derivation. Help/dry-run modes, compound shell grammar, and anchors
-that force a different kind are rejected before the contract can freeze. The
-same feasibility pass constructs conservative bounded superstrings: every
+receipt-kind derivation. Help/discovery/list/skip/dry-run/zero-test modes, shell
+  expansion, compound grammar, interpreter-module execution (for example,
+  `python -m pytest`) whose package bytes cannot be resolved without running
+  ambient import machinery, unresolved launchers/subjects, symlinked lexical
+  path components, and anchors that force a different kind are rejected before
+  the contract can freeze. The
+same feasibility pass constructs conservative bounded witnesses: every
 required command token must fit the persisted 500-character receipt command,
 and every artifact token must fit the persisted target. Truncation can
-therefore never make an accepted proof language unsatisfiable. `Read`/`Grep`
-command and artifact anchors must fit one canonical `pwd -P` target including
-the real project-root overhead; fragments such as `/../`, `/./`, and `//`
-that canonicalization removes cannot become frozen proof obligations, and no
-slash-delimited source-path component may exceed the portable 255-byte
-filename ceiling. Every MCP proof must bind a non-generic route, path,
-selector, URL, or target in `artifact_contains`; its full anchor language
-must fit the recorder's 240-character descriptor-value cap. Tool-name-only
-observations and descriptor keys such as `target=` are rejected.
+therefore never make an accepted proof language unsatisfiable. A `Read`/`Grep`
+proof has exactly one artifact anchor: an existing, regular, non-symlinked file
+inside the canonical `pwd -P` project root. `Read` command
+anchors must occur in the persisted `Read:<canonical-target>` command. For
+`Grep`, command anchors absent from that target become one space-joined, valid
+regex capped at the recorder's 120 characters. Fragments such as `/../`, `/./`,
+and `//` that canonicalization removes cannot become frozen obligations, and no
+slash-delimited path component may exceed the portable 255-byte filename ceiling.
+Definition `Read` receipts are whole-file proof: offset, limit, or unknown
+observation-shaping inputs are rejected, as are files beyond Claude Code's
+2,000-logical-line or 2,000-character-per-line whole-file observation bounds.
+The PreTool snapshot binds the canonical regular-file path, full SHA-256,
+filesystem identity, canonical tool cwd, and a digest of the cwd-to-parent
+directory identity chain. Every lexical path component must be non-symlinked.
+PostTool requires the start digest/identity, receipt artifact provenance, and
+current digest/identity to agree. This catches overwrite-and-restore and
+ancestor-directory swap-and-restore intervals as well as a persistent
+replacement. Old output therefore cannot be paired with a background
+replacement that bypassed the ordinary edit clock.
+Definition `Grep` receipts likewise admit only the exact path and pattern;
+glob/type filters, head limits, case changes, context/output modes, and other
+narrowing fields cannot borrow the broader frozen path-plus-pattern identity.
+Grep uses the same source-file digest, identity-chain, and currentness checks as
+Read; its separate artifact digest continues to bind the observed match output.
+
+MCP feasibility is constructive: one concrete known, non-mutating tool must
+supply the requested receipt kind, contain every `command_contains` token in its
+persisted tool identity, and admit the exact declared descriptor schema. Current
+Playwright snapshot and screenshot proof both require one case-sensitive, raw
+JSON scalar `target=<specific selector or element reference>` artifact anchor.
+`observed_url` is snapshot-only: when route identity matters, a snapshot may add
+exactly one `observed_url=https://host/path?view=state#section` anchor, while
+`browser_take_screenshot` may not. The snapshot recorder extracts that value
+from `Page URL:`/`URL:` output and persists it after `target`; screenshot output
+contains image/path data and cannot reliably construct the route descriptor.
+Query and fragment text remain part of exact route identity. A frozen URL must already
+be canonical: lowercase scheme and host, no default `:80`/`:443`, and no `.` or
+`..` path segment. Descriptor serialization escapes `%` to `%25` first, then
+`;` to `%3B`; a raw literal `%3B` therefore persists as `%253B`, remains
+distinct from a raw literal semicolon, and cannot inject another descriptor
+key. Frozen `artifact_contains` anchors declare those raw JSON scalar values;
+the encoded receipt/witness is harness-owned authority, not text to copy back
+into the contract. Each descriptor value is capped at 240
+characters. Control bytes such as LF/CR are rejected rather than stripped into
+a colliding value, and a value that would require secret redaction is
+unavailable as proof rather than becoming a colliding redacted identity. Synthetic
+`route=`/`url=` keys, a tool name, or an empty `target=` cannot borrow authority
+from optional prose. A wildcard cannot combine the screenshot tool's render
+kind with the snapshot tool's name, and an unknown/custom connector cannot
+freeze target-bound proof without a declared production capability.
+At runtime, screenshot proof also binds decoded image bytes: it requires either
+an embedded, CRC-valid and zlib-decodable PNG content block or a connector-
+reported regular non-symlink PNG file that is still locally readable, decodes
+to exact valid scanlines, and can be hashed. A path/status-only result without
+that readable valid PNG, missing/header-only/corrupt PNG, JPEG/WebP result, or
+connector mode that omits both embedded bytes and a readable PNG file is
+recorded as a failed observation. The bounded system PNG decoder is checked
+during feasibility, so its absence rejects this proof method before a contract
+can freeze. Generated
+`page-{timestamp}.png` transport names are normalized only after a separate
+pixel-content digest is bound, so visually different observations always stale
+an older review even when their target selector is unchanged.
+
+When Constitution status is `current`, contract validation requires one regular
+compiled snapshot plus exact generation, digest, and blocking-ID state mirrors.
+It binds `profile_path` to the exact project-key-derived, non-symlinked profile,
+validates that file through the same Constitution schema authority as the
+curation CLI, and requires the observation base projection
+(`id`, `kind`, `locator`, recorded digest) to equal all active/stale live profile
+references before re-hashing repository bytes. A resealed snapshot therefore
+cannot omit a drifted exemplar or replace both recorded and observed digests
+with current bytes. The router also mirrors the exact compile selectors in
+session state; validation re-runs claim eligibility, scope matching, ranking,
+and caps against the live profile, so compiled blocking/advisory/tentative
+claims cannot be omitted or invented independently of that selector frame. A
+deleted advisory-only snapshot, profile mutation, exemplar edit, newly available
+reference, symlink substitution, or mirror mismatch therefore forces
+recompilation and additive replanning. This fixes the prior babysitting failure
+where the user could change a pinned exemplar while an old contract continued
+to certify work. The steady-state cost is bounded local hashing (no agent call
+or prompt growth); `tests/test-quality-contract.sh` covers missing snapshots,
+mirror mismatch, live reference drift, wildcard cross-tool proof, policy drift,
+reference-projection/path forgery, and remove/reword/replan recovery.
 
 Before the first recognized workspace mutation, PreToolUse recomputes contract
 validity from the sidecar. Missing, malformed, stale, symlinked, wrong-objective,
@@ -197,7 +314,9 @@ PreToolUse.
 ## Evidence and the frontier review
 
 An accepted `excellence-reviewer` return carries one `QUALITY_REVIEW_JSON:`
-envelope immediately before its dispatch ID and terminal verdict:
+envelope immediately before its dispatch ID and terminal verdict. The following
+is an abbreviated shape illustration, not a complete schema-valid payload (a
+real payload includes every frozen criterion, at least five on initial freeze):
 
 ```json
 {
@@ -216,11 +335,14 @@ envelope immediately before its dispatch ID and terminal verdict:
     "title": "largest remaining improvement, or why none dominates",
     "why": "expected user value and scope fit",
     "recommended_move": "bounded next experiment or shipped move",
-    "criterion_ids": ["Q-004"],
-    "evidence": ["vr-harness-minted-receipt-id"],
+    "criterion_ids": [],
+    "evidence": ["vr-one-uniquely-matching-harness-receipt"],
     "experiment": "how the claim was or can be falsified"
   },
-  "alternatives_searched": ["credible alternative considered"],
+  "alternatives_searched": [
+    "first credible alternative considered",
+    "second materially different alternative considered"
+  ],
   "limits": ["what this review could not establish"]
 }
 ```
@@ -231,6 +353,13 @@ current artifacts. A generic suggestion such as “add tests/docs/polish,” an
 unsupported aesthetic preference, cost, elapsed time, implementation difficulty,
 or “I cannot judge” when an empirical check was available cannot become a
 material frontier finding or clear one.
+
+The frontier's criterion set is verdict-sensitive. A `SHIP` frontier has an
+empty `criterion_ids` array. A `FINDINGS` frontier has a non-empty array that
+includes every unmet `must` criterion; when no `must` is unmet but a material
+or weak frontier still requires `FINDINGS`, it must still name at least one
+affected criterion. Every named criterion must contribute at least one of its
+own cited receipts to `frontier.evidence`.
 
 Only the recorder may add causal fields. It validates the native binding,
 objective, cycle, enforcement generation, plan revision, contract ID, and current
@@ -269,9 +398,21 @@ while valid newer proof can recover.
 Historical rows are retained for audit but never tick a gate. Any relevant edit
 or replan makes them stale. Every empirical result resolves to exactly one
 harness-minted receipt bound to tool input, observed output digest, contract,
-plan, objective cycle, and edit generation. Compound/help/dry-run Bash commands,
-repeated normalized copies of the same proof identity, receipts matching more
-than one criterion, and browser observations of the
+plan, objective cycle, and edit generation. Schema-v3 receipts also persist
+canonical tool cwd; the resolved executor path, digest, and filesystem identity;
+and the exact verifier/source subject path, digest, filesystem identity, and
+bounded ancestry digest. The stored command digest and receipt ID are rederived,
+with the reviewer-visible result excerpt included in receipt-ID material.
+Command-to-launcher/subject relationships are reproduced from the stored cwd,
+and all current provenance is re-hashed at reviewer admission and Stop.
+Snapshotting `/bin/bash` alone therefore cannot authorize a script that changed,
+was swapped and restored, or was reached through a mutable symlink while it ran.
+Schema-v2 receipts lack this provenance and fail closed rather than being
+upgraded heuristically. Compound/help/discovery/dry-run
+Bash commands, successful zero-test runs, repeated invocations of the same
+harness-derived semantic execution target (including custom scripts decorated
+with ignored argv), receipts matching more than one criterion, and browser
+observations of the
 wrong route or target cannot certify a criterion. A generic passing test cannot
 prove design, taste, usability, or visionary value unless the frozen
 `proof_spec` says exactly what that test decides.
@@ -293,8 +434,13 @@ independently reviewed.
 A material frontier must produce `FINDINGS`; it blocks completion until the move
 is implemented and the affected criteria are re-proven, or a later independent
 review clears it with causally newer, distinct empirical counterevidence for
-every affected criterion. Repeating the pre-finding receipt map cannot clear the
-frontier. A frozen non-goal or external blocker may justify explicit rescoping,
+every affected criterion. Distinct means a different valid proof surface, or—
+only for observation-bearing proof—a changed content-bearing artifact digest
+and full observed-result digest on the frozen surface. Assertion-bearing proof
+must use a different proof identity; incidental test-output changes cannot clear
+a frontier. A new tool ID over the same proof and observation is only receipt
+churn. Repeating the pre-finding receipt map or an identical observation cannot
+clear the frontier. A frozen non-goal or external blocker may justify explicit rescoping,
 and `/ulw-skip <reason>` / `definition_of_excellent=off` remain human-owned
 escapes; reviewer prose alone is not a resolution. A clean verdict must prove
 every `must` criterion and publish a current, strong, non-material frontier. An
@@ -351,6 +497,20 @@ quotes, redacts secret-shaped text, bounds records, and writes under a lock.
 `taste_learning=off` disables automatic observation but does not erase or
 ignore explicit user-owned standards.
 
+Automatic evidence decays deterministically: candidate confidence loses its
+historical contribution across a bounded 180-day horizon, and inferred claims
+leave compiled context after their review deadline until fresh independent user
+evidence supports them. Explicit pinned/confirmed claims do not decay. Accepted
+and rejected concept/scope/polarity decisions live in a separate bounded
+terminal-decision ledger rather than the evictable candidate queue. Repeating an
+accepted observation resolves to its authoritative claim; repeating a rejected
+or explicitly removed preference remains suppressed for automatic inference.
+No separate `reopen` grammar is required: an explicit `remember`, `must`,
+`must-not`, or `avoid` curation creates a user-confirmed claim even when the
+same inferred concept has a rejection tombstone. The tombstone remains in place
+to prevent automatic relearning. If the durable decision ledger reaches its
+cap, mutation fails closed instead of erasing an older user decision.
+
 Durable mutation authority is causal rather than model-attested. A real user
 prompt matching the narrow grammar (`remember`, `must`, `must-not`, `avoid`,
 `accept`, `reject`, `reference`, `anti-reference`, or `remove`) mints one
@@ -363,6 +523,25 @@ or accepted Stop fails closed. Grants retain no raw prompt/claim text, including
 with `prompt_persist=off`. Raw helper mutators are closed to assistants. The
 separate `direct <mutator>` CLI is only for an interactive standalone human
 terminal and requires TTY-backed stdin and stderr.
+
+Every explicit profile mutator—claim/reference addition, acceptance, rejection,
+and removal—uses one bounded exact-operation journal. The journal is durable
+before the first state change; claim/reference objects, terminal decisions, and
+audit rows retain the operation identity. After a crash, the next mutation
+automatically finishes candidate/decision bookkeeping and a missing audit row
+only when it can prove the authorized profile effect already committed. A
+prepared journal never replays a missing profile mutation:
+the consumed one-use grant is not recreated, the journal is abandoned, and a
+new explicit authorization is required. Recovery is idempotent even if the
+crash occurred after audit append, and removing a learned claim creates a
+rejection tombstone even when its bounded candidate row was already evicted.
+Malformed or oversized journals fail audit and mutation closed. Before any
+mutation, existing evidence and audit ledgers must be regular, bounded,
+parseable JSONL with unique causal identities; corruption leaves profile
+generation unchanged. The writer lock tolerates owner-release races, reaps only
+old empty lock directories, and signal handlers release ownership and
+terminate. Readers that report generation/digests take the same lock, so one
+response cannot mix two profile generations.
 
 Compilation copies the Constitution once while holding its writer lock. Schema
 validation, generation, profile digest, scope selection, and rendered context all
@@ -382,12 +561,25 @@ This is a cooperative same-user-process integrity boundary, not an OS security
 sandbox. The always-on PreTool guard denies raw/compound/split helper calls,
 direct mutation of canonical storage or the one-use authorization receipt, and
 write-capable or unclassified MCP operations that target either surface; it
-pins observer binaries before parsing hook input.
+pins observer binaries before parsing hook input. Benign inspection such as
+`shellcheck`, `bash -n`, and non-preprocessor `rg` against the helper remains
+allowed. `git diff` is deliberately not admitted because repository/user Git
+configuration and attributes can attach executable textconv or external-diff
+drivers to an apparently read-only command. Only command-position execution or
+mutation-shaped use is authority-sensitive.
 The helper independently closes raw and noninteractive mutation paths. A process
 with the user's filesystem privileges that deliberately manufactures a
 pseudo-terminal or rewrites the harness/storage can still tamper with the data;
 filesystem isolation and authentication are outside this Bash harness's threat
 model.
+
+These changes remove the user babysitting failure where a rejected preference
+could silently be learned again or a concurrent writer could report success
+without persisting its mutation. Runtime cost is bounded local JSON/hash/lock
+work with no added agent call or stable prompt growth. The concurrency, signal,
+decay, terminal-decision, crash-recovery, malformed-ledger, parser, and
+read-only-inspection contracts are covered by `tests/test-quality-constitution.sh` and
+`tests/test-quality-constitution-authority.sh`.
 
 ## Continuity, status, and closeout
 
@@ -428,7 +620,13 @@ always finds one is manufacturing churn.
 Mechanism tests prove causal integrity; they cannot prove taste. Release claims
 therefore use blind artifact-level A/B evaluation against the exact pre-feature
 harness. Candidates receive identical
-fixtures and prompts. Fixture-owned mechanical checks veto broken-but-flashy results,
+fixtures and a producer-visible contract that includes the task, audience,
+constraints, non-goals, quality anchors, dimension names, declared
+filenames/package kinds, and evaluator-owned
+diagnostic descriptions. The complete visible contract is hashed into both
+generation identities. Fixture-owned exact structural checks veto mechanically
+broken results; semantic, keyword-only, and candidate-authored assertions never
+auto-award a winner,
 then an isolated judge evaluates deliberate, distinctive, coherent, visionary,
 and complete twice with candidate order reversed. Order disagreement collapses
 to a tie.
@@ -444,25 +642,66 @@ and present in the challenger. `pairwise.sh compare` requires
 separate clean baseline and challenger Git checkouts, proves the baseline is
 that exact commit/tree, proves the challenger is a distinct descendant at the
 current evaluator checkout with all required feature surfaces, and derives
-both identity hashes itself. Producer summaries must echo the corresponding
-role and derived hash but cannot choose them. The manifest snapshot and both
-exact identities are frozen into every schema-v3 receipt; the default claim
-gate rejects missing, mixed, custom, stale, or current-checkout-mismatched
-campaign identities.
+both identity hashes itself. Producer summaries are pointer-only: role,
+checkout identity, task contract, telemetry, economics, and artifact authority
+live in the evaluator-owned generation receipt and cannot be supplied or
+overridden by summary fields. The manifest additionally pins
+the top-level candidate session model and all 36
+probe/tier/run-index/comparison-seed rows. The session model is held constant
+while `model_tier` independently changes harness specialist and escalation
+routing, isolating the tier/harness effect. The manifest snapshot, selected
+run, probe campaign limits, and both exact identities are frozen into every
+schema-v7 receipt; the default claim gate rejects omitted run IDs, mixed
+candidate models, and missing, custom, stale, or current-checkout-mismatched
+campaign identities. Schema-v6 and earlier receipts fail closed: v6 lacks the
+retained raw judge-response authority introduced in v7, while older formats
+also lack one or more causal-generation bindings.
 
-The campaign preregisters rubric and source hashes, model IDs, sample size,
-quality thresholds, scope-creep limits, and cost/latency ceilings. A quality-loop
-release requires at least 30 independent artifact pairs across six domains and
-two model tiers; non-inferior hard-check performance; at least 60% wins and at
-most 20% losses among conclusive pairs; a positive significant paired sign test;
-visionary wins exceeding losses by at least 15 percentage points; no negative
-domain; and bounded cost and wall-time ratios. The gate recomputes those results
-from sealed raw pair receipts; caller-authored aggregate reports are not claim
-evidence. Calibration cases remain evaluator-development tooling, not a claim
-that a campaign's judge has received an independent calibration attestation.
+The judge has a parallel identity chain. Canonical evidence requires the
+manifest-sealed native user-local `claude` location, exact CLI version,
+executable SHA-256, and pinned full model ID. The evaluator seals that policy hash, the executable
+digest, requested and CLI-returned model IDs, judge-schema hash, and both
+order-specific prompt hashes. Judge evidence cites an existing path in anonymous
+artifact A, B, or both; blocking challenger warnings remain visible in reports
+and fail the claim gate. Custom judges and manual reconciliation are development
+evidence only. Raw receipts remain portable within their pinned evaluator
+version: aggregation freezes each regular non-symlink input exactly once in a
+private bounded snapshot set, verifies compare-time seals on those bytes, and
+does not reinterpret mutable sibling artifact copies as current authority.
+Concurrent replacement of a live receipt path cannot change what is aggregated;
+later evaluator-contract changes deliberately stale old receipts for a new
+claim.
+
+Before execution, `campaign-init` seals a unique campaign instance containing
+the complete probe, fixture, source and producer-visible-task hashes, both
+checkout identities, the exact candidate session model, all 36 run IDs and
+comparison seeds, judge schema, quality thresholds, scope-creep limits, and
+per-probe plus aggregate cost/latency ceilings. Each producer/comparison stage
+atomically occupies its first-attempt slot before the paid call; success or
+failure then seals that slot. The release gate requires the complete campaign
+receipt and exact stage-output hashes, so a successful retry or selected subset
+cannot impersonate first-attempt evidence. Canonical threshold flags cannot
+weaken the sealed values. A quality-loop
+release requires the complete roster, at least 30 conclusive artifact pairs
+across six domains and two model tiers; hard-check noninferiority (no
+baseline-pass/challenger-fail diagnostic, including noncritical checks); at
+least 60% wins and at most 20% losses among conclusive pairs; a positive
+significant paired sign test; visionary wins exceeding losses by at least 15
+percentage points; no negative domain; every pair within its probe ceiling; and
+bounded campaign median/p95 cost and wall-time ratios. The gate recomputes those
+results from sealed raw pair receipts; caller-selected receipt subsets and
+caller-authored aggregate reports are not claim evidence. Calibration cases
+remain evaluator-development tooling, not a claim that a campaign's judge has
+received an independent calibration attestation.
+Repeated artifact hashes from distinct sealed run, generation, session, and
+telemetry identities remain distinct causal observations; only reused causal
+identity is rejected. This avoids discarding honest repeated outcomes without
+letting one receipt inflate the sample.
 The local hash seals and checkout binding are tamper-evident evidence within the
 same-user cooperative trust boundary, not a signed remote-execution
-attestation.
+attestation. The unique campaign policy hash must be published in an external
+immutable channel before execution before the study is described as independently
+preregistered.
 
 Until such a receipt exists, the honest claim is that the harness has a stronger,
 auditable quality mechanism. After it exists, “better than the previous harness”

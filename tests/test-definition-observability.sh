@@ -137,6 +137,19 @@ frontier_row() {
   # A malformed same-cycle tail must not change the recorder's transition
   # status when the shared parser rejects it.
   printf '%s\n' '{"review_cycle_id":3,"status":"clear"}'
+  # Every persisted revision/timestamp field shares the exact-integer ceiling.
+  # Oversized or exponent-shaped JSON numbers remain invalid observations and
+  # cannot become grouping keys or chronology authority in the reducer.
+  frontier_row qc-overflow-0001 4 clear none false 9 \
+    | jq -c '.contract_revision=1000000000000000'
+  frontier_row qc-overflow-0002 4 clear none false 10 \
+    | jq -c '.review_cycle_id=1e100'
+  frontier_row qc-overflow-0003 4 clear none false 11 \
+    | jq -c '.edit_revision=1000000000000000'
+  frontier_row qc-overflow-0004 4 clear none false 12 \
+    | jq -c '.plan_revision=1000000000000000'
+  frontier_row qc-overflow-0005 4 clear none false 13 \
+    | jq -c '.reviewed_at=1e100'
 } >"${history_file}"
 history_summary="$(quality_frontier_history_summary "${history_file}")"
 assert_eq "seven authoritative reviews counted" "7" \
@@ -147,10 +160,16 @@ assert_eq "cross-contract clear in one objective cycle counts remediation" "2" \
   "$(jq -r '.remediations' <<<"${history_summary}")"
 assert_eq "superseded contract is not left unresolved" "1" \
   "$(jq -r '.unresolved_frontiers' <<<"${history_summary}")"
-assert_eq "contradictory and malformed rows are disclosed as invalid" "2" \
+assert_eq "contradictory, malformed, and oversized rows are invalid" "7" \
   "$(jq -r '.invalid_rows' <<<"${history_summary}")"
 assert_eq "malformed same-cycle tail cannot seed recorder transition state" "open" \
   "$(quality_frontier_history_last_status_for_cycle "${history_file}" 3)"
+overflow_cycle_rc=0
+quality_frontier_history_last_status_for_cycle \
+  "${history_file}" 1000000000000000 >/dev/null 2>&1 \
+  || overflow_cycle_rc=$?
+assert_eq "frontier lookup rejects an oversized cycle selector" "1" \
+  "${overflow_cycle_rc}"
 
 printf 'Test 3: /ulw-report exposes history-backed rates and actual event taxonomy\n'
 unset OMC_LAZY_TIMING
@@ -182,7 +201,7 @@ assert_contains "report renders remediation count and denominator" \
 assert_contains "report retains unresolved frontier count" \
   "| Material frontiers unresolved at session snapshot | 1 |" "${report_out}"
 assert_contains "report discloses excluded malformed relation" \
-  "2 malformed/unrecognized frontier-history row(s) were excluded" "${report_out}"
+  "7 malformed/unrecognized frontier-history row(s) were excluded" "${report_out}"
 assert_contains "report renders root arming taxonomy" \
   '| `definition-of-excellent` | `armed` | 1 |' "${report_out}"
 assert_contains "report renders frontier discovery taxonomy" \

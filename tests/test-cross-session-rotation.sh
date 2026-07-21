@@ -27,6 +27,17 @@ assert_eq() {
   fi
 }
 
+assert_nonzero() {
+  local label="$1" actual="$2"
+  if [[ "${actual}" -ne 0 ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    expected nonzero actual=%q\n' \
+      "${label}" "${actual}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # ----------------------------------------------------------------------
 printf 'Test 1: helper exists\n'
 if declare -F _cap_cross_session_jsonl >/dev/null; then
@@ -81,10 +92,12 @@ assert_eq "last row preserved" '{"row":250}' "${last_row}"
 
 # ----------------------------------------------------------------------
 printf 'Test 7: every cross-session JSONL cap goes through the helper\n'
-# 1 def + 7 call sites (misfires, summary, serendipity-log, gate-skips,
-# gate_events, used-archetypes, timing-log) = 8 total. If a future
-# contributor open-codes an 8th cap site instead of calling the helper,
-# this fails — same anti-pattern the helper was created to prevent.
+# 1 def + 6 call sites (misfires, summary, serendipity-log, gate-skips,
+# gate_events, used-archetypes) = 7 total. Timing retention intentionally uses
+# `_sweep_retain_timing_locked` because expiry filtering and capping must share
+# one writer mutex; assert that dedicated path separately below. If a future
+# contributor open-codes another ordinary cap site instead of calling the
+# helper, this fails — the same anti-pattern the helper was created to prevent.
 # Strip leading whitespace + comment lines so doc references don't inflate.
 # Anchor with `(^|[^a-zA-Z0-9_])` so the count excludes the v1.30.0
 # `_do_cap_cross_session_jsonl` inner-helper occurrences (which have
@@ -92,7 +105,13 @@ printf 'Test 7: every cross-session JSONL cap goes through the helper\n'
 # inflation when the public helper's name is a suffix of an internal one.
 miscall_count="$(grep -vE '^\s*#' "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
   | grep -cE '(^|[^a-zA-Z0-9_])_cap_cross_session_jsonl' || true)"
-assert_eq "expected 8 mentions in common.sh (1 def + 7 callers)" "8" "${miscall_count}"
+assert_eq "expected 7 mentions in common.sh (1 def + 6 callers)" "7" "${miscall_count}"
+
+timing_retention_count="$(grep -vE '^\s*#' \
+  "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh" \
+  | grep -cE '(^|[^a-zA-Z0-9_])_sweep_retain_timing_locked' || true)"
+assert_eq "timing retention has one definition and one locked caller" "2" \
+  "${timing_retention_count}"
 
 # Also assert the open-coded idiom is fully retired: no more "tail -n N > tmp ; mv tmp file"
 # blocks targeting cross-session JSONLs.
@@ -201,8 +220,81 @@ assert_eq "T12 case C: valid recent marker does not crash sweep" "0" "${_t12_rc}
 _t12_after="$(cat "${STATE_ROOT}/.last_sweep" 2>/dev/null || echo "")"
 assert_eq "T12 case C: valid recent marker unchanged" "${_t12_now}" "${_t12_after}"
 
+# Case D: a shell-visible numeric prefix followed by raw NUL is not a valid
+# daily authority marker. The sweep must replace the complete bytes.
+printf '%s\0\n' "${_t12_now}" >"${STATE_ROOT}/.last_sweep"
+_t12_rc=0
+sweep_stale_sessions || _t12_rc=$?
+assert_eq "T12 case D: NUL-tailed marker does not crash sweep" "0" "${_t12_rc}"
+_t12_expected="${STATE_ROOT}/.last_sweep.expected"
+_t12_after="$(_sweep_read_marker \
+  "${STATE_ROOT}/.last_sweep" "$(date +%s)")"
+printf '%s\n' "${_t12_after}" >"${_t12_expected}"
+assert_eq "T12 case D: NUL-tailed marker is canonically replaced" "yes" \
+  "$(cmp -s "${_t12_expected}" "${STATE_ROOT}/.last_sweep" \
+    && printf yes || printf no)"
+
+# Case E: extra blank records are likewise not the exact epoch generation.
+printf '%s\n\n' "${_t12_now}" >"${STATE_ROOT}/.last_sweep"
+_t12_rc=0
+sweep_stale_sessions || _t12_rc=$?
+assert_eq "T12 case E: extra-line marker does not crash sweep" "0" "${_t12_rc}"
+_t12_after="$(_sweep_read_marker \
+  "${STATE_ROOT}/.last_sweep" "$(date +%s)")"
+printf '%s\n' "${_t12_after}" >"${_t12_expected}"
+assert_eq "T12 case E: extra-line marker is canonically replaced" "yes" \
+  "$(cmp -s "${_t12_expected}" "${STATE_ROOT}/.last_sweep" \
+    && printf yes || printf no)"
+rm -f "${_t12_expected}"
+
 STATE_ROOT="${_T12_STATE_ROOT_BACKUP}"
 rm -rf "${_T12_STATE_ROOT}"
+
+# ----------------------------------------------------------------------
+printf 'Test 13: sweep JSON authorities reject literal NUL before jq normalization\n'
+
+raw_jsonl="${TEST_DIR}/raw-authority.jsonl"
+printf '{"row":1\0}\n' >"${raw_jsonl}"
+raw_rc=0
+_sweep_jsonl_is_bounded_objects "${raw_jsonl}" 4096 || raw_rc=$?
+assert_nonzero "raw-NUL JSONL is not merge authority" "${raw_rc}"
+
+raw_receipt="${TEST_DIR}/raw-receipt.json"
+printf '%s\0%s\n' \
+  '{"_v":1,"claim_id":"claim.raw-nul.ABC123","created_at":1' \
+  ',"host":"host","phase":"claimed","session_id":"raw-nul","source_identity":"1:2","source_mtime":1,"summary_id":"ss:host:raw-nul:abcdef12"}' \
+  >"${raw_receipt}"
+raw_rc=0
+_sweep_claim_receipt_valid "${raw_receipt}" || raw_rc=$?
+assert_nonzero "raw-NUL receipt cannot recover a deletion claim" "${raw_rc}"
+
+raw_generation="${TEST_DIR}/raw-generation"
+mkdir "${raw_generation}"
+printf '{"code_edit_count":1\0}\n' \
+  >"${raw_generation}/session_state.json"
+raw_rc=0
+_sweep_validate_generation_inputs "${raw_generation}" || raw_rc=$?
+assert_nonzero "raw-NUL state cannot be exported and retired" "${raw_rc}"
+
+printf '{}\n' >"${raw_generation}/session_state.json"
+printf '%s\n' 'src/user-flow-v1.0.ts' \
+  >"${raw_generation}/edited_files.log"
+raw_rc=0
+_sweep_validate_generation_inputs "${raw_generation}" || raw_rc=$?
+assert_eq "ordinary edited-file paths remain valid sweep authority" "0" \
+  "${raw_rc}"
+printf 'src/user-flow.ts\tforged\n' \
+  >"${raw_generation}/edited_files.log"
+raw_rc=0
+_sweep_validate_generation_inputs "${raw_generation}" || raw_rc=$?
+assert_nonzero "control-bearing edited paths cannot be sweep authority" \
+  "${raw_rc}"
+rm -f "${raw_generation}/edited_files.log"
+printf '{"findings":[],"waves":[],"padding":1\0}\n' \
+  >"${raw_generation}/findings.json"
+raw_rc=0
+_sweep_validate_generation_inputs "${raw_generation}" || raw_rc=$?
+assert_nonzero "raw-NUL findings cannot be exported and retired" "${raw_rc}"
 
 printf '\n=== Cross-Session Rotation Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"
 [[ "${fail}" -eq 0 ]] || exit 1

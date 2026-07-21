@@ -250,6 +250,25 @@ if [[ -f "${file}" ]]; then
 fi
 assert_eq "second append no-op (dedup)" "${written_count}" "${written_count2}"
 
+# Gate-relevant discovered scope must fail closed on a hostile target shape.
+# The universal summary claim may only become effects-complete after this
+# append succeeds; following a symlink would both corrupt external bytes and
+# falsely certify that all findings were recorded.
+reset_scope
+external_scope="${TEST_STATE_ROOT}/external-scope.jsonl"
+printf 'external-scope-sentinel\n' >"${external_scope}"
+ln -s "${external_scope}" "${file}"
+set +e
+append_discovered_scope "metis" "${rows}" >/dev/null 2>&1
+scope_symlink_rc=$?
+set -e
+assert_eq "symlinked discovered-scope target fails closed" "1" \
+  "$([[ "${scope_symlink_rc}" -ne 0 ]] && printf 1 || printf 0)"
+assert_eq "symlinked discovered-scope target preserves external bytes" \
+  "external-scope-sentinel" "$(<"${external_scope}")"
+rm -f "${file}"
+append_discovered_scope "metis" "${rows}"
+
 # ----------------------------------------------------------------------
 printf 'Test 8: read_pending_scope_count\n'
 pending="$(read_pending_scope_count)"
@@ -749,16 +768,50 @@ custom_prose_count=0
 fi
 assert_eq "custom prose-only output is not heuristic-scraped" "0" "${custom_prose_count}"
 
+custom_council_native_id="native-custom-trust-auditor"
 seed_current_custom_council_dispatch() {
   local state_dir="$1" ts="$2"
-  printf '%s\n' '{"objective_prompt_ts":0,"objective_prompt_revision":0}' \
+  local lifecycle="dispatch-customcouncil-${ts}-abcdefgh"
+
+  # Model a real current Council dispatch. Current sessions bind every
+  # completion to the immutable lifecycle/native/objective/enforcement tuple;
+  # a bare legacy pending row is intentionally not publication authority.
+  jq '. + {
+      ulw_enforcement_active:"1",ulw_enforcement_generation:"1",
+      subagent_dispatch_tracking_version:"1",
+      native_agent_id_tracking_version:"1",
+      last_user_prompt_ts:100,prompt_revision:1,
+      review_cycle_prompt_ts:100,review_cycle_id:1
+    }' "${state_dir}/session_state.json" \
+    > "${state_dir}/session_state.json.tmp"
+  mv "${state_dir}/session_state.json.tmp" \
+    "${state_dir}/session_state.json"
+  printf '%s\n' \
+    '{"objective_prompt_ts":100,"objective_prompt_revision":1,"objective_cycle_id":1}' \
     > "${state_dir}/council_coverage.json"
   jq -nc \
+    --arg native "${custom_council_native_id}" \
+    --arg lifecycle "${lifecycle}" \
     --argjson ts "${ts}" \
-    '{ts:$ts,agent_type:"custom-trust-auditor",description:"[council:primary] trust audit",
-      purpose:"council",council_phase:"primary",council_selection_agent:"custom-trust-auditor",
-      council_objective_prompt_ts:0,council_objective_prompt_revision:0,council_ledger_generation:1}' \
+    '{ts:$ts,agent_type:"custom-trust-auditor",
+      description:"[council:primary] trust audit",
+      lifecycle_dispatch_id:$lifecycle,native_agent_id:$native,
+      edit_revision:0,code_revision:0,doc_revision:0,bash_revision:0,
+      ui_revision:0,plan_revision:0,review_revision:0,
+      objective_prompt_ts:100,objective_prompt_revision:1,
+      objective_cycle_id:1,ulw_enforcement_generation:"1",
+      purpose:"council",council_phase:"primary",
+      council_selection_agent:"custom-trust-auditor",
+      council_objective_prompt_ts:100,council_objective_prompt_revision:1,
+      council_ledger_generation:1}' \
     > "${state_dir}/pending_agents.jsonl"
+  jq -nc \
+    --arg native "${custom_council_native_id}" \
+    --arg lifecycle "${lifecycle}" \
+    '{native_agent_id:$native,agent_type:"custom-trust-auditor",
+      review_dispatch_id:"",lifecycle_dispatch_id:$lifecycle,
+      objective_cycle_id:1,ts:100}' \
+    > "${state_dir}/native_agent_bindings.jsonl"
 }
 
 custom_missing_session_id="zc-custom-missing-json-$$"
@@ -767,8 +820,10 @@ mkdir -p "${custom_missing_state_dir}"
 printf '{"workflow_mode":"ultrawork"}\n' > "${custom_missing_state_dir}/session_state.json"
 seed_current_custom_council_dispatch "${custom_missing_state_dir}" 1
 custom_missing=$'I found an issue but used my native prose format.\nVERDICT: FINDINGS (1)'
-custom_missing_payload="$(jq -nc --arg sid "${custom_missing_session_id}" --arg msg "${custom_missing}" \
-  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+custom_missing_payload="$(jq -nc --arg sid "${custom_missing_session_id}" \
+  --arg native "${custom_council_native_id}" --arg msg "${custom_missing}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",agent_id:$native,
+    message:$msg,last_assistant_message:$msg}')"
 OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_missing_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
 bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
   <<<"${custom_missing_payload}" >/dev/null 2>&1 || true
@@ -791,6 +846,59 @@ assert_eq "repeat malformed Council return gets a distinct pending placeholder" 
   "$(jq -s -r '[length, ([.[] | select(.status == "pending")] | length)] | map(tostring) | join(":")' \
       "${custom_missing_state_dir}/discovered_scope.jsonl" 2>/dev/null)"
 
+# Legacy Council rows without a lifecycle ID use the persisted violation
+# sequence as their dedupe identity. Oversized decimal text must fail closed
+# before Bash arithmetic can wrap it into a reused event ID.
+legacy_seq_session_id="zc-custom-legacy-seq-$$"
+legacy_seq_state_dir="${zc_session_root}/${legacy_seq_session_id}"
+legacy_seq_value="999999999999999999999999999999999999"
+mkdir -p "${legacy_seq_state_dir}"
+jq -nc --arg seq "${legacy_seq_value}" '{
+  workflow_mode:"ultrawork",last_user_prompt_ts:"100",
+  review_cycle_prompt_ts:"100",prompt_revision:"1",review_cycle_id:"1",
+  scope_contract_violation_seq:$seq
+}' >"${legacy_seq_state_dir}/session_state.json"
+printf '%s\n' \
+  '{"objective_prompt_ts":100,"objective_prompt_revision":1,"objective_cycle_id":1}' \
+  >"${legacy_seq_state_dir}/council_coverage.json"
+jq -nc '{
+  ts:3,agent_type:"custom-trust-auditor",
+  description:"[council:primary] legacy trust audit",
+  edit_revision:0,code_revision:0,doc_revision:0,bash_revision:0,
+  ui_revision:0,plan_revision:0,review_revision:0,
+  objective_prompt_ts:100,objective_prompt_revision:1,objective_cycle_id:1,
+  ulw_enforcement_generation:"migration",purpose:"council",
+  council_phase:"primary",council_selection_agent:"custom-trust-auditor",
+  council_objective_prompt_ts:100,council_objective_prompt_revision:1,
+  council_ledger_generation:1
+}' >"${legacy_seq_state_dir}/pending_agents.jsonl"
+legacy_seq_payload="$(jq -nc \
+  --arg sid "${legacy_seq_session_id}" --arg msg "${custom_missing}" '
+    {session_id:$sid,agent_type:"custom-trust-auditor",
+     message:$msg,last_assistant_message:$msg}
+  ')"
+legacy_seq_rc=0
+OMC_DISCOVERED_SCOPE=on \
+SESSION_ID="${legacy_seq_session_id}" \
+STATE_ROOT="${zc_session_root}" \
+HOME="${zc_session_root}" \
+bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
+  <<<"${legacy_seq_payload}" >/dev/null 2>&1 || legacy_seq_rc=$?
+assert_eq "oversized legacy sequence fails the summary publication" "1" \
+  "$([[ "${legacy_seq_rc}" -ne 0 ]] && printf 1 || printf 0)"
+assert_eq "oversized legacy sequence remains unchanged" \
+  "${legacy_seq_value}" \
+  "$(jq -r '.scope_contract_violation_seq' \
+    "${legacy_seq_state_dir}/session_state.json")"
+assert_eq "oversized legacy sequence cannot mint an aliased placeholder" "0" \
+  "$([[ -f "${legacy_seq_state_dir}/discovered_scope.jsonl" ]] \
+    && wc -l <"${legacy_seq_state_dir}/discovered_scope.jsonl" \
+      | tr -d ' ' || printf 0)"
+assert_eq "oversized legacy sequence publishes no parent outcome" "0" \
+  "$([[ -f "${legacy_seq_state_dir}/agent_completion_outcomes.jsonl" ]] \
+    && wc -l <"${legacy_seq_state_dir}/agent_completion_outcomes.jsonl" \
+      | tr -d ' ' || printf 0)"
+
 # Last authoritative verdict wins and fenced examples do not arm the contract.
 custom_clean_session_id="zc-custom-clean-$$"
 custom_clean_state_dir="${zc_session_root}/${custom_clean_session_id}"
@@ -798,8 +906,10 @@ mkdir -p "${custom_clean_state_dir}"
 printf '{"workflow_mode":"ultrawork"}\n' > "${custom_clean_state_dir}/session_state.json"
 seed_current_custom_council_dispatch "${custom_clean_state_dir}" 1
 custom_clean=$'Earlier draft:\n```text\nVERDICT: FINDINGS (2)\n```\nVERDICT: FINDINGS (1)\nEvidence resolved on recheck.\nVERDICT: CLEAN'
-custom_clean_payload="$(jq -nc --arg sid "${custom_clean_session_id}" --arg msg "${custom_clean}" \
-  '{session_id:$sid,agent_type:"custom-trust-auditor",message:$msg,last_assistant_message:$msg}')"
+custom_clean_payload="$(jq -nc --arg sid "${custom_clean_session_id}" \
+  --arg native "${custom_council_native_id}" --arg msg "${custom_clean}" \
+  '{session_id:$sid,agent_type:"custom-trust-auditor",agent_id:$native,
+    message:$msg,last_assistant_message:$msg}')"
 OMC_DISCOVERED_SCOPE=on SESSION_ID="${custom_clean_session_id}" STATE_ROOT="${zc_session_root}" HOME="${zc_session_root}" \
 bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/record-subagent-summary.sh" \
   <<<"${custom_clean_payload}" >/dev/null 2>&1 || true

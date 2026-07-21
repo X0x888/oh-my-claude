@@ -35,6 +35,7 @@ export STATE_ROOT="${_test_state_root}"
 
 pass=0
 fail=0
+TEST_FINALIZER_CLAIM_ID="finalizer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 assert_eq() {
   local label="$1" expected="$2" actual="$3"
@@ -69,6 +70,7 @@ _drive() {
     OMC_TRANSCRIPT_ARCHIVE="${archive_flag}" \
     OMC_STOP_FAILURE_CAPTURE="${stop_failure_flag}" \
     OMC_STOP_ACCEPTED=1 \
+    OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
     bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
     <<<"${payload}" 2>/dev/null || true
 }
@@ -77,7 +79,23 @@ _init_sid() {
   local sid="$1"
   local sdir="${_test_state_root}/${sid}"
   mkdir -p "${sdir}"
-  printf '{"workflow_mode":"ultrawork"}\n' >"${sdir}/session_state.json"
+  jq -nc --arg claim "${TEST_FINALIZER_CLAIM_ID}" \
+    --argjson now "$(date +%s)" '
+      {workflow_mode:"ultrawork",review_cycle_id:"1",prompt_revision:"1",
+       session_outcome:"completed",closeout_finalized_token:"1:1:completed",
+       closeout_finalization_status:"claimed",
+       closeout_finalization_claimed_ts:$now,
+       closeout_finalization_claim_id:$claim}
+    ' >"${sdir}/session_state.json"
+}
+
+_claim_fresh_finalizer() {
+  local sid="$1"
+  env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    SESSION_ID="${sid}" bash -c '
+      . "$1"
+      closeout_claim_finalization
+    ' -- "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 }
 
 _find_archive() {
@@ -130,6 +148,7 @@ payload="$(jq -nc --arg sid "${sid}" '{session_id:$sid}')"
 out="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
   OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
   OMC_STOP_ACCEPTED=1 \
+  OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
   bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
   <<<"${payload}" 2>/dev/null || true)"
 assert_eq "T3: empty output" "" "${out}"
@@ -187,6 +206,223 @@ for matcher in rate_limit authentication_failed billing_error max_output_tokens;
   archive_path="$(_find_archive "${sid}")"
   assert_eq "T7: no archive on matcher=${matcher}" "" "${archive_path}"
 done
+
+# ---------------------------------------------------------------------------
+# T8: generation changes while G1 waits for publication lock. The stale G1
+# must not win the first-write slot; the current G2 invocation must still be
+# able to publish the archive afterward.
+# ---------------------------------------------------------------------------
+printf 'T8: stale G1 cannot suppress G2 archive publication\n'
+sid="t8-${RANDOM}"
+_init_sid "${sid}"
+jq '. + {ulw_enforcement_generation:"801"}' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+payload="$(jq -nc --arg sid "${sid}" --arg tp "${_fake_transcript}" \
+  '{session_id:$sid, transcript_path:$tp}')"
+archive_ready="${_test_state_root}/t8.ready"
+archive_release="${_test_state_root}/t8.release"
+(
+  printf '%s' "${payload}" \
+    | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+      OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+      OMC_STOP_ACCEPTED=1 _OMC_ULW_CAPTURED_GENERATION=801 \
+      OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${archive_ready}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${archive_release}" \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+      >/dev/null 2>&1 || true
+) &
+archive_pid=$!
+archive_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${archive_ready}" ]]; then
+    archive_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "T8: G1 reached deterministic pre-acquire barrier" "1" \
+  "${archive_barrier_seen}"
+jq '.ulw_enforcement_generation="802"' \
+  "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+: >"${archive_release}"
+wait "${archive_pid}" || true
+archive_path="$(_find_archive "${sid}")"
+assert_eq "T8: stale G1 published no archive" "" "${archive_path}"
+assert_eq "T8: stale G1 emitted no captured event" "0" \
+  "$(jq -sr '[.[] | select(.gate == "transcript-archive" and .event == "captured")] | length' \
+      "${_test_state_root}/${sid}/gate_events.jsonl" 2>/dev/null || printf 0)"
+stage_count="$(find "${_test_home}/.claude/quality-pack/state/.transcript-archive-staging" \
+  -type f -name ".${sid}.*" 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "T8: rejected G1 cleaned its staged copy" "0" "${stage_count}"
+
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_STOP_ACCEPTED=1 _OMC_ULW_CAPTURED_GENERATION=802 \
+    OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1 || true
+archive_path="$(_find_archive "${sid}")"
+if [[ -f "${archive_path}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T8: current G2 could not publish after stale G1 rejection\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T9: accepted child failures are visible to the dispatcher, while a direct
+# standalone invocation remains fail-open. A fresh accepted retry publishes.
+# ---------------------------------------------------------------------------
+printf 'T9: accepted publication failure propagates and remains retryable\n'
+sid="t9-${RANDOM}"
+_init_sid "${sid}"
+payload="$(jq -nc --arg sid "${sid}" --arg tp "${_fake_transcript}" \
+  '{session_id:$sid, transcript_path:$tp}')"
+missing_claim_rc=0
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_STOP_ACCEPTED=1 \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1 || missing_claim_rc=$?
+assert_eq "T9: accepted archive child requires an exact claimant ID" "1" \
+  "${missing_claim_rc}"
+accepted_failure_rc=0
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_STOP_ACCEPTED=1 OMC_TEST_TRANSCRIPT_ARCHIVE_PUBLISH_FAIL=1 \
+    OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1 || accepted_failure_rc=$?
+assert_eq "T9: accepted publication failure returns non-zero" "1" \
+  "${accepted_failure_rc}"
+assert_eq "T9: failed accepted publication leaves no archive" "" \
+  "$(_find_archive "${sid}")"
+standalone_failure_rc=0
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_TEST_TRANSCRIPT_ARCHIVE_PUBLISH_FAIL=1 \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1 || standalone_failure_rc=$?
+assert_eq "T9: standalone archive hook remains fail-open" "0" \
+  "${standalone_failure_rc}"
+retry_rc=0
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_STOP_ACCEPTED=1 \
+    OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1 || retry_rc=$?
+assert_eq "T9: fresh accepted retry succeeds" "0" "${retry_rc}"
+archive_path="$(_find_archive "${sid}")"
+if [[ -f "${archive_path}" ]]; then
+  pass=$((pass + 1))
+else
+  printf '  FAIL: T9: retry did not publish an archive\n' >&2
+  fail=$((fail + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# T10: claimant A stages while current, then claimant B replaces its expired
+# lease before A takes the publication mutex. A must publish nothing; B owns
+# the only archive and captured event.
+# ---------------------------------------------------------------------------
+printf 'T10: expired claimant A cannot publish after replacement B\n'
+sid="t10-${RANDOM}"
+_init_sid "${sid}"
+claim_a="${TEST_FINALIZER_CLAIM_ID}"
+payload="$(jq -nc --arg sid "${sid}" --arg tp "${_fake_transcript}" \
+  '{session_id:$sid,transcript_path:$tp}')"
+archive_ready="${_test_state_root}/t10.ready"
+archive_release="${_test_state_root}/t10.release"
+archive_rc_file="${_test_state_root}/t10.rc"
+(
+  archive_a_rc=0
+  printf '%s' "${payload}" \
+    | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+      OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+      OMC_STOP_ACCEPTED=1 \
+      OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${claim_a}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${archive_ready}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${archive_release}" \
+      bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+      >/dev/null 2>&1 || archive_a_rc=$?
+  printf '%s\n' "${archive_a_rc}" >"${archive_rc_file}"
+) &
+archive_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${archive_ready}" ]] && break
+  sleep 0.01
+done
+assert_eq "T10: claimant A reached the publication boundary" "true" \
+  "$([[ -e "${archive_ready}" ]] && printf true || printf false)"
+jq --argjson expired_at "$(( $(date +%s) - 121 ))" '
+  .closeout_finalization_claimed_ts=$expired_at
+' "${_test_state_root}/${sid}/session_state.json" \
+  >"${_test_state_root}/${sid}/session_state.json.tmp"
+mv "${_test_state_root}/${sid}/session_state.json.tmp" \
+  "${_test_state_root}/${sid}/session_state.json"
+claim_b="$(_claim_fresh_finalizer "${sid}")"
+assert_eq "T10: expired claimant is replaced with a fresh exact identity" \
+  "true" \
+  "$([[ "${claim_b}" =~ ^finalizer-[a-f0-9]{48}$ \
+        && "${claim_b}" != "${claim_a}" ]] \
+    && printf true || printf false)"
+: >"${archive_release}"
+wait "${archive_pid}" || true
+assert_eq "T10: replaced claimant A returns failure" "1" \
+  "$(<"${archive_rc_file}")"
+assert_eq "T10: replaced claimant A publishes no archive" "" \
+  "$(_find_archive "${sid}")"
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_STOP_ACCEPTED=1 OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${claim_b}" \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1
+assert_eq "T10: replacement B publishes exactly one archive" "1" \
+  "$(find "${_test_home}/.claude/quality-pack/state" \
+      \( -path "*/${sid}/transcript.json" -o \
+         -path "*/${sid}/transcript.jsonl" \) -type f \
+      | wc -l | tr -d '[:space:]')"
+
+# ---------------------------------------------------------------------------
+# T11: the staging cleanup trap is armed before chmod. A failure at that exact
+# boundary must leave neither an archive nor an inert privacy-sensitive temp.
+# ---------------------------------------------------------------------------
+printf 'T11: stage chmod failure is cleaned immediately\n'
+sid="t11-${RANDOM}"
+_init_sid "${sid}"
+payload="$(jq -nc --arg sid "${sid}" --arg tp "${_fake_transcript}" \
+  '{session_id:$sid,transcript_path:$tp}')"
+chmod_failure_rc=0
+printf '%s' "${payload}" \
+  | env HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
+    OMC_TRANSCRIPT_ARCHIVE=on OMC_STOP_FAILURE_CAPTURE=on \
+    OMC_STOP_ACCEPTED=1 \
+    OMC_CLOSEOUT_FINALIZATION_CLAIM_ID="${TEST_FINALIZER_CLAIM_ID}" \
+    OMC_TEST_TRANSCRIPT_ARCHIVE_CHMOD_FAIL=1 \
+    bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/stop-transcript-archive.sh" \
+    >/dev/null 2>&1 || chmod_failure_rc=$?
+assert_eq "T11: injected chmod failure propagates" "1" \
+  "${chmod_failure_rc}"
+assert_eq "T11: chmod failure publishes no archive" "" \
+  "$(_find_archive "${sid}")"
+stage_count="$(find "${_test_home}/.claude/quality-pack/state/.transcript-archive-staging" \
+  -type f -name ".${sid}.*" 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "T11: chmod failure leaves no staged transcript" "0" \
+  "${stage_count}"
 
 printf '\ntest-stop-transcript-archive: %d passed, %d failed\n' "${pass}" "${fail}"
 exit "${fail}"

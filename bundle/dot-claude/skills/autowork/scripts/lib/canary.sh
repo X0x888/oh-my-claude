@@ -131,7 +131,7 @@ canary_extract_claim_count() {
 # Glob, WebFetch, NotebookRead. Edit, Write, and TaskCreate do NOT
 # count because they are mutation operations, not verification.
 #
-# Reads the session's `timing.jsonl` (lock-free append-only log
+# Reads the session's `timing.jsonl` (mutex-serialized append-only log
 # already used by the time-tracking subsystem) and filters rows by
 # prompt_seq + tool_name. The timing log carries `event` (start|end),
 # `tool_name`, `prompt_seq`, `tool_use_id` per row; the audit only
@@ -159,11 +159,19 @@ canary_count_verification_tools() {
   # see schema drift):
   #   {kind, ts, tool, prompt_seq, tool_use_id?} for tool start/end
   #   {kind:"prompt_start"|"prompt_end", ts, prompt_seq, ...} for prompt boundaries
-  jq -sr --arg ps "${prompt_seq}" '
-    [
-      to_entries[]
+  jq -Rsr --arg ps "${prompt_seq}" '
+    def canonical_uint:
+      type == "number" and floor == . and . >= 0
+      and . <= 999999999999999;
+    [split("\n")[] | select(length > 0) | fromjson?
+      | select(type == "object")] as $rows
+    | [
+      $rows | to_entries[]
       | select(.value.kind == "start"
-          and ((.value.prompt_seq // "") | tostring) == $ps
+          and (.value.ts | canonical_uint) and .value.ts > 0
+          and (.value.prompt_seq | canonical_uint)
+          and (.value.prompt_seq | tostring) == $ps
+          and (((.value.tool_use_id // "") | type) == "string")
           and (.value.tool | IN("Read","Bash","Grep","Glob","WebFetch","NotebookRead")))
       | if ((.value.tool_use_id // "") != "") then
           "id:\(.value.tool_use_id)"
@@ -188,8 +196,216 @@ canary_get_current_prompt_seq() {
   local session_id="$1"
   [[ -z "${session_id}" ]] && return
   local sf="${STATE_ROOT}/${session_id}/session_state.json"
-  [[ ! -f "${sf}" ]] && return
-  jq -r '.prompt_seq // empty' "${sf}" 2>/dev/null || true
+  [[ -f "${sf}" && ! -L "${sf}" ]] || return
+  # Validate before raw projection: Bash drops decoded NUL, so a persisted
+  # `"1\u0000"` must not become prompt 1 and bind unrelated timing evidence.
+  jq -er '
+    select(type == "object"
+      and all(.. | strings; index("\u0000") == null))
+    | .prompt_seq
+    | if type == "number" then
+        select(floor == . and . >= 0 and . <= 999999999999999)
+        | tostring
+      elif type == "string" then
+        select(test("^(0|[1-9][0-9]{0,14})$"))
+      else empty
+      end
+  ' "${sf}" 2>/dev/null || true
+}
+
+# Publish one fully-computed audit while holding the session mutex. The
+# generation check must be the first operation under that mutex: an old Stop
+# callback can finish its read/encode work after a release -> reactivation and
+# must not append G1 evidence to G2's ledgers (or emit a G2 gate event).
+_canary_finalizer_claim_valid_unlocked() {
+  local accepted="${1:-0}" claim_id="${2:-}"
+  [[ "${accepted}" == "1" ]] || return 0
+  declare -F _closeout_finalization_claim_is_current_unlocked \
+    >/dev/null 2>&1 || return 1
+  _closeout_finalization_claim_is_current_unlocked "${claim_id}"
+}
+
+_canary_append_xs_locked() {
+  local target="$1" session_id="$2" prompt_seq="$3" row="$4"
+  local accepted="$5" claim_id="$6"
+  local temp trim lines
+  _canary_finalizer_claim_valid_unlocked "${accepted}" "${claim_id}" \
+    || return 1
+  [[ ! -L "${target}" ]] \
+    && { [[ ! -e "${target}" ]] || [[ -f "${target}" ]]; } || return 1
+  temp="$(mktemp "${target}.XXXXXX" 2>/dev/null)" || return 1
+  if [[ -s "${target}" ]]; then
+    if ! jq -Rr --arg sid "${session_id}" --arg ps "${prompt_seq}" '
+        . as $raw
+        | (try ($raw | fromjson) catch null) as $parsed
+        | select(($parsed | type) == "object")
+        | select(($parsed.session_id // "") != $sid
+          or (($parsed.prompt_seq // "") | tostring) != $ps)
+        | $raw
+      ' "${target}" >"${temp}" 2>/dev/null; then
+      rm -f "${temp}"
+      return 1
+    fi
+  else
+    : >"${temp}"
+  fi
+  printf '%s\n' "${row}" >>"${temp}" || { rm -f "${temp}"; return 1; }
+  lines="$(wc -l <"${temp}" 2>/dev/null | tr -d '[:space:]')"
+  [[ "${lines}" =~ ^[0-9]+$ ]] || { rm -f "${temp}"; return 1; }
+  if (( lines > 10000 )); then
+    trim="$(mktemp "${target}.trim.XXXXXX" 2>/dev/null)" \
+      || { rm -f "${temp}"; return 1; }
+    if ! tail -n 8000 "${temp}" >"${trim}" 2>/dev/null; then
+      rm -f "${temp}" "${trim}"
+      return 1
+    fi
+    rm -f "${temp}"
+    temp="${trim}"
+  fi
+  if [[ -n "${OMC_TEST_CANARY_XS_READY_FILE:-}" ]]; then
+    : >"${OMC_TEST_CANARY_XS_READY_FILE}"
+    while [[ -n "${OMC_TEST_CANARY_XS_RELEASE_FILE:-}" \
+        && ! -e "${OMC_TEST_CANARY_XS_RELEASE_FILE}" ]]; do
+      sleep 0.01
+    done
+  fi
+  _canary_finalizer_claim_valid_unlocked "${accepted}" "${claim_id}" \
+    || { rm -f "${temp}"; return 1; }
+  mv -f "${temp}" "${target}" 2>/dev/null \
+    || { rm -f "${temp}"; return 1; }
+}
+
+_canary_publish_gate_event_locked() {
+  local claim_count="$1" tool_count="$2" prompt_seq="$3"
+  local accepted="$4" finalizer_claim_id="$5"
+  local gate_file exact_count conflict_count
+  _canary_finalizer_claim_valid_unlocked \
+    "${accepted}" "${finalizer_claim_id}" || return 1
+  gate_file="$(session_file "gate_events.jsonl")"
+  exact_count=0
+  conflict_count=0
+  if [[ -s "${gate_file}" ]]; then
+    exact_count="$(jq -Rsr --arg ps "${prompt_seq}" \
+      --argjson cc "${claim_count}" --argjson tc "${tool_count}" '
+        [split("\n")[] | select(length > 0)
+          | (try fromjson catch null) | select(type == "object")
+          | select(.gate == "canary" and .event == "unverified_claim"
+            and ((.details.prompt_seq // "") | tostring) == $ps
+            and (.details.claim_count // null) == $cc
+            and (.details.tool_count // null) == $tc)] | length
+      ' "${gate_file}" 2>/dev/null)" || return 1
+    conflict_count="$(jq -Rsr --arg ps "${prompt_seq}" '
+        [split("\n")[] | select(length > 0)
+          | (try fromjson catch null) | select(type == "object")
+          | select(.gate == "canary" and .event == "unverified_claim"
+            and ((.details.prompt_seq // "") | tostring) == $ps)] | length
+      ' "${gate_file}" 2>/dev/null)" || return 1
+  fi
+  [[ "${exact_count}" =~ ^[0-9]+$ && "${conflict_count}" =~ ^[0-9]+$ ]] \
+    || return 1
+  if [[ "${exact_count}" -eq 1 && "${conflict_count}" -eq 1 ]]; then
+    return 0
+  fi
+  [[ "${conflict_count}" -eq 0 ]] || return 1
+  _canary_finalizer_claim_valid_unlocked \
+    "${accepted}" "${finalizer_claim_id}" || return 1
+  record_gate_event "canary" "unverified_claim" \
+    "claim_count=${claim_count}" \
+    "tool_count=${tool_count}" \
+    "prompt_seq=${prompt_seq}"
+  [[ -s "${gate_file}" ]] || return 1
+  exact_count="$(jq -Rsr --arg ps "${prompt_seq}" \
+    --argjson cc "${claim_count}" --argjson tc "${tool_count}" '
+      [split("\n")[] | select(length > 0)
+        | (try fromjson catch null) | select(type == "object")
+        | select(.gate == "canary" and .event == "unverified_claim"
+          and ((.details.prompt_seq // "") | tostring) == $ps
+          and (.details.claim_count // null) == $cc
+          and (.details.tool_count // null) == $tc)] | length
+    ' "${gate_file}" 2>/dev/null)" || return 1
+  [[ "${exact_count}" == "1" ]]
+}
+
+_canary_publish_audit_locked() {
+  local session_id="$1" row="$2" xs_row="$3" verdict="$4"
+  local claim_count="$5" tool_count="$6" prompt_seq="$7"
+  local accepted="$8" finalizer_claim_id="$9"
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 1
+  fi
+  _canary_finalizer_claim_valid_unlocked \
+    "${accepted}" "${finalizer_claim_id}" || return 1
+  [[ "${OMC_TEST_CANARY_PUBLISH_FAIL:-0}" != "1" ]] || return 1
+
+  local sess_jsonl xs_jsonl existing_bundle existing_status durable_row
+  local durable_ts
+  sess_jsonl="$(session_file "canary.jsonl")"
+  if [[ -s "${sess_jsonl}" ]]; then
+    existing_bundle="$(jq -Rsr --arg ps "${prompt_seq}" \
+      --argjson expected "${row}" '
+      [split("\n")[] | select(length > 0)
+        | (try fromjson catch null) | select(type == "object")
+        | select(((.prompt_seq // "") | tostring) == $ps)] as $rows
+      | if ($rows | length) == 0 then {status:"absent",row:$expected}
+        elif ($rows | length) == 1
+          and (($rows[0].ts // null) | type) == "number"
+          and (($rows[0] | del(.ts)) == ($expected | del(.ts)))
+          then {status:"match",row:$rows[0]}
+        else {status:"conflict",row:null} end
+    ' "${sess_jsonl}" 2>/dev/null)" || return 1
+  else
+    existing_bundle="$(jq -cn --argjson row "${row}" \
+      '{status:"absent",row:$row}')" || return 1
+  fi
+  existing_status="$(jq -r '.status // ""' <<<"${existing_bundle}")" \
+    || return 1
+  [[ "${existing_status}" == "absent" \
+      || "${existing_status}" == "match" ]] || return 1
+  durable_row="$(jq -c '.row' <<<"${existing_bundle}")" || return 1
+  if [[ "${existing_status}" == "absent" ]]; then
+    _canary_finalizer_claim_valid_unlocked \
+      "${accepted}" "${finalizer_claim_id}" || return 1
+    _append_limited_state_locked "${sess_jsonl}" "${row}" 200 || return 1
+  fi
+  # Deterministic partial-publication seam: a retry must accept the already
+  # committed semantic session row even though its audit timestamp differs.
+  [[ "${OMC_TEST_CANARY_FAIL_AFTER_SESSION_APPEND:-0}" != "1" ]] \
+    || return 1
+
+  # The first durable session row owns this audit's timestamp. A retry after a
+  # partial publication reuses it in the global row instead of manufacturing a
+  # split identity from the retry clock.
+  durable_ts="$(jq -r '.ts' <<<"${durable_row}")" || return 1
+  [[ "${durable_ts}" =~ ^[0-9]+$ ]] || return 1
+  xs_row="$(jq -c --argjson ts "${durable_ts}" '.ts = $ts' \
+    <<<"${xs_row}")" || return 1
+
+  # The cross-session row belongs to the same generation-dependent publish.
+  # Keep it inside the session critical section so a stale callback cannot
+  # leave a global row after its per-session row was rejected.
+  xs_jsonl="${HOME}/.claude/quality-pack/canary.jsonl"
+  _canary_finalizer_claim_valid_unlocked \
+    "${accepted}" "${finalizer_claim_id}" || return 1
+  mkdir -p "$(dirname "${xs_jsonl}")" 2>/dev/null || return 1
+  with_cross_session_log_lock "${xs_jsonl}" _canary_append_xs_locked \
+    "${xs_jsonl}" "${session_id}" "${prompt_seq}" "${xs_row}" \
+    "${accepted}" "${finalizer_claim_id}" \
+    || return 1
+  # A retry after this boundary replaces the same global semantic key with the
+  # session-owned durable timestamp, so it cannot split one audit into two
+  # cross-session observations.
+  [[ "${OMC_TEST_CANARY_FAIL_AFTER_GLOBAL_APPEND:-0}" != "1" ]] \
+    || return 1
+
+  if [[ "${verdict}" == "unverified" ]]; then
+    _canary_publish_gate_event_locked \
+      "${claim_count}" "${tool_count}" "${prompt_seq}" \
+      "${accepted}" "${finalizer_claim_id}" || return 1
+    [[ "${OMC_TEST_CANARY_FAIL_AFTER_GATE_EVENT:-0}" != "1" ]] \
+      || return 1
+  fi
 }
 
 # canary_run_audit <session_id>
@@ -197,8 +413,8 @@ canary_get_current_prompt_seq() {
 # The hot path. Called from canary-claim-audit.sh at Stop time. Reads
 # the model's last assistant message, extracts the claim count, reads
 # the turn's verification tool count, and writes one canary.jsonl row
-# describing the audit result. Always exit-0 (audit failures must not
-# block Stop).
+# describing the audit result. Standalone calls fail open; accepted dispatcher
+# children propagate publication failure so the finalizer claim can be retried.
 #
 # Row schema (per-session):
 #   {ts, prompt_seq, claim_count, tool_count, ratio, verdict,
@@ -212,11 +428,18 @@ canary_get_current_prompt_seq() {
 #                       silent-confab signal — model claimed verification
 #                       work but fired zero verification tools in the turn)
 #
-# Returns 0 always. On error, logs to hooks.log via log_hook and exits
-# 0 — the canary is informational and must not become a failure mode.
+# Standalone calls remain fail-open. An accepted-Stop child returns non-zero
+# when its locked publication fails so the dispatcher can abandon its
+# finalizer lease and retry instead of marking incomplete evidence complete.
 canary_run_audit() {
   local session_id="$1"
+  local accepted="${OMC_STOP_ACCEPTED:-0}"
+  local finalizer_claim_id="${OMC_CLOSEOUT_FINALIZATION_CLAIM_ID:-}"
   [[ -z "${session_id}" ]] && return 0
+  if [[ "${accepted}" == "1" \
+      && ! "${finalizer_claim_id}" =~ ^finalizer-[a-f0-9]{48}$ ]]; then
+    return 1
+  fi
   if declare -F omc_enforcement_generation_matches_capture \
       >/dev/null 2>&1 \
       && ! omc_enforcement_generation_matches_capture; then
@@ -274,9 +497,11 @@ canary_run_audit() {
 
   response_preview="$(truncate_chars 240 "${last_assistant}")"
 
-  local row
+  local audit_ts row xs_row project_key
+  audit_ts="$(now_epoch)"
+  project_key="$(_omc_project_key 2>/dev/null || printf 'unknown')"
   row="$(jq -nc \
-    --argjson ts "$(now_epoch)" \
+    --argjson ts "${audit_ts}" \
     --arg ps "${prompt_seq}" \
     --argjson cc "${claim_count}" \
     --argjson tc "${tool_count}" \
@@ -288,33 +513,12 @@ canary_run_audit() {
 
   if [[ -z "${row}" ]]; then
     log_hook "canary" "skip: jq encoding failed"
+    [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] && return 1
     return 0
   fi
 
-  if declare -F omc_enforcement_generation_matches_capture \
-      >/dev/null 2>&1 \
-      && ! omc_enforcement_generation_matches_capture; then
-    return 0
-  fi
-
-  local sess_jsonl
-  sess_jsonl="$(session_file "canary.jsonl")"
-  printf '%s\n' "${row}" >> "${sess_jsonl}"
-  # Cap per-session canary log to prevent runaway. 200 rows is enough
-  # to track a long session; older rows roll off.
-  if [[ "$(wc -l < "${sess_jsonl}" 2>/dev/null || printf 0)" -gt 200 ]]; then
-    tail -n 200 "${sess_jsonl}" > "${sess_jsonl}.tmp" && mv "${sess_jsonl}.tmp" "${sess_jsonl}"
-  fi
-
-  # Cross-session aggregate at ~/.claude/quality-pack/canary.jsonl.
-  # Stamped with project_key (git-remote-first, cwd-hash fallback) so
-  # /ulw-report can split by project. Capped via existing helper.
-  local xs_jsonl="${HOME}/.claude/quality-pack/canary.jsonl"
-  mkdir -p "$(dirname "${xs_jsonl}")" 2>/dev/null || true
-  local project_key
-  project_key="$(_omc_project_key 2>/dev/null || printf 'unknown')"
-  jq -nc \
-    --argjson ts "$(now_epoch)" \
+  xs_row="$(jq -nc \
+    --argjson ts "${audit_ts}" \
     --arg pk "${project_key}" \
     --arg sid "${session_id}" \
     --arg ps "${prompt_seq}" \
@@ -323,20 +527,26 @@ canary_run_audit() {
     --argjson rp "${ratio_pct}" \
     --arg verdict "${verdict}" \
     '{ts: ($ts|tonumber), project_key: $pk, session_id: $sid, prompt_seq: $ps, claim_count: $cc, tool_count: $tc, ratio_pct: $rp, verdict: $verdict}' \
-    >> "${xs_jsonl}" 2>/dev/null || true
-
-  if command -v _cap_cross_session_jsonl >/dev/null 2>&1; then
-    _cap_cross_session_jsonl "${xs_jsonl}" 10000 8000 || true
+    2>/dev/null || true)"
+  if [[ -z "${xs_row}" ]]; then
+    log_hook "canary" "skip: cross-session jq encoding failed"
+    [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] && return 1
+    return 0
   fi
 
-  # Also emit a gate-event row when the verdict is unverified (the
-  # strongest single-event signal). /ulw-report consumes gate_events
-  # for the bias-defense + canary surfaces.
-  if [[ "${verdict}" == "unverified" ]]; then
-    record_gate_event "canary" "unverified_claim" \
-      "claim_count=${claim_count}" \
-      "tool_count=${tool_count}" \
-      "prompt_seq=${prompt_seq}"
+  # All expensive reads and encodes above are staged outside the mutex. The
+  # short locked publish rechecks the captured generation atomically with the
+  # per-session/global rows and any unverified gate event.
+  local publish_rc=0
+  with_state_lock _canary_publish_audit_locked \
+    "${session_id}" "${row}" "${xs_row}" "${verdict}" \
+    "${claim_count}" "${tool_count}" "${prompt_seq}" \
+    "${accepted}" "${finalizer_claim_id}" \
+    2>/dev/null || publish_rc=$?
+
+  if [[ "${publish_rc}" -ne 0 ]]; then
+    log_hook "canary" "locked audit publication failed"
+    [[ "${OMC_STOP_ACCEPTED:-0}" == "1" ]] && return "${publish_rc}"
   fi
 
   return 0
@@ -407,4 +617,45 @@ canary_should_alert() {
     return 0
   fi
   return 1
+}
+
+# Atomically test and claim the one-shot drift alert. Returning the count from
+# the locked body lets the caller render prose only after this generation won
+# the claim; concurrent/stale Stop callbacks return non-zero with no output.
+_canary_claim_alert_locked() {
+  local session_id="$1" accepted="$2" finalizer_claim_id="$3"
+  local emitted count max_claims
+  if declare -F omc_enforcement_generation_matches_capture \
+      >/dev/null 2>&1 \
+      && ! omc_enforcement_generation_matches_capture; then
+    return 1
+  fi
+  _canary_finalizer_claim_valid_unlocked \
+    "${accepted}" "${finalizer_claim_id}" || return 1
+
+  emitted="$(read_state "drift_warning_emitted")"
+  [[ "${emitted}" != "1" ]] || return 2
+  count="$(canary_session_unverified_count "${session_id}")"
+  max_claims="$(canary_session_max_unverified_claims "${session_id}")"
+  if [[ "${count}" -lt 2 && "${max_claims}" -lt 4 ]]; then
+    return 2
+  fi
+  _canary_finalizer_claim_valid_unlocked \
+    "${accepted}" "${finalizer_claim_id}" || return 1
+  _write_state_batch_unlocked "drift_warning_emitted" "1" || return 1
+  printf '%s' "${count}"
+}
+
+canary_claim_alert() {
+  local session_id="$1"
+  local accepted="${OMC_STOP_ACCEPTED:-0}"
+  local finalizer_claim_id="${OMC_CLOSEOUT_FINALIZATION_CLAIM_ID:-}"
+  [[ -n "${session_id}" && "${SESSION_ID:-}" == "${session_id}" ]] \
+    || return 1
+  if [[ "${accepted}" == "1" \
+      && ! "${finalizer_claim_id}" =~ ^finalizer-[a-f0-9]{48}$ ]]; then
+    return 1
+  fi
+  with_state_lock _canary_claim_alert_locked "${session_id}" \
+    "${accepted}" "${finalizer_claim_id}"
 }

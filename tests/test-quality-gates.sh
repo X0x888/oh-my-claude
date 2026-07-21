@@ -491,8 +491,8 @@ assert_eq "eval + counts + UI = 70" \
 # -------------------------------------------------------
 printf '\nMCP verification outcome detection:\n'
 
-assert_eq "empty output = passed" \
-  "passed" \
+assert_eq "empty output = failed (no observation)" \
+  "failed" \
   "$(detect_mcp_verification_outcome "" "browser_dom_check")"
 
 assert_eq "console with TypeError = failed" \

@@ -17,7 +17,7 @@
     "campaign"
   ],
   "properties": {
-                "schema_version": {"const": 3},
+    "schema_version": {"const": 2},
     "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]+$"},
     "domain": {
       "type": "string",
@@ -29,14 +29,33 @@
     "candidate_artifacts": {
       "type": "array",
       "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": ["kind"],
         "properties": {
           "kind": {"type": "string", "enum": ["git_diff", "files", "rendered_images", "rendered_document"]},
-          "globs": {"type": "array", "items": {"type": "string", "minLength": 1}}
-        }
+          "globs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!\\.pairwise(?:/|$))(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\u0000-\\u001f\\u007f]+$"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "git_diff"}}, "required": ["kind"]},
+            "then": {"not": {"required": ["globs"]}},
+            "else": {"required": ["globs"]}
+          }
+        ]
       }
     },
     "hard_checks": {
@@ -71,6 +90,7 @@
           "type": "array",
           "minItems": 5,
           "maxItems": 5,
+          "uniqueItems": true,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -80,7 +100,7 @@
                 "type": "string",
                 "enum": ["deliberate", "distinctive", "coherent", "visionary", "complete"]
               },
-              "weight": {"type": "number", "exclusiveMinimum": 0}
+              "weight": {"const": 1}
             }
           }
         }
@@ -101,6 +121,7 @@
         "model_tiers": {
           "type": "array",
           "minItems": 1,
+          "uniqueItems": true,
           "items": {"type": "string", "enum": ["quality", "balanced", "economy"]}
         },
         "max_candidate_cost_ratio": {"type": "number", "minimum": 1},
@@ -111,25 +132,15 @@
           "required": [
             "schema_version",
             "required_top_level",
-            "required_provenance",
+            "generation_authority",
             "required_token_economics"
           ],
           "properties": {
-            "schema_version": {"const": 3},
+            "schema_version": {"const": 4},
             "required_top_level": {
-              "const": ["probe_id", "provenance", "artifact_dir", "economics"]
+              "const": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"]
             },
-            "required_provenance": {
-              "const": [
-                "prompt_hash",
-                "fixture_hash",
-                "source_hash",
-                "model",
-                "model_tier",
-                "harness_role",
-                "harness_hash"
-              ]
-            },
+            "generation_authority": {"const": "evaluator-owned-cli-telemetry-v1"},
             "required_token_economics": {
               "const": ["input", "output", "cache_read", "cache_creation"]
             }

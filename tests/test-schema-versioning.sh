@@ -40,7 +40,7 @@ _fail() {
   FAIL=$((FAIL + 1))
 }
 
-# --- T1: record_gate_event emits _v:1 ---
+# --- T1: record_gate_event emits _v:1 and durable event identities ---
 #
 # Sourcing common.sh requires SESSION_ID / STATE_ROOT to be safe.
 # Simulate a hook environment in a sterile temp dir.
@@ -77,6 +77,7 @@ export OMC_LAZY_TIMING=1
 # Smoke-fire the gate-event recorder.
 GATE_EVENTS_FILE="${HOME}/.claude/quality-pack/state/test-session/gate_events.jsonl"
 record_gate_event "t1_gate" "t1_event" 2>/dev/null || true
+record_gate_event "t1_gate" "t1_event" 2>/dev/null || true
 
 if [[ -s "${GATE_EVENTS_FILE}" ]]; then
   v_val="$(tail -1 "${GATE_EVENTS_FILE}" | jq -r '._v // "missing"' 2>/dev/null || echo "parse-error")"
@@ -91,6 +92,107 @@ if [[ -s "${GATE_EVENTS_FILE}" ]]; then
   else
     _fail "record_gate_event ts type=${ts_type} (expected number)"
   fi
+  event_ids="$(jq -r '.event_id // "missing"' "${GATE_EVENTS_FILE}" \
+    2>/dev/null | paste -sd ',' -)"
+  if [[ "${event_ids}" == "ge:test-session:1,ge:test-session:2" ]]; then
+    _pass "record_gate_event emits unique monotonic event_id values"
+  else
+    _fail "record_gate_event event_ids=${event_ids} (expected ge:test-session:1,ge:test-session:2)"
+  fi
+  gate_seq="$(jq -r '.gate_event_seq // "missing"' \
+    "${HOME}/.claude/quality-pack/state/test-session/session_state.json" \
+    2>/dev/null || echo "parse-error")"
+  if [[ "${gate_seq}" == "2" ]]; then
+    _pass "record_gate_event durably advances gate_event_seq"
+  else
+    _fail "record_gate_event gate_event_seq=${gate_seq} (expected 2)"
+  fi
+
+  # A valid-looking state counter can lag a surviving ledger after manual
+  # restore. The allocator must take max(counter, ledger), not trust syntax.
+  printf '%s\n' \
+    '{"_v":1,"event_id":"ge:test-session:3","ts":1,"host":"test","gate":"legacy","event":"block","details":{}}' \
+    >> "${GATE_EVENTS_FILE}"
+  record_gate_event "t1_gate" "t1_event" 2>/dev/null || true
+  stale_counter_recovered_id="$(tail -1 "${GATE_EVENTS_FILE}" \
+    | jq -r '.event_id // "missing"' 2>/dev/null || echo "parse-error")"
+  if [[ "${stale_counter_recovered_id}" == "ge:test-session:4" ]]; then
+    _pass "record_gate_event advances past a ledger-newer valid counter"
+  else
+    _fail "record_gate_event stale-counter recovery=${stale_counter_recovered_id} (expected ge:test-session:4)"
+  fi
+
+  # Upgrade/corrupt-state recovery: a missing counter must resume after the
+  # largest surviving ID instead of reusing ge:<sid>:1.
+  jq 'del(.gate_event_seq)' \
+    "${HOME}/.claude/quality-pack/state/test-session/session_state.json" \
+    > "${TEST_TMPDIR}/state-without-gate-seq.json"
+  mv "${TEST_TMPDIR}/state-without-gate-seq.json" \
+    "${HOME}/.claude/quality-pack/state/test-session/session_state.json"
+  printf '%s\n' \
+    '{"_v":1,"event_id":"ge:test-session:7","ts":1,"host":"test","gate":"legacy","event":"block","details":{}}' \
+    >> "${GATE_EVENTS_FILE}"
+  record_gate_event "t1_gate" "t1_event" 2>/dev/null || true
+  recovered_id="$(tail -1 "${GATE_EVENTS_FILE}" \
+    | jq -r '.event_id // "missing"' 2>/dev/null || echo "parse-error")"
+  if [[ "${recovered_id}" == "ge:test-session:8" ]]; then
+    _pass "record_gate_event recovers sequence after surviving ledger IDs"
+  else
+    _fail "record_gate_event recovered event_id=${recovered_id} (expected ge:test-session:8)"
+  fi
+
+  parallel_pids=""
+  for _gate_writer in 1 2 3 4 5 6 7 8; do
+    (record_gate_event "parallel" "block" 2>/dev/null) &
+    parallel_pids="${parallel_pids} $!"
+  done
+  for _gate_pid in ${parallel_pids}; do
+    wait "${_gate_pid}"
+  done
+  id_counts="$(jq -s '
+    {rows:length,unique:([.[].event_id] | unique | length)}
+    | "\(.rows):\(.unique)"
+  ' "${GATE_EVENTS_FILE}" 2>/dev/null || echo "parse-error")"
+  if [[ "${id_counts}" == "14:14" ]]; then
+    _pass "parallel gate-event writers retain unique identities"
+  else
+    _fail "parallel gate-event identity counts=${id_counts} (expected 14:14)"
+  fi
+
+  OMC_GATE_EVENTS_PER_SESSION_MAX=2
+  record_gate_event "cap" "block" 2>/dev/null || true
+  record_gate_event "cap" "block" 2>/dev/null || true
+  record_gate_event "cap" "block" 2>/dev/null || true
+  jq 'del(.gate_event_seq)' \
+    "${HOME}/.claude/quality-pack/state/test-session/session_state.json" \
+    > "${TEST_TMPDIR}/capped-state-without-seq.json"
+  mv "${TEST_TMPDIR}/capped-state-without-seq.json" \
+    "${HOME}/.claude/quality-pack/state/test-session/session_state.json"
+  record_gate_event "cap" "block" 2>/dev/null || true
+  capped_ids="$(jq -r '.event_id' "${GATE_EVENTS_FILE}" | paste -sd ',' -)"
+  if [[ "${capped_ids}" == "ge:test-session:19,ge:test-session:20" ]]; then
+    _pass "capped ledger recovery continues after the largest surviving ID"
+  else
+    _fail "capped ledger IDs=${capped_ids} (expected ge:test-session:19,ge:test-session:20)"
+  fi
+
+  SESSION_ID="resume-target"
+  mkdir -p "${HOME}/.claude/quality-pack/state/${SESSION_ID}"
+  printf '{}\n' \
+    > "${HOME}/.claude/quality-pack/state/${SESSION_ID}/session_state.json"
+  cp "${GATE_EVENTS_FILE}" \
+    "${HOME}/.claude/quality-pack/state/${SESSION_ID}/gate_events.jsonl"
+  record_gate_event "resume" "block" 2>/dev/null || true
+  resume_ids="$(jq -r '.event_id' \
+    "${HOME}/.claude/quality-pack/state/${SESSION_ID}/gate_events.jsonl" \
+    | paste -sd ',' -)"
+  if [[ "${resume_ids}" == "ge:test-session:20,ge:resume-target:1" ]]; then
+    _pass "resume copy preserves source identity and starts target namespace"
+  else
+    _fail "resume-copy IDs=${resume_ids}"
+  fi
+  SESSION_ID="test-session"
+  unset OMC_GATE_EVENTS_PER_SESSION_MAX
 else
   _fail "record_gate_event produced no output at ${GATE_EVENTS_FILE}"
 fi

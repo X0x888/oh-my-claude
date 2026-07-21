@@ -2,8 +2,47 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -z "${_OMC_HOOK_CALLER_PATH+x}" ]]; then
+  _OMC_HOOK_CALLER_PATH="${PATH:-}"
+fi
+_omc_hook_source="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${_omc_hook_source%/*}"
+[[ "${SCRIPT_DIR}" == "${_omc_hook_source}" ]] && SCRIPT_DIR="."
+SCRIPT_DIR="$(cd "${SCRIPT_DIR}" && pwd -P)"
+unset _omc_hook_source
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${SCRIPT_DIR}/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
+
+_SG_UINT_MAX=999999999999999999
+_SG_UINT_INCREMENT_MAX=999999999999999998
+
+_sg_uint_is_valid() {
+  _omc_canonical_uint_in_range "${1:-}" 0 "${2:-${_SG_UINT_MAX}}"
+}
+
+_sg_optional_uint_is_valid() {
+  [[ -z "${1:-}" ]] || _sg_uint_is_valid "$1"
+}
+
+# Gate counters are soft-budget state, not authority to execute arithmetic.
+# An invalid counter restarts that one gate's warning budget at zero so the
+# corruption cannot manufacture exhaustion/release. Saturation is reserved
+# for the post-increment value and therefore cannot wrap.
+_sg_counter_or_zero() {
+  local value="${1:-0}"
+  if _sg_uint_is_valid "${value}" "${2:-${_SG_UINT_INCREMENT_MAX}}"; then
+    printf '%s' "${value}"
+  else
+    printf '0'
+  fi
+}
+
+_sg_next_counter() {
+  local value
+  value="$(_sg_counter_or_zero "${1:-0}")"
+  printf '%s' "$((value + 1))"
+}
 
 # v1.46-pre (SRE-lens F5): record silent enforcement-loss. stop-guard runs
 # under `set -euo pipefail` and fails OPEN by design — an unhandled mid-hook
@@ -31,7 +70,48 @@ if [[ -z "${SESSION_ID}" ]]; then
   exit 0
 fi
 
+# Agent admission transaction creation is durable launch intent before any
+# covered pending/start, Council, rebind, taint, or counter mutation. `.ready`
+# says only that its whole-file rollback snapshot finished copying: Claude Code
+# may still launch after a killed/nonzero PreTool hook that died earlier.
+# Replaying any retained transaction after later hooks would erase unrelated
+# work, so refuse certification until the exact managed reset taints identities
+# and removes the journal.
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  log_anomaly "stop-guard" \
+    "interrupted Agent admission journal blocks Stop" 2>/dev/null || true
+  emit_stop_block "[Dispatch recovery · interrupted admission] Release is refused because an Agent authorization was interrupted while its causal ledgers were being updated. Do not integrate or certify the possibly untracked specialist result, and do not dispatch a duplicate. Run the exact /ulw-off reset, reactivate /ulw, and then dispatch only the role still required with a fresh identity."
+  exit 0
+fi
+
 ensure_session_dir
+
+# A fixed planner publication WAL means canonical plan/state/Definition files
+# may still be a pre-commit mixture. This guard intentionally precedes every
+# Stop-side state write and the captured-generation check: even a malformed or
+# symlinked journal is sufficient to refuse release, including for ordinary
+# non-Definition plans. Prompt/SessionStart recovery will roll back a valid WAL;
+# corrupt state remains fail-closed until explicit repair or /ulw-off.
+_sg_plan_transaction="$(session_file ".plan-txn.active")"
+if [[ -e "${_sg_plan_transaction}" || -L "${_sg_plan_transaction}" ]]; then
+  log_anomaly "stop-guard" \
+    "planner_publication_pending: active or malformed planner WAL blocks Stop" \
+    2>/dev/null || true
+  emit_stop_block "[Planner publication pending · planner_publication_pending] Release is refused because a planner publication transaction was interrupted before its commit point. Let the exact planner callback finish recovery, or send/continue the current prompt so oh-my-claude can restore the prior complete generation, then retry Stop. If recovery reports corrupt state, inspect the retained .plan-txn.active journal or use the explicit /ulw-off reset; do not claim the provisional plan as complete."
+  exit 0
+fi
+
+# A fixed reviewer WAL means a dedicated role result is still provisional,
+# regardless of whether this objective armed a Definition of Excellent. Keep
+# this check beside the planner barrier and before every Stop-side state write:
+# even last_assistant_message must not create a later-generation observation
+# while reviewer clocks/evidence are only partially published.
+_sg_reviewer_wal="$(session_file ".reviewer-transaction.wal")"
+if [[ -e "${_sg_reviewer_wal}" || -L "${_sg_reviewer_wal}" ]]; then
+  emit_stop_block "[Reviewer publication · recovery pending] A dedicated reviewer transaction is still active, so its clocks, dimensions, evidence, frontier, history, and receipt are provisional. Stop is refused until the retained reviewer callback finishes roll-forward recovery. If the journal is corrupt, inspect it or use /ulw-off as the explicit reset."
+  exit 0
+fi
+
 omc_enforcement_generation_matches_capture || exit 0
 
 # Allocate one causal sequence per Stop attempt. `emit_stop_block` stamps the
@@ -43,8 +123,7 @@ _begin_stop_attempt_unlocked() {
   local _seq
   omc_enforcement_generation_matches_capture || return 1
   _seq="$(read_state "stop_guard_attempt_seq" 2>/dev/null || true)"
-  [[ "${_seq}" =~ ^[0-9]+$ ]] || _seq=0
-  _seq=$((_seq + 1))
+  _seq="$(_sg_next_counter "${_seq}")"
   write_state "stop_guard_attempt_seq" "${_seq}" 2>/dev/null || return 1
   OMC_STOP_ATTEMPT_SEQ="${_seq}"
 }
@@ -93,16 +172,24 @@ emit_scorecard_stop_context() {
 }
 
 _sg_has_live_completion_claim_unlocked() {
-  local pending_file cutoff
+  local pending_file cutoff now
   pending_file="$(session_file "pending_agents.jsonl")"
   [[ -s "${pending_file}" ]] || return 1
-  cutoff="$(( $(now_epoch) - 120 ))"
-  jq -Rse --argjson cutoff "${cutoff}" '
+  now="$(now_epoch)"
+  _omc_canonical_uint_in_range "${now}" 120 "${_SG_UINT_MAX}" || return 1
+  cutoff="$((now - 120))"
+  jq -Rse --argjson cutoff "${cutoff}" --argjson now "${now}" '
     any(split("\n")[] | select(length > 0);
       (try fromjson catch {}) as $row
       | (($row.completion_claim_id // "") | length) > 0
       and (($row.completion_claim_effects_complete // false) != true)
-      and (($row.completion_claim_ts // 0) >= $cutoff))
+      and (($row.completion_claim_ts // null) as $ts
+        | (($ts | type) != "number")
+          or ($ts | floor) != $ts
+          or $ts < 0
+          or $ts > 999999999999999999
+          or $ts > $now
+          or $ts >= $cutoff))
   ' "${pending_file}" >/dev/null 2>&1
 }
 
@@ -249,10 +336,15 @@ _sg_claim_skip_release_unlocked() {
   stored_edit_ts="${stored_edit_ts:-0}"
   current_edit_ts="${current_edit_ts:-0}"
 
-  if [[ "${current_revision}" =~ ^[0-9]+$ \
-      && "${stored_revision}" =~ ^[0-9]+$ ]]; then
-    (( current_revision <= stored_revision )) && fresh=1
-  elif [[ "${current_edit_ts}" -le "${stored_edit_ts}" ]]; then
+  if [[ -n "${current_revision}" || -n "${stored_revision}" ]]; then
+    if _sg_uint_is_valid "${current_revision}" \
+        && _sg_uint_is_valid "${stored_revision}" \
+        && (( current_revision <= stored_revision )); then
+      fresh=1
+    fi
+  elif _sg_uint_is_valid "${current_edit_ts}" \
+      && _sg_uint_is_valid "${stored_edit_ts}" \
+      && (( current_edit_ts <= stored_edit_ts )); then
     fresh=1
   fi
 
@@ -274,6 +366,11 @@ _sg_claim_skip_release_unlocked() {
     _sg_skip_status="completion-busy"
     return 0
   fi
+  # An honored skip is still an accepted Stop boundary. Spend any unused
+  # one-turn durable-taste grant before disabling the interval; failure keeps
+  # the skip registered and the session active so a later wake cannot replay
+  # the old apply-authorized command.
+  omc_clear_quality_constitution_authorization_unlocked || return 1
   _write_state_batch_unlocked \
     "gate_skip_reason" "" \
     "gate_skip_ts" "" \
@@ -361,8 +458,7 @@ _sg_definition_precedence_gate() {
   esac
   _sg_increment_definition_precedence_unlocked() {
     count="$(read_state "${counter_key}" 2>/dev/null || true)"
-    [[ "${count}" =~ ^[0-9]+$ ]] || count=0
-    count=$((count + 1))
+    count="$(_sg_next_counter "${count}")"
     _write_state_batch_unlocked \
       "${counter_key}" "${count}" \
       "quality_contract_status" "${status}" \
@@ -373,11 +469,17 @@ _sg_definition_precedence_gate() {
   count=1
   with_state_lock _sg_increment_definition_precedence_unlocked 2>/dev/null || true
   case "${status}" in
+    scope_overflow)
+      recovery="The exact aggregate scope ceiling was exceeded and the attempted addition was not admitted. Do not truncate or silently omit requirements and do not dispatch another planner against this objective. Ask the user for one fresh condensed replacement objective, or use /ulw-off as the explicit reset."
+      ;;
     missing_contract|stale_contract|invalid_contract_engine)
       recovery="Dispatch quality-planner (prometheus only for genuine ambiguity), preserve the frozen floor, and land a current QUALITY_CONTRACT_JSON before implementation."
       ;;
     late_contract)
       recovery="A contract first appeared after mutation and cannot certify a pre-implementation bar. Restore/restart from the pre-mutation objective state, or use the explicit user-owned /ulw-skip escape with a reason."
+      ;;
+    reviewer_publication_pending)
+      recovery="The dedicated reviewer publication transaction is still active, so its evidence/frontier files are provisional. Let the retained reviewer callback finish recovery; if the journal is corrupt or cannot converge, inspect it and use /ulw-off as the explicit reset."
       ;;
     missing_evidence|stale_evidence|invalid_evidence|invalid_receipts)
       recovery="Run the frozen artifact-specific proof methods so the hooks record current verification receipts, then dispatch excellence-reviewer on the settled revision."
@@ -448,6 +550,32 @@ done < <(read_state_keys \
   "last_edit_prompt_revision" \
   "quality_contract_required")
 session_handoff_blocks="${session_handoff_blocks:-0}"
+
+# These clocks are causal authority. Missing values remain a supported
+# pre-revision migration state, but non-empty non-canonical values must not be
+# silently coerced into a clean generation or enter Bash arithmetic later.
+_sg_invalid_numeric_fields=""
+for _sg_numeric_name in \
+    last_user_prompt_ts last_edit_ts _sg_start_edit_revision \
+    _sg_start_code_edit_ts _sg_start_code_edit_revision \
+    _sg_start_doc_edit_ts _sg_start_doc_edit_revision \
+    _sg_start_plan_ts _sg_start_plan_revision _sg_prompt_revision \
+    _sg_last_edit_prompt_revision; do
+  _sg_numeric_value="${!_sg_numeric_name}"
+  if ! _sg_optional_uint_is_valid "${_sg_numeric_value}"; then
+    _sg_invalid_numeric_fields="${_sg_invalid_numeric_fields}${_sg_invalid_numeric_fields:+,}${_sg_numeric_name}"
+  fi
+done
+if ! _sg_uint_is_valid "${session_handoff_blocks}"; then
+  _sg_invalid_numeric_fields="${_sg_invalid_numeric_fields}${_sg_invalid_numeric_fields:+,}session_handoff_blocks"
+fi
+if [[ -n "${_sg_invalid_numeric_fields}" ]]; then
+  log_anomaly "stop-guard" \
+    "invalid numeric causal state: ${_sg_invalid_numeric_fields}" \
+    2>/dev/null || true
+  emit_stop_block "[Stop certification · invalid numeric state] Release is refused because causal clock/counter state is malformed (${_sg_invalid_numeric_fields}). Do not treat it as zero or completed authority. Repair/recover the session state or use the exact /ulw-off reset, then re-run the work and evidence on a fresh generation."
+  exit 0
+fi
 _sg_start_last_edit_ts="${last_edit_ts}"
 _sg_start_readiness_fingerprint="$(closeout_readiness_fingerprint 2>/dev/null || true)"
 
@@ -474,13 +602,17 @@ _sg_compare_generation_unlocked() {
   # Revision clocks are authoritative as soon as either side has one. A
   # missing→numeric transition is itself a generation change. Only sessions
   # whose producer state predates revisions use the timestamp migration path.
-  if [[ "${_start_revision}" =~ ^[0-9]+$ ]] \
-      || [[ "${_current_revision}" =~ ^[0-9]+$ ]]; then
-    if [[ ! "${_start_revision}" =~ ^[0-9]+$ ]] \
-        || [[ ! "${_current_revision}" =~ ^[0-9]+$ ]] \
+  if _sg_uint_is_valid "${_start_revision}" \
+      || _sg_uint_is_valid "${_current_revision}"; then
+    if ! _sg_uint_is_valid "${_start_revision}" \
+        || ! _sg_uint_is_valid "${_current_revision}" \
         || (( _start_revision != _current_revision )); then
       _sg_note_generation_change "${_field}"
     fi
+  elif [[ -n "${_start_revision}" || -n "${_current_revision}" ]]; then
+    # A malformed revision appearing on either side is a changed/uncertified
+    # generation. Never fall back to timestamps around corrupt authority.
+    _sg_note_generation_change "${_field}"
   elif [[ "${_start_ts}" != "${_current_ts}" ]]; then
     _sg_note_generation_change "${_field}"
   fi
@@ -559,6 +691,15 @@ _sg_commit_release_unlocked() {
 
   if _sg_has_live_completion_claim_unlocked; then
     _sg_release_generation_changes="subagent-completion"
+    return 0
+  fi
+
+  # Accepted Stop and authorization invalidation are one state-lock
+  # transition. Delete first, then stamp the terminal outcome. A spent grant
+  # after a later state-write failure is safe and can be reissued; the inverse
+  # (inactive/completed state with a live old grant) is not.
+  if ! omc_clear_quality_constitution_authorization_unlocked; then
+    _sg_release_generation_changes="quality-constitution-authorization"
     return 0
   fi
 
@@ -669,8 +810,8 @@ if ! is_execution_intent_value "${_effective_intent}"; then
       advisory_verify_ts="$(read_state "last_advisory_verify_ts")"
       verify_ts="$(read_state "last_verify_ts")"
       advisory_evidence_count="$(read_state "advisory_evidence_count")"
-      advisory_evidence_count="${advisory_evidence_count:-0}"
-      [[ "${advisory_evidence_count}" =~ ^[0-9]+$ ]] || advisory_evidence_count=0
+      advisory_evidence_count="$(_sg_counter_or_zero \
+        "${advisory_evidence_count:-0}" "${_SG_UINT_MAX}")"
       advisory_evidence_required=0
       # v1.39.0 W2: session-derived tier — escalates on findings,
       # sensitive-surface edits, low verify confidence, pending
@@ -681,7 +822,8 @@ if ! is_execution_intent_value "${_effective_intent}"; then
         advisory_evidence_required=2
       fi
       advisory_guard_blocks="$(read_state "advisory_guard_blocks")"
-      advisory_guard_blocks="${advisory_guard_blocks:-0}"
+      advisory_guard_blocks="$(_sg_counter_or_zero \
+        "${advisory_guard_blocks:-0}")"
 
       if [[ -z "${advisory_verify_ts}" && -z "${verify_ts}" ]] && [[ "${advisory_guard_blocks}" -lt 1 ]]; then
         write_state "advisory_guard_blocks" "$((advisory_guard_blocks + 1))"
@@ -753,9 +895,7 @@ if [[ "${gate_state_at_mutation:-off}" == "on" ]] && is_execution_intent_value "
   agent_first_specialist_ts="$(read_state "agent_first_specialist_ts")"
   if [[ -n "${first_mutation_ts}" && -z "${agent_first_specialist_ts}" ]]; then
     agent_first_blocks="$(read_state "agent_first_gate_blocks")"
-    agent_first_blocks="${agent_first_blocks:-0}"
-    [[ "${agent_first_blocks}" =~ ^[0-9]+$ ]] || agent_first_blocks=0
-    agent_first_next_block="$((agent_first_blocks + 1))"
+    agent_first_next_block="$(_sg_next_counter "${agent_first_blocks}")"
     write_state "agent_first_gate_blocks" "${agent_first_next_block}"
     first_mutation_tool="$(read_state "first_mutation_tool")"
     first_mutation_tool="${first_mutation_tool:-unknown}"
@@ -857,8 +997,12 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
   && [[ "$(read_state "exemplifying_scope_required")" == "1" ]]; then
   _es_file="$(session_file "exemplifying_scope.json")"
   _es_prompt_ts="$(read_state "exemplifying_scope_prompt_ts")"
-  _es_prompt_ts="${_es_prompt_ts:-0}"
-  [[ "${_es_prompt_ts}" =~ ^[0-9]+$ ]] || _es_prompt_ts=0
+  if [[ -z "${_es_prompt_ts}" ]]; then
+    _es_prompt_ts=0
+  elif ! _sg_uint_is_valid "${_es_prompt_ts}"; then
+    emit_stop_block "[Exemplifying-scope gate · invalid numeric state] The checklist's prompt clock is malformed, so this Stop cannot prove that the checklist belongs to the current objective. Repair/re-record the checklist on a fresh prompt generation or use the exact /ulw-off reset."
+    exit 0
+  fi
 
   _es_missing=1
   _es_pending=0
@@ -885,10 +1029,19 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
       _es_total=0
       _es_pending=0
     fi
-    [[ "${_es_file_prompt_ts}" =~ ^[0-9]+$ ]] || _es_file_prompt_ts=0
-    [[ "${_es_total}" =~ ^[0-9]+$ ]] || _es_total=0
-    [[ "${_es_pending}" =~ ^[0-9]+$ ]] || _es_pending=0
-    if [[ "${_es_file_prompt_ts}" == "${_es_prompt_ts}" && "${_es_total}" -gt 0 ]]; then
+    _es_file_prompt_ts_valid=1
+    if ! _sg_uint_is_valid "${_es_file_prompt_ts:-}"; then
+      _es_file_prompt_ts=0
+      _es_file_prompt_ts_valid=0
+      log_anomaly "stop-guard" \
+        "exemplifying_scope has invalid source_prompt_ts" 2>/dev/null || true
+    fi
+    _es_total="$(_sg_counter_or_zero "${_es_total:-0}" "${_SG_UINT_MAX}")"
+    _es_pending="$(_sg_counter_or_zero \
+      "${_es_pending:-0}" "${_SG_UINT_MAX}")"
+    if [[ "${_es_file_prompt_ts_valid}" -eq 1 \
+        && "${_es_file_prompt_ts}" == "${_es_prompt_ts}" \
+        && "${_es_total}" -gt 0 ]]; then
       _es_missing=0
     else
       _es_scorecard="  (checklist exists but belongs to a different prompt or has no items)"
@@ -905,15 +1058,14 @@ if [[ "${OMC_EXEMPLIFYING_SCOPE_GATE:-on}" == "on" ]] \
 
   if [[ "${_es_missing}" -eq 1 || "${_es_pending}" -gt 0 ]]; then
     _es_blocks="$(read_state "exemplifying_scope_blocks")"
-    _es_blocks="${_es_blocks:-0}"
-    [[ "${_es_blocks}" =~ ^[0-9]+$ ]] || _es_blocks=0
+    _es_blocks="$(_sg_counter_or_zero "${_es_blocks:-0}")"
     _es_cap=2
 
     _es_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
     if [[ "${_es_blocks}" -lt "${_es_cap}" || "${_es_effective_exhaustion_mode}" == "block" ]]; then
       if [[ "${_es_blocks}" -lt "${_es_cap}" ]]; then
-        write_state "exemplifying_scope_blocks" "$((_es_blocks + 1))"
-        _es_next_block="$((_es_blocks + 1))"
+        _es_next_block="$(_sg_next_counter "${_es_blocks}")"
+        write_state "exemplifying_scope_blocks" "${_es_next_block}"
       else
         _es_next_block="${_es_blocks}"
       fi
@@ -988,10 +1140,11 @@ fi
 if [[ "${OMC_ADVISORY_NO_FINDINGS_GATE}" == "on" ]] \
   && is_execution_intent_value "${task_intent}"; then
   _anf_advisory_count="$(read_state "advisory_specialist_dispatch_count" 2>/dev/null || true)"
-  _anf_advisory_count="${_anf_advisory_count:-0}"
-  [[ "${_anf_advisory_count}" =~ ^[0-9]+$ ]] || _anf_advisory_count=0
+  _anf_advisory_count="$(_sg_counter_or_zero \
+    "${_anf_advisory_count:-0}" "${_SG_UINT_MAX}")"
   _anf_threshold="${OMC_ADVISORY_NO_FINDINGS_THRESHOLD:-2}"
-  [[ "${_anf_threshold}" =~ ^[0-9]+$ ]] || _anf_threshold=2
+  _omc_canonical_uint_in_range "${_anf_threshold}" 1 2147483647 \
+    || _anf_threshold=2
 
   if [[ "${_anf_advisory_count}" -ge "${_anf_threshold}" ]]; then
     _anf_findings_file="$(session_file "findings.json")"
@@ -1004,8 +1157,10 @@ if [[ "${OMC_ADVISORY_NO_FINDINGS_GATE}" == "on" ]] \
     if [[ -f "${_anf_scope_file}" ]] && [[ -s "${_anf_scope_file}" ]]; then
       _anf_scope_total="$(wc -l < "${_anf_scope_file}" | tr -d '[:space:]')"
     fi
-    [[ "${_anf_findings_total}" =~ ^[0-9]+$ ]] || _anf_findings_total=0
-    [[ "${_anf_scope_total}" =~ ^[0-9]+$ ]] || _anf_scope_total=0
+    _anf_findings_total="$(_sg_counter_or_zero \
+      "${_anf_findings_total:-0}" "${_SG_UINT_MAX}")"
+    _anf_scope_total="$(_sg_counter_or_zero \
+      "${_anf_scope_total:-0}" "${_SG_UINT_MAX}")"
     _anf_total=$((_anf_findings_total + _anf_scope_total))
 
     # Tail-scan gate_events.jsonl for zero_capture events this session
@@ -1019,11 +1174,11 @@ if [[ "${OMC_ADVISORY_NO_FINDINGS_GATE}" == "on" ]] \
         | jq -rs '[.[] | select(.gate == "discovered-scope" and .event == "zero_capture")] | length' 2>/dev/null \
         || printf '0')"
     fi
-    [[ "${_anf_zero_capture_count}" =~ ^[0-9]+$ ]] || _anf_zero_capture_count=0
+    _anf_zero_capture_count="$(_sg_counter_or_zero \
+      "${_anf_zero_capture_count:-0}" "${_SG_UINT_MAX}")"
 
     _anf_blocks="$(read_state "advisory_no_findings_blocks")"
-    _anf_blocks="${_anf_blocks:-0}"
-    [[ "${_anf_blocks}" =~ ^[0-9]+$ ]] || _anf_blocks=0
+    _anf_blocks="$(_sg_counter_or_zero "${_anf_blocks:-0}")"
 
     if [[ "${_anf_total}" -eq 0 ]] && [[ "${_anf_blocks}" -lt 1 ]]; then
       # v1.42.x quality-reviewer F-4: write under lock. The 1/1 cap
@@ -1074,11 +1229,14 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
   && is_execution_intent_value "${task_intent}" \
   && is_wave_plan_under_segmented; then
   wave_shape_blocks="$(read_state "wave_shape_blocks")"
-  wave_shape_blocks="${wave_shape_blocks:-0}"
+  wave_shape_blocks="$(_sg_counter_or_zero "${wave_shape_blocks:-0}")"
   if [[ "${wave_shape_blocks}" -lt 1 ]]; then
-    write_state "wave_shape_blocks" "$((wave_shape_blocks + 1))"
+    write_state "wave_shape_blocks" "$(_sg_next_counter "${wave_shape_blocks}")"
     _ws_total="$(read_total_findings_count)"
     _ws_waves="$(read_active_wave_total)"
+    _ws_total="$(_sg_counter_or_zero "${_ws_total:-0}" "${_SG_UINT_MAX}")"
+    _ws_waves="$(_sg_counter_or_zero "${_ws_waves:-0}" "${_SG_UINT_MAX}")"
+    (( _ws_waves > 0 )) || _ws_waves=1
     _ws_avg=$((_ws_total / _ws_waves))
     record_gate_event "wave-shape" "block" \
       "block_count=1" "block_cap=1" \
@@ -1109,8 +1267,11 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
   scope_file="$(session_file "discovered_scope.jsonl")"
   if [[ -f "${scope_file}" ]]; then
     pending_count="$(read_pending_scope_count)"
+    pending_count="$(_sg_counter_or_zero \
+      "${pending_count:-0}" "${_SG_UINT_MAX}")"
     discovered_scope_blocks="$(read_state "discovered_scope_blocks")"
-    discovered_scope_blocks="${discovered_scope_blocks:-0}"
+    discovered_scope_blocks="$(_sg_counter_or_zero \
+      "${discovered_scope_blocks:-0}")"
     # Cap normally fixed at 2 (block twice, then release with scorecard).
     # When a SUBSTANTIVE wave plan is active (Phase 8 of /council recorded
     # findings.json with N waves AND the plan is NOT under-segmented),
@@ -1125,6 +1286,8 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
     # wave-shape gate above is the front-line defense; the cap polarity
     # is the backstop for plans that bypass it via /ulw-skip.
     wave_total="$(read_active_wave_total)"
+    wave_total="$(_sg_counter_or_zero "${wave_total:-0}" \
+      "${_SG_UINT_INCREMENT_MAX}")"
     if [[ "${wave_total}" -gt 0 ]] && ! is_wave_plan_under_segmented; then
       scope_block_cap=$((wave_total + 1))
     else
@@ -1134,7 +1297,7 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
     if [[ "${pending_count}" -gt 0 ]] \
       && [[ "${discovered_scope_blocks}" -lt "${scope_block_cap}" || "${scope_effective_exhaustion_mode}" == "block" ]]; then
       if [[ "${discovered_scope_blocks}" -lt "${scope_block_cap}" ]]; then
-        scope_next_block="$((discovered_scope_blocks + 1))"
+        scope_next_block="$(_sg_next_counter "${discovered_scope_blocks}")"
         write_state "discovered_scope_blocks" "${scope_next_block}"
       else
         scope_next_block="${discovered_scope_blocks}"
@@ -1144,6 +1307,8 @@ if [[ "${OMC_DISCOVERED_SCOPE}" == "on" ]] \
       if [[ "${wave_total}" -gt 0 ]]; then
         # Counts waves with status="completed", not in-progress — see common.sh.
         waves_completed="$(read_active_waves_completed)"
+        waves_completed="$(_sg_counter_or_zero \
+          "${waves_completed:-0}" "${_SG_UINT_MAX}")"
         wave_progress=" Wave plan: ${waves_completed}/${wave_total} waves completed."
       fi
       record_gate_event "discovered-scope" "block" \
@@ -1233,7 +1398,8 @@ if is_no_defer_active; then
   _nd_findings_file="$(session_file "findings.json")"
   if [[ -f "${_nd_findings_file}" ]]; then
     _nd_deferred_count="$(jq -r '[(.findings // [])[] | select(.status == "deferred")] | length' "${_nd_findings_file}" 2>/dev/null || printf '0')"
-    [[ "${_nd_deferred_count}" =~ ^[0-9]+$ ]] || _nd_deferred_count=0
+    _nd_deferred_count="$(_sg_counter_or_zero \
+      "${_nd_deferred_count:-0}" "${_SG_UINT_MAX}")"
     if [[ "${_nd_deferred_count}" -gt 0 ]]; then
       _nd_scorecard="$(jq -r '
         [(.findings // [])[] | select(.status == "deferred")]
@@ -1301,24 +1467,26 @@ fi
 if [[ "${OMC_SHORTCUT_RATIO_GATE}" == "on" ]] \
   && is_execution_intent_value "${task_intent}"; then
   _sr_total="$(read_total_findings_count)"
-  if [[ "${_sr_total}" =~ ^[0-9]+$ ]] && [[ "${_sr_total}" -ge 10 ]]; then
+  _sr_total="$(_sg_counter_or_zero "${_sr_total:-0}" 999999999999999)"
+  if [[ "${_sr_total}" -ge 10 ]]; then
     _sr_shipped="$(read_findings_count_by_status "shipped")"
     _sr_deferred="$(read_findings_count_by_status "deferred")"
     _sr_shipped="${_sr_shipped:-0}"
     _sr_deferred="${_sr_deferred:-0}"
-    [[ "${_sr_shipped}" =~ ^[0-9]+$ ]] || _sr_shipped=0
-    [[ "${_sr_deferred}" =~ ^[0-9]+$ ]] || _sr_deferred=0
+    _sr_shipped="$(_sg_counter_or_zero \
+      "${_sr_shipped}" 999999999999999)"
+    _sr_deferred="$(_sg_counter_or_zero \
+      "${_sr_deferred}" 999999999999999)"
     _sr_decided=$((_sr_shipped + _sr_deferred))
 
     # Ratio = deferred * 100 / decided, integer arithmetic (>=50 means >=0.5).
     if [[ "${_sr_decided}" -ge 5 ]]; then
       _sr_ratio_pct=$(( _sr_deferred * 100 / _sr_decided ))
       _sr_blocks="$(read_state "shortcut_ratio_blocks")"
-      _sr_blocks="${_sr_blocks:-0}"
-      [[ "${_sr_blocks}" =~ ^[0-9]+$ ]] || _sr_blocks=0
+      _sr_blocks="$(_sg_counter_or_zero "${_sr_blocks:-0}")"
 
       if [[ "${_sr_ratio_pct}" -ge 50 ]] && [[ "${_sr_blocks}" -lt 1 ]]; then
-        write_state "shortcut_ratio_blocks" "$((_sr_blocks + 1))"
+        write_state "shortcut_ratio_blocks" "$(_sg_next_counter "${_sr_blocks}")"
         # Build a deferred-set scorecard inline (the existing
         # build_discovered_scope_scorecard is for discovered_scope.jsonl,
         # not findings.json — different file, different fields).
@@ -1398,6 +1566,27 @@ done < <(read_state_keys \
 task_domain="$(task_domain)"
 task_domain="${task_domain:-general}"
 guard_blocks="${guard_blocks:-0}"
+
+_sg_invalid_numeric_fields=""
+for _sg_numeric_name in \
+    last_review_ts last_doc_review_ts last_verify_ts last_code_edit_ts \
+    last_doc_edit_ts last_code_edit_revision last_doc_edit_revision \
+    review_code_revision review_doc_revision last_verify_code_revision; do
+  _sg_numeric_value="${!_sg_numeric_name}"
+  if ! _sg_optional_uint_is_valid "${_sg_numeric_value}"; then
+    _sg_invalid_numeric_fields="${_sg_invalid_numeric_fields}${_sg_invalid_numeric_fields:+,}${_sg_numeric_name}"
+  fi
+done
+if ! _sg_uint_is_valid "${guard_blocks}" "${_SG_UINT_INCREMENT_MAX}"; then
+  _sg_invalid_numeric_fields="${_sg_invalid_numeric_fields}${_sg_invalid_numeric_fields:+,}stop_guard_blocks"
+fi
+if [[ -n "${_sg_invalid_numeric_fields}" ]]; then
+  log_anomaly "stop-guard" \
+    "invalid review/verification numeric state: ${_sg_invalid_numeric_fields}" \
+    2>/dev/null || true
+  emit_stop_block "[Stop certification · invalid numeric state] Release is refused because review/verification clock state is malformed (${_sg_invalid_numeric_fields}). Repair/recover the session state or use the exact /ulw-off reset, then re-run review and verification on a fresh generation."
+  exit 0
+fi
 
 missing_review=0
 missing_verify=0
@@ -1489,15 +1678,19 @@ if [[ "${missing_verify}" -eq 0 ]]; then
 fi
 
 # Low-confidence verification: if verification ran but confidence is below
-# threshold, treat it as insufficient. A `bash -n file.sh` (confidence ~30)
-# should not satisfy the same gate as `npm test` (confidence 70+).
+# threshold, treat it as insufficient. Passive observations and other weak
+# evidence should not satisfy the same gate as a project test suite.
 verify_low_confidence=0
 if [[ "${missing_verify}" -eq 0 && "${verify_failed}" -eq 0 ]]; then
   case "${task_domain}" in
     coding|mixed)
       last_verify_confidence="$(read_state "last_verify_confidence")"
-      if [[ -n "${last_verify_confidence}" && "${last_verify_confidence}" =~ ^[0-9]+$ && "${last_verify_confidence}" -lt "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]]; then
-        verify_low_confidence=1
+      if [[ -n "${last_verify_confidence}" ]]; then
+        if ! _omc_canonical_uint_in_range \
+            "${last_verify_confidence}" 0 100 \
+            || [[ "${last_verify_confidence}" -lt "${OMC_VERIFY_CONFIDENCE_THRESHOLD}" ]]; then
+          verify_low_confidence=1
+        fi
       fi
       ;;
   esac
@@ -1511,6 +1704,17 @@ fi
 # stricter verdicts, and excellence made large objectives pay O(4N) work.
 _sg_review_code=0; _sg_review_docs=0; _sg_review_ui=0
 _sg_review_unique=0; _sg_review_unknown=0; _sg_review_surfaces=0
+if [[ -n "${OMC_TEST_STOP_PATH_SCAN_READY_FILE:-}" \
+    && -n "${OMC_TEST_STOP_PATH_SCAN_RELEASE_FILE:-}" ]]; then
+  printf 'ready\n' >"${OMC_TEST_STOP_PATH_SCAN_READY_FILE}"
+  _sg_path_scan_test_wait=0
+  while [[ ! -f "${OMC_TEST_STOP_PATH_SCAN_RELEASE_FILE}" \
+      && "${_sg_path_scan_test_wait}" -lt 500 ]]; do
+    sleep 0.02
+    _sg_path_scan_test_wait=$((_sg_path_scan_test_wait + 1))
+  done
+  [[ -f "${OMC_TEST_STOP_PATH_SCAN_RELEASE_FILE}" ]] || exit 1
+fi
 {
   IFS= read -r _sg_review_code
   IFS= read -r _sg_review_docs
@@ -1519,6 +1723,13 @@ _sg_review_unique=0; _sg_review_unknown=0; _sg_review_surfaces=0
   IFS= read -r _sg_review_unknown
   IFS= read -r _sg_review_surfaces
 } < <(review_cycle_edit_snapshot)
+_sg_review_code="$(_sg_counter_or_zero "${_sg_review_code:-0}" 2147483647)"
+_sg_review_docs="$(_sg_counter_or_zero "${_sg_review_docs:-0}" 2147483647)"
+_sg_review_ui="$(_sg_counter_or_zero "${_sg_review_ui:-0}" 2147483647)"
+_sg_review_unique="$(_sg_counter_or_zero "${_sg_review_unique:-0}" 2147483647)"
+_sg_review_unknown="$(_sg_counter_or_zero "${_sg_review_unknown:-0}" 1)"
+_sg_review_surfaces="$(_sg_counter_or_zero \
+  "${_sg_review_surfaces:-0}" 2147483647)"
 _sg_required_dims="$(get_required_dimensions \
   "${_sg_review_code}" "${_sg_review_docs}" "${_sg_review_ui}" \
   "${_sg_review_unique}" "${_sg_review_unknown}" "${_sg_review_surfaces}")"
@@ -1633,10 +1844,10 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
         log_hook "stop-guard" "review coverage gate: resumed-session grace granted"
       else
         dim_blocks="$(read_state "dimension_guard_blocks")"
-        dim_blocks="${dim_blocks:-0}"
+        dim_blocks="$(_sg_counter_or_zero "${dim_blocks:-0}")"
 
         if [[ "${dim_blocks}" -lt 3 ]]; then
-          write_state "dimension_guard_blocks" "$((dim_blocks + 1))"
+          write_state "dimension_guard_blocks" "$(_sg_next_counter "${dim_blocks}")"
           next_dim="${missing_dims%%,*}"
           next_reviewer="$(reviewer_for_dimension "${next_dim}")"
           next_description="$(describe_dimension "${next_dim}")"
@@ -1780,8 +1991,8 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
   excellence_guard_triggered_revision="$(read_state "excellence_guard_triggered_revision")"
   _ex_current_revision="$(dimension_freshness_revision "completeness")"
   _ex_trigger_available=0
-  if [[ "${_ex_current_revision}" =~ ^[0-9]+$ ]]; then
-    if [[ ! "${excellence_guard_triggered_revision}" =~ ^[0-9]+$ ]] \
+  if _sg_uint_is_valid "${_ex_current_revision}"; then
+    if ! _sg_uint_is_valid "${excellence_guard_triggered_revision}" \
         || (( excellence_guard_triggered_revision < _ex_current_revision )); then
       _ex_trigger_available=1
     fi
@@ -1839,7 +2050,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
     plan_complexity_high="$(read_state "plan_complexity_high")"
     has_plan="$(read_state "has_plan")"
     metis_gate_blocks="$(read_state "metis_gate_blocks")"
-    metis_gate_blocks="${metis_gate_blocks:-0}"
+    metis_gate_blocks="$(_sg_counter_or_zero "${metis_gate_blocks:-0}")"
 
     # The stress_test dimension captures the plan revision Metis inspected.
     # This preserves true event order when a new plan and its stress-test land
@@ -1855,7 +2066,7 @@ if [[ "${missing_review}" -eq 0 && "${missing_verify}" -eq 0 && "${verify_failed
         && [[ "${metis_stale_or_missing}" -eq 1 ]] \
         && (( metis_gate_blocks < 1 )); then
       plan_complexity_signals="$(read_state "plan_complexity_signals")"
-      write_state "metis_gate_blocks" "$((metis_gate_blocks + 1))"
+      write_state "metis_gate_blocks" "$(_sg_next_counter "${metis_gate_blocks}")"
       record_gate_event "metis-on-plan" "block" \
         "block_count=1" "block_cap=1" \
         "complexity_signals=${plan_complexity_signals}"
@@ -1931,7 +2142,8 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
     (( _sg_review_unknown == 1 )) && return 0
 
     local _oc_min_files="${OMC_OBJECTIVE_CONTRACT_MIN_FILES:-4}"
-    [[ "${_oc_min_files}" =~ ^[0-9]+$ ]] || _oc_min_files=4
+    _omc_canonical_uint_in_range "${_oc_min_files}" 0 2147483647 \
+      || _oc_min_files=4
     (( _oc_min_files > 0 && _sg_review_unique >= _oc_min_files )) && return 0
     (( ${#current_objective} >= 600 )) && return 0
     return 1
@@ -1950,18 +2162,34 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
   if { [[ "${OMC_OBJECTIVE_CONTRACT_GATE:-on}" == "on" ]] || [[ -n "${_goal_active}" ]]; } \
     && is_execution_intent_value "${_effective_intent}"; then
     _oc_prompt_ts="$(read_state "objective_contract_prompt_ts")"
-    _oc_prompt_ts="${_oc_prompt_ts:-0}"
-    [[ "${_oc_prompt_ts}" =~ ^[0-9]+$ ]] || _oc_prompt_ts=0
+    if [[ -z "${_oc_prompt_ts}" ]]; then
+      _oc_prompt_ts=0
+    elif ! _sg_uint_is_valid "${_oc_prompt_ts}"; then
+      emit_stop_block "[Objective-contract gate · invalid numeric state] The objective prompt clock is malformed, so release cannot prove which work belongs to this objective. Repair/re-arm the objective on a fresh prompt generation or use the exact /ulw-off reset."
+      exit 0
+    fi
     _oc_audited_ts="$(read_state "objective_contract_audited_ts")"
-    _oc_audited_ts="${_oc_audited_ts:-0}"
-    [[ "${_oc_audited_ts}" =~ ^[0-9]+$ ]] || _oc_audited_ts=0
+    if [[ -z "${_oc_audited_ts}" ]]; then
+      _oc_audited_ts=0
+    elif ! _sg_uint_is_valid "${_oc_audited_ts}"; then
+      emit_stop_block "[Objective-contract gate · invalid numeric state] The objective audit clock is malformed, so release cannot prove this objective was audited. Repair/re-run the completeness audit on a fresh generation or use the exact /ulw-off reset."
+      exit 0
+    fi
     _oc_last_edit_ts="${last_edit_ts:-0}"
-    [[ "${_oc_last_edit_ts}" =~ ^[0-9]+$ ]] || _oc_last_edit_ts=0
+    _oc_last_edit_ts="$(_sg_counter_or_zero \
+      "${_oc_last_edit_ts}" "${_SG_UINT_MAX}")"
     _oc_current_edit_revision="$(read_state "edit_revision")"
     _oc_edit_revision_base="$(read_state "objective_contract_edit_revision_base")"
+    if { [[ -n "${_oc_current_edit_revision}" ]] \
+          && ! _sg_uint_is_valid "${_oc_current_edit_revision}"; } \
+        || { [[ -n "${_oc_edit_revision_base}" ]] \
+          && ! _sg_uint_is_valid "${_oc_edit_revision_base}"; }; then
+      emit_stop_block "[Objective-contract gate · invalid numeric state] The objective's edit-generation authority is malformed, so release cannot prove whether this cycle changed. Repair/re-arm the objective on a fresh generation or use the exact /ulw-off reset."
+      exit 0
+    fi
     _oc_work_this_cycle=0
-    if [[ "${_oc_current_edit_revision}" =~ ^[0-9]+$ ]] \
-        && [[ "${_oc_edit_revision_base}" =~ ^[0-9]+$ ]]; then
+    if _sg_uint_is_valid "${_oc_current_edit_revision}" \
+        && _sg_uint_is_valid "${_oc_edit_revision_base}"; then
       (( _oc_current_edit_revision > _oc_edit_revision_base )) \
         && _oc_work_this_cycle=1
     elif [[ "${_oc_last_edit_ts}" -gt "${_oc_prompt_ts}" ]]; then
@@ -2007,20 +2235,20 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
       # separately enforce that verdict. This reuses excellence-reviewer rather
       # than adding a parallel completion gate.
       _oc_fresh_audit_ts="$(read_state "last_excellence_review_ts")"
-      _oc_fresh_audit_ts="${_oc_fresh_audit_ts:-0}"
-      [[ "${_oc_fresh_audit_ts}" =~ ^[0-9]+$ ]] || _oc_fresh_audit_ts=0
+      _oc_fresh_audit_ts="$(_sg_counter_or_zero \
+        "${_oc_fresh_audit_ts:-0}" "${_SG_UINT_MAX}")"
       _oc_completeness_verdict="$(read_state "dim_completeness_verdict")"
       _oc_completeness_revision="$(read_state "dim_completeness_revision")"
       _oc_fresh_clean_audit=0
       case "${_oc_completeness_verdict}" in
         CLEAN|SHIP)
           if dimension_state_is_fresh "completeness"; then
-            if [[ "${_oc_current_edit_revision}" =~ ^[0-9]+$ ]] \
-                && [[ "${_oc_edit_revision_base}" =~ ^[0-9]+$ ]]; then
+            if _sg_uint_is_valid "${_oc_current_edit_revision}" \
+                && _sg_uint_is_valid "${_oc_edit_revision_base}"; then
               # A current-cycle audit must have inspected a generation after
               # the prompt's baseline, not merely be fresh for an unchanged
               # prior objective.
-              if [[ "${_oc_completeness_revision}" =~ ^[0-9]+$ ]] \
+              if _sg_uint_is_valid "${_oc_completeness_revision}" \
                   && (( _oc_completeness_revision > _oc_edit_revision_base )); then
                 _oc_fresh_clean_audit=1
               fi
@@ -2042,12 +2270,20 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
         # re-arms next execution turn until the user runs /goal done|clear.
         # Falls through to delivery-contract (no exit).
         _oc_audited_now="$(now_epoch)"
-        [[ "${_oc_audited_now}" =~ ^[0-9]+$ ]] || _oc_audited_now=0
+        _sg_uint_is_valid "${_oc_audited_now}" || _oc_audited_now=0
         # The audit necessarily followed the route event. Preserve that order
         # when both occur in one epoch second so the next Stop sees the cycle as
         # already audited.
-        (( _oc_audited_now <= _oc_prompt_ts )) \
-          && _oc_audited_now=$((_oc_prompt_ts + 1))
+        if (( _oc_audited_now <= _oc_prompt_ts )); then
+          if _sg_uint_is_valid \
+              "${_oc_prompt_ts}" "${_SG_UINT_INCREMENT_MAX}"; then
+            _oc_audited_now=$((_oc_prompt_ts + 1))
+          else
+            # No greater signed/canonical epoch can be represented. Keep the
+            # cycle unaudited rather than wrap and manufacture freshness.
+            _oc_audited_now="${_SG_UINT_MAX}"
+          fi
+        fi
         write_state "objective_contract_audited_ts" "${_oc_audited_now}"
         [[ "${_oc_mode}" == "goal" ]] && write_state "goal_stuck_blocks" "0"
         record_gate_event "objective-contract" "audited" \
@@ -2067,22 +2303,24 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
         # escape that makes an otherwise-uncapped relentless driver safe.
         if [[ "${_oc_mode}" == "goal" ]]; then
           _goal_blocks="$(read_state "goal_blocks")"; _goal_blocks="${_goal_blocks:-0}"
-          [[ "${_goal_blocks}" =~ ^[0-9]+$ ]] || _goal_blocks=0
+          _goal_blocks="$(_sg_counter_or_zero "${_goal_blocks}")"
           _goal_stuck="$(read_state "goal_stuck_blocks")"; _goal_stuck="${_goal_stuck:-0}"
-          [[ "${_goal_stuck}" =~ ^[0-9]+$ ]] || _goal_stuck=0
+          _goal_stuck="$(_sg_counter_or_zero "${_goal_stuck}")"
           _goal_prev_edit="$(read_state "goal_last_block_edit_ts")"; _goal_prev_edit="${_goal_prev_edit:-0}"
-          [[ "${_goal_prev_edit}" =~ ^[0-9]+$ ]] || _goal_prev_edit=0
+          _goal_prev_edit="$(_sg_counter_or_zero \
+            "${_goal_prev_edit}" "${_SG_UINT_MAX}")"
           _goal_prev_edit_revision="$(read_state "goal_last_block_edit_revision")"
           _goal_thresh="${OMC_GOAL_STUCK_THRESHOLD:-3}"
-          [[ "${_goal_thresh}" =~ ^[0-9]+$ ]] || _goal_thresh=3
+          _omc_canonical_uint_in_range "${_goal_thresh}" 0 2147483647 \
+            || _goal_thresh=3
 
           # Progress detector: an edit since the previous goal block resets the
           # stuck counter; no edit advances it toward the wall. A model
           # genuinely grinding forward is NEVER released by the cap — only a
           # model spinning with zero progress trips the escape.
           _goal_progressed=0
-          if [[ "${_oc_current_edit_revision}" =~ ^[0-9]+$ ]] \
-              && [[ "${_goal_prev_edit_revision}" =~ ^[0-9]+$ ]]; then
+          if _sg_uint_is_valid "${_oc_current_edit_revision}" \
+              && _sg_uint_is_valid "${_goal_prev_edit_revision}"; then
             (( _oc_current_edit_revision > _goal_prev_edit_revision )) \
               && _goal_progressed=1
           elif [[ "${_oc_last_edit_ts}" -gt "${_goal_prev_edit}" ]]; then
@@ -2093,9 +2331,9 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
           if [[ "${_goal_progressed}" -eq 1 ]]; then
             _goal_stuck=0
           else
-            _goal_stuck=$((_goal_stuck + 1))
+            _goal_stuck="$(_sg_next_counter "${_goal_stuck}")"
           fi
-          _goal_blocks=$((_goal_blocks + 1))
+          _goal_blocks="$(_sg_next_counter "${_goal_blocks}")"
           with_state_lock_batch \
             "goal_blocks" "${_goal_blocks}" \
             "goal_stuck_blocks" "${_goal_stuck}" \
@@ -2119,13 +2357,20 @@ Run metis to pressure-test for wrong-abstraction / missing-constraint risks befo
           # Below the wall: relentless block, re-anchoring the goal verbatim.
           record_gate_event "goal" "block" \
             "goal_blocks=${_goal_blocks}" "stuck=${_goal_stuck}" "threshold=${_goal_thresh}"
+          if [[ "${_goal_thresh}" -eq 0 ]]; then
+            _goal_stuck_guidance="Genuinely blocked? \`/ulw-pause <reason>\` (operational block) · \`/goal pause\` (suspend the driver) · \`/goal clear\` (stand down). This drive is uncapped (goal_stuck_threshold=0), so there is no automatic stuck-wall release."
+            _goal_progress_label="${_goal_stuck}/uncapped"
+          else
+            _goal_stuck_guidance="Genuinely blocked? \`/ulw-pause <reason>\` (operational block) · \`/goal pause\` (suspend the driver) · \`/goal clear\` (stand down). After ${_goal_thresh} consecutive no-progress stops the driver surfaces a stuck-wall and releases on its own."
+            _goal_progress_label="${_goal_stuck}/${_goal_thresh}"
+          fi
           _goal_recovery="$(format_gate_recovery_options \
             "Drive the next concrete sub-step toward the goal NOW — it is not done until verifiably achieved." \
             "When you believe it IS achieved: dispatch excellence-reviewer (Agent tool) with the goal for a FRESH-CONTEXT completeness audit, ship anything it surfaces, then attest \`**Goal achieved.**\` (or \`**Objective coverage.**\`). Release requires BOTH the recorded fresh audit AND that attestation — self-attestation alone does not clear it." \
-            "Genuinely blocked? \`/ulw-pause <reason>\` (operational block) · \`/goal pause\` (suspend the driver) · \`/goal clear\` (stand down). After ${_goal_thresh} consecutive no-progress stops the driver surfaces a stuck-wall and releases on its own.")"
+            "${_goal_stuck_guidance}")"
           emit_stop_block "$(format_gate_block_dual \
             "Persistent goal active — relentless drive engaged. Not done until you verifiably achieve the goal, run a fresh completeness audit, and attest **Goal achieved.** Keep going." \
-            "[Goal driver · block ${_goal_blocks}, no-progress ${_goal_stuck}/${_goal_thresh}] the persistent goal is still open.
+            "[Goal driver · block ${_goal_blocks}, no-progress ${_goal_progress_label}] the persistent goal is still open.
 GOAL (verbatim, re-anchored):
 ${_goal_excerpt}
 Drive the next concrete sub-step. When achieved: fresh excellence audit + attest **Goal achieved.**${_goal_recovery}")"
@@ -2133,14 +2378,13 @@ Drive the next concrete sub-step. When achieved: fresh excellence audit + attest
         fi
 
         _oc_blocks="$(read_state "objective_contract_blocks")"
-        _oc_blocks="${_oc_blocks:-0}"
-        [[ "${_oc_blocks}" =~ ^[0-9]+$ ]] || _oc_blocks=0
+        _oc_blocks="$(_sg_counter_or_zero "${_oc_blocks:-0}")"
         _oc_cap=2
         _oc_effective_exhaustion_mode="$(effective_guard_exhaustion_mode 1)"
         if [[ "${_oc_blocks}" -lt "${_oc_cap}" || "${_oc_effective_exhaustion_mode}" == "block" ]]; then
           if [[ "${_oc_blocks}" -lt "${_oc_cap}" ]]; then
-            write_state "objective_contract_blocks" "$((_oc_blocks + 1))"
-            _oc_next_block="$((_oc_blocks + 1))"
+            _oc_next_block="$(_sg_next_counter "${_oc_blocks}")"
+            write_state "objective_contract_blocks" "${_oc_next_block}"
           else
             _oc_next_block="${_oc_blocks}"
           fi
@@ -2213,8 +2457,8 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
       && [[ "$(read_state "objective_contract_open_mandate")" == "1" ]] \
       && ! _objective_contract_current_is_substantive; then
       _oc_wha_ts="$(read_state "objective_contract_would_have_armed_ts")"
-      _oc_wha_ts="${_oc_wha_ts:-0}"
-      [[ "${_oc_wha_ts}" =~ ^[0-9]+$ ]] || _oc_wha_ts=0
+      _oc_wha_ts="$(_sg_counter_or_zero \
+        "${_oc_wha_ts:-0}" "${_SG_UINT_MAX}")"
       if [[ "${_oc_wha_ts}" -le "${_oc_prompt_ts}" ]]; then
         write_state "objective_contract_would_have_armed_ts" "$(now_epoch)" 2>/dev/null || true
         record_gate_event "objective-contract" "would_have_armed" \
@@ -2253,6 +2497,12 @@ The findings you handled are a sample, not the ceiling — do not redefine succe
     contract_blocker_count="$(printf '%s\n' "${contract_blockers}" | awk 'NF{c++} END{print c+0}')"
     contract_blocker_prompt_count="$(printf '%s\n' "${contract_blockers_prompt}" | awk 'NF{c++} END{print c+0}')"
     contract_blocker_inferred_count="$(printf '%s\n' "${contract_blockers_inferred}" | awk 'NF{c++} END{print c+0}')"
+    contract_blocker_count="$(_sg_counter_or_zero \
+      "${contract_blocker_count:-0}" "${_SG_UINT_MAX}")"
+    contract_blocker_prompt_count="$(_sg_counter_or_zero \
+      "${contract_blocker_prompt_count:-0}" "${_SG_UINT_MAX}")"
+    contract_blocker_inferred_count="$(_sg_counter_or_zero \
+      "${contract_blocker_inferred_count:-0}" "${_SG_UINT_MAX}")"
     record_gate_event "delivery-contract" "block" \
       "remaining_count=${contract_blocker_count}" \
       "prompt_blocker_count=${contract_blocker_prompt_count}" \
@@ -2343,8 +2593,8 @@ Remaining before Stop:
       && closeout_seal_is_required \
       && ! closeout_seal_is_current; then
     closeout_preflight_blocks="$(read_state "closeout_preflight_blocks" 2>/dev/null || true)"
-    [[ "${closeout_preflight_blocks}" =~ ^[0-9]+$ ]] || closeout_preflight_blocks=0
-    closeout_preflight_blocks=$((closeout_preflight_blocks + 1))
+    closeout_preflight_blocks="$(_sg_next_counter \
+      "${closeout_preflight_blocks}")"
     write_state "closeout_preflight_blocks" "${closeout_preflight_blocks}" 2>/dev/null || true
     record_gate_event "closeout-preflight" "block" \
       "block_count=${closeout_preflight_blocks}" \
@@ -2367,15 +2617,19 @@ Remaining before Stop:
   if [[ -f "${closure_edited_log}" ]]; then
     closure_edited_count="$(sort -u "${closure_edited_log}" | wc -l | tr -d '[:space:]')"
   fi
-  [[ "${closure_edited_count}" =~ ^[0-9]+$ ]] || closure_edited_count=0
+  closure_edited_count="$(_sg_counter_or_zero \
+    "${closure_edited_count:-0}" "${_SG_UINT_MAX}")"
 
   closure_dispatch_count="$(read_state "subagent_dispatch_count")"
-  [[ "${closure_dispatch_count}" =~ ^[0-9]+$ ]] || closure_dispatch_count=0
+  closure_dispatch_count="$(_sg_counter_or_zero \
+    "${closure_dispatch_count:-0}" "${_SG_UINT_MAX}")"
 
   closure_deferred_scope_count="$(read_scope_count_by_status "deferred")"
-  [[ "${closure_deferred_scope_count}" =~ ^[0-9]+$ ]] || closure_deferred_scope_count=0
+  closure_deferred_scope_count="$(_sg_counter_or_zero \
+    "${closure_deferred_scope_count:-0}" "${_SG_UINT_MAX}")"
   closure_deferred_finding_count="$(read_findings_count_by_status "deferred")"
-  [[ "${closure_deferred_finding_count}" =~ ^[0-9]+$ ]] || closure_deferred_finding_count=0
+  closure_deferred_finding_count="$(_sg_counter_or_zero \
+    "${closure_deferred_finding_count:-0}" "${_SG_UINT_MAX}")"
 
   closure_needs_risks=0
   if [[ "${closure_deferred_scope_count}" -gt 0 || "${closure_deferred_finding_count}" -gt 0 ]]; then
@@ -2448,7 +2702,8 @@ Remaining before Stop:
       [ .[] | select((.review_cycle_id // "") == $cycle) | ((.message // "") | length) ]
       | max // 0
     ' "$(session_file "provisional_closeouts.jsonl")" 2>/dev/null || printf '0')"
-    [[ "${closure_prior_chars}" =~ ^[0-9]+$ ]] || closure_prior_chars=0
+    closure_prior_chars="$(_sg_counter_or_zero \
+      "${closure_prior_chars:-0}" "${_SG_UINT_MAX}")"
   fi
   if [[ "${closure_structured_required}" -eq 1 && "${closure_structured_ok}" -ne 1 ]] \
     || [[ "${closure_structured_required}" -eq 0 && "${closure_structured_ok}" -ne 1 && "${closure_compact_ok}" -ne 1 ]] \
@@ -2610,9 +2865,11 @@ fi
 review_history_hint=""
 _review_history_file="$(session_file "review_history.jsonl")"
 _review_history_objective_ts="$(read_state "review_cycle_prompt_ts")"
-[[ "${_review_history_objective_ts}" =~ ^[0-9]+$ ]] || _review_history_objective_ts=0
+_review_history_objective_ts="$(_sg_counter_or_zero \
+  "${_review_history_objective_ts:-0}" "${_SG_UINT_MAX}")"
 _review_history_cycle_id="$(read_state "review_cycle_id")"
-[[ "${_review_history_cycle_id}" =~ ^[0-9]+$ ]] || _review_history_cycle_id=0
+_review_history_cycle_id="$(_sg_counter_or_zero \
+  "${_review_history_cycle_id:-0}" "${_SG_UINT_MAX}")"
 if [[ ",${review_batch_label}," == *,quality-reviewer,* ]] \
     && [[ -s "${_review_history_file}" ]] \
     && jq -s -e \

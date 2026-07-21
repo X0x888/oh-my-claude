@@ -109,21 +109,41 @@ assert_contains "T3: help mentions skip-professional" "--skip-professional" "${o
 assert_contains "T3: help mentions skip-install" "--skip-install" "${out}"
 assert_contains "T3: help mentions skip-distribution" "--skip-distribution" "${out}"
 assert_contains "T3: help mentions empirical receipt" "--pairwise-receipt <file>" "${out}"
+assert_contains "T3: help mentions campaign authority" "--pairwise-campaign-receipt <file>" "${out}"
+assert_contains "T3: help names causal schema" "schema-v7 causal-generation" "${out}"
 
-printf 'Test 4: pairwise campaign receipt reaches the professional release gate\n'
-pairwise_receipt="${TMP_DIR}/campaign receipt.json"
+printf 'Test 4: pairwise receipts and campaign authority reach the professional release gate\n'
+pairwise_receipt="${TMP_DIR}/pair receipt.json"
+pairwise_campaign_receipt="${TMP_DIR}/campaign receipt.json"
 printf '{}\n' > "${pairwise_receipt}"
+printf '{}\n' > "${pairwise_campaign_receipt}"
 out="$(
   run_tool "${professional_ok}" "${install_ok}" "${distribution_ok}" \
-    --pairwise-receipt "${pairwise_receipt}" --json
+    --pairwise-receipt "${pairwise_receipt}" \
+    --pairwise-campaign-receipt "${pairwise_campaign_receipt}" --json
 )"
 professional_command="$(printf '%s' "${out}" | jq -r '.surfaces[] | select(.name=="professional") | .command')"
 assert_contains "T4: professional command receives pairwise flag" "--pairwise-receipt" "${professional_command}"
-assert_contains "T4: spaced receipt path remains one argument" "campaign\\ receipt.json" "${professional_command}"
+assert_contains "T4: spaced pair receipt path remains one argument" "pair\\ receipt.json" "${professional_command}"
+assert_contains "T4: professional command receives campaign flag" \
+  "--pairwise-campaign-receipt" "${professional_command}"
+assert_contains "T4: spaced campaign receipt path remains one argument" \
+  "campaign\\ receipt.json" "${professional_command}"
 
 set +e
 out="$(run_tool "${professional_ok}" "${install_ok}" "${distribution_ok}" \
-  --pairwise-receipt "${pairwise_receipt}" --skip-professional 2>&1)"
+  --pairwise-receipt "${pairwise_receipt}" 2>&1)"
+rc="$?"
+set -e
+assert_eq "T4: pair receipt without campaign authority fails closed" "2" "${rc}"
+assert_contains "T4: missing campaign authority is named" \
+  "requires --pairwise-campaign-receipt" "${out}"
+
+set +e
+out="$(run_tool "${professional_ok}" "${install_ok}" "${distribution_ok}" \
+  --pairwise-receipt "${pairwise_receipt}" \
+  --pairwise-campaign-receipt "${pairwise_campaign_receipt}" \
+  --skip-professional 2>&1)"
 rc="$?"
 set -e
 assert_eq "T4: receipt cannot be silently skipped" "2" "${rc}"

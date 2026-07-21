@@ -8,7 +8,7 @@
 #
 # Without this test, the next agent added to the bundle could silently
 # regress the contract — verify.sh's path-existence check cannot detect
-# a contract drift, and only 6 of 32 agents have any consumer parsing
+# a contract drift, and only 9 of 37 agents have dedicated reviewer parsing
 # (record-reviewer.sh) that would catch the drift in a behavioral test.
 #
 # Mirrors the symbol-presence pattern of tests/test-classifier.sh and
@@ -208,6 +208,130 @@ for role in reviewer lens planner researcher debugger operations writer implemen
       fail=$((fail + 1))
     fi
   done
+done
+
+# ----------------------------------------------------------------------
+printf "Test 7: Definition planners explain passive screenshot feasibility\n"
+for planner in quality-planner prometheus; do
+  planner_file="${AGENTS_DIR}/${planner}.md"
+  planner_text="$(tr '\n' ' ' <"${planner_file}" \
+    | sed -E 's/[[:space:]]+/ /g')"
+  for required_guidance in \
+    "Playwright DOM snapshot scores 25" \
+    "Playwright screenshot scores 20" \
+    "computer-use screenshot scores 15 for ordinary verification" \
+    "no Definition target-witness schema" \
+    "regardless of threshold" \
+    "default verification threshold of 40" \
+    "Bash render verifier"; do
+    if grep -Fq "${required_guidance}" <<<"${planner_text}"; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: planner %q omits screenshot feasibility guidance %q\n' \
+        "${planner}" "${required_guidance}" >&2
+      fail=$((fail + 1))
+    fi
+  done
+done
+
+# ----------------------------------------------------------------------
+printf "Test 8: Definition planners match source-proof target feasibility\n"
+for planner in quality-planner prometheus; do
+  planner_file="${AGENTS_DIR}/${planner}.md"
+  planner_text="$(tr '\n' ' ' <"${planner_file}" \
+    | sed -E 's/[[:space:]]+/ /g')"
+  if grep -Fq "Read" <<<"${planner_text}" \
+      && grep -Fq "Grep" <<<"${planner_text}" \
+      && grep -Fq "each require a regular file" <<<"${planner_text}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: planner %q must require one regular file for both Read and Grep proof\n' \
+      "${planner}" >&2
+    fail=$((fail + 1))
+  fi
+done
+
+# ----------------------------------------------------------------------
+printf "Test 9: Definition planners mirror standards and proof-feasibility enforcement\n"
+for planner in quality-planner prometheus; do
+  planner_file="${AGENTS_DIR}/${planner}.md"
+  planner_text="$(tr '\n' ' ' <"${planner_file}" \
+    | sed -E 's/[[:space:]]+/ /g')"
+  for required_guidance in \
+    'at least one `user` standard' \
+    'required for every `profile` row' \
+    'forbidden for every other kind' \
+    '`python -m pytest`' \
+    'concrete launcher and any interpreter subject must resolve' \
+    'every lexical path component must be non-symlinked' \
+    'case-insensitive substring of the concrete persisted MCP tool identity' \
+    'target/route language belongs in `artifact_contains`' \
+    '`observed_url` is snapshot-only'; do
+    if grep -Fq "${required_guidance}" <<<"${planner_text}"; then
+      pass=$((pass + 1))
+    else
+      printf '  FAIL: planner %q omits enforced Definition guidance %q\n' \
+        "${planner}" "${required_guidance}" >&2
+      fail=$((fail + 1))
+    fi
+  done
+done
+
+# ----------------------------------------------------------------------
+printf "Test 10: excellence reviewer mirrors receipt and frontier enforcement\n"
+excellence_text="$(tr '\n' ' ' <"${AGENTS_DIR}/excellence-reviewer.md" \
+  | sed -E 's/[[:space:]]+/ /g')"
+for required_guidance in \
+  '`quality_frontier.json`' \
+  'exact frozen receipt kind' \
+  'may support either `met` or `unmet`' \
+  'failed observation supports neither' \
+  'passing receipt can support only `met`' \
+  'failed receipt only `unmet`' \
+  'causally later, distinct proof' \
+  'content-bearing artifact digest' \
+  'full observed-result digest' \
+  'assertion-bearing proof must use a different proof identity'; do
+  if grep -Fq "${required_guidance}" <<<"${excellence_text}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: excellence-reviewer omits enforced review guidance %q\n' \
+      "${required_guidance}" >&2
+    fail=$((fail + 1))
+  fi
+done
+
+# ----------------------------------------------------------------------
+printf "Test 11: authoritative docs keep screenshot routes snapshot-only\n"
+for contract_doc in \
+  "${REPO_ROOT}/docs/definition-of-excellent.md" \
+  "${REPO_ROOT}/docs/architecture.md" \
+  "${REPO_ROOT}/AGENTS.md"; do
+  contract_text="$(tr '\n' ' ' <"${contract_doc}" \
+    | sed -E 's/[[:space:]]+/ /g')"
+  if grep -Fq '`observed_url` is snapshot-only' <<<"${contract_text}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: contract doc %q does not keep observed_url snapshot-only\n' \
+      "${contract_doc}" >&2
+    fail=$((fail + 1))
+  fi
+done
+
+definition_doc_text="$(tr '\n' ' ' \
+  <"${REPO_ROOT}/docs/definition-of-excellent.md" \
+  | sed -E 's/[[:space:]]+/ /g')"
+for standards_guidance in \
+  'at least one `kind: "user"` row' \
+  '`profile_entry_id` is required on every `profile` row' \
+  'forbidden on `user`, `repo`, `domain`, and `external` rows'; do
+  if grep -Fq "${standards_guidance}" <<<"${definition_doc_text}"; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: Definition documentation omits standards invariant %q\n' \
+      "${standards_guidance}" >&2
+    fail=$((fail + 1))
+  fi
 done
 
 # ----------------------------------------------------------------------

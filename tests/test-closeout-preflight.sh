@@ -544,6 +544,48 @@ else
   bad "material nonce did not invalidate READY after state-lock contention"
 fi
 
+# A hand-edited/poisoned material-generation string must never enter Bash
+# arithmetic. Preserve the corrupt authority for repair, retain the nonce that
+# invalidates any prior READY seal, and surface NOT_READY rather than wrapping
+# or resetting the generation.
+seed_ready generation_numeric_poison
+generation_numeric_marker="${TEST_HOME}/generation-arithmetic-executed"
+jq --arg poison "x[\$(touch ${generation_numeric_marker})]" \
+  '.work_material_generation=$poison' \
+  "${STATE_ROOT}/generation_numeric_poison/session_state.json" \
+  >"${STATE_ROOT}/generation_numeric_poison/session_state.json.tmp"
+mv "${STATE_ROOT}/generation_numeric_poison/session_state.json.tmp" \
+  "${STATE_ROOT}/generation_numeric_poison/session_state.json"
+generation_numeric_out="$(run_posttool generation_numeric_poison)"
+assert_contains "poisoned material generation emits hidden NOT READY" \
+  "NOT READY" "${generation_numeric_out}"
+[[ "$(jq -r '.work_material_generation' \
+  "${STATE_ROOT}/generation_numeric_poison/session_state.json")" \
+    == "x[\$(touch ${generation_numeric_marker})]" ]] \
+  && ok || bad "poisoned material generation was silently normalized"
+[[ ! -e "${generation_numeric_marker}" ]] \
+  && ok || bad "poisoned material generation executed shell arithmetic"
+generation_numeric_seal_state="$(hook_env \
+  SESSION_ID=generation_numeric_poison bash -c \
+  '. "$1"; if closeout_seal_is_current; then printf current; else printf stale; fi' \
+  -- "${HOOK_DIR}/common.sh")"
+[[ "${generation_numeric_seal_state}" == "stale" ]] \
+  && ok || bad "poisoned material generation did not leave the seal stale"
+
+seed_ready generation_numeric_overflow
+jq '.work_material_generation="999999999999999999"' \
+  "${STATE_ROOT}/generation_numeric_overflow/session_state.json" \
+  >"${STATE_ROOT}/generation_numeric_overflow/session_state.json.tmp"
+mv "${STATE_ROOT}/generation_numeric_overflow/session_state.json.tmp" \
+  "${STATE_ROOT}/generation_numeric_overflow/session_state.json"
+generation_overflow_out="$(run_posttool generation_numeric_overflow)"
+assert_contains "exhausted material generation cannot wrap" \
+  "NOT READY" "${generation_overflow_out}"
+[[ "$(jq -r '.work_material_generation' \
+  "${STATE_ROOT}/generation_numeric_overflow/session_state.json")" \
+    == "999999999999999999" ]] \
+  && ok || bad "exhausted material generation wrapped or reset"
+
 # MessageDisplay never buffers or replays cross-batch text. Before READY, the
 # first canonical closeout batch becomes one compact marker and later batches
 # are suppressed. Ordinary text is untouched, so a timeout/failure on a later
@@ -862,6 +904,25 @@ manual_null_out="$(hook_env \
 assert_contains "manual preflight keeps null migration authority active" \
   "READY" "${manual_null_out}"
 
+# A retained Agent-admission journal is non-replayable recovery authority. The
+# manual no-material fast path used to bypass every state lock and print READY;
+# it must now linearize behind the same global dispatch fence as PostToolBatch.
+manual_dispatch_sid="manual_dispatch_interrupted"
+mkdir -p "${STATE_ROOT}/${manual_dispatch_sid}/.dispatch-txn.interrupted"
+jq -nc --arg cwd "${TEST_HOME}" '{
+  workflow_mode:"ultrawork", ulw_enforcement_active:"1",
+  ulw_enforcement_generation:"41", task_intent:"execution",
+  current_objective:"Do not certify interrupted admission", cwd:$cwd
+}' >"${STATE_ROOT}/${manual_dispatch_sid}/session_state.json"
+manual_dispatch_out="$(hook_env \
+  bash "${HOOK_DIR}/closeout-preflight.sh" "${manual_dispatch_sid}")"
+assert_contains "manual preflight fails closed on interrupted Agent admission" \
+  "Agent admission is interrupted" "${manual_dispatch_out}"
+assert_not_contains "manual interrupted admission is never called READY" \
+  "preflight: READY —" "${manual_dispatch_out}"
+[[ -d "${STATE_ROOT}/${manual_dispatch_sid}/.dispatch-txn.interrupted" ]] \
+  && ok || bad "manual preflight consumed interrupted dispatch authority"
+
 manual_recovered_sid="manual_recovered_authority"
 mkdir -p "${STATE_ROOT}/${manual_recovered_sid}"
 jq -nc --arg cwd "${TEST_HOME}" '{
@@ -890,11 +951,19 @@ jq '.cwd="/different/project"' "${manual_root}/other-project/session_state.json"
   >"${manual_root}/other-project/session_state.json.tmp"
 mv "${manual_root}/other-project/session_state.json.tmp" \
   "${manual_root}/other-project/session_state.json"
+cp -R "${manual_root}/manual-one" "${manual_root}/nul-cwd-peer"
+jq --arg cwd "${TEST_HOME}" '.cwd = ($cwd + "\u0000")' \
+  "${manual_root}/nul-cwd-peer/session_state.json" \
+  >"${manual_root}/nul-cwd-peer/session_state.json.tmp"
+mv "${manual_root}/nul-cwd-peer/session_state.json.tmp" \
+  "${manual_root}/nul-cwd-peer/session_state.json"
 manual_unique_out="$(STATE_ROOT="${manual_root}" hook_env \
   env -u SESSION_ID -u CLAUDE_CODE_SESSION_ID \
   bash "${HOOK_DIR}/closeout-preflight.sh")"
 assert_contains "manual discovery selects unique active same-cwd session" \
   "READY" "${manual_unique_out}"
+assert_not_contains "manual discovery ignores NUL-aliased cwd peer" \
+  "multiple active sessions" "${manual_unique_out}"
 
 manual_platform_out="$(STATE_ROOT="${manual_root}" hook_env \
   SESSION_ID=missing-session CLAUDE_CODE_SESSION_ID=manual-one \

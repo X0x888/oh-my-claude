@@ -65,7 +65,7 @@ The terminal renders Claude Code output as monospaced markdown. Use the renderin
 - **Tables** for status grids, comparison of options, or wave/owner/ETA breakdowns. Keep cells short so they wrap predictably in narrow terminals.
 - **Block quotes** (`>`) for an inline callout when a single line deserves to stand apart — typically a load-bearing risk, a non-obvious assumption, or a quoted user instruction the response is honoring. Use sparingly; the rarity is the signal.
 - **Priority labels** (`P0`, `P1`, `P2`) when ranking findings or recommendations. P0 is must-fix-now; P1 is must-fix; P2 is should-fix.
-- **No emoji.** Emoji break alignment in narrow terminals, vary by font, and add no signal an experienced operator needs.
+- **No emoji.** Emoji break alignment in narrow terminals, vary by font, and add no signal an experienced operator needs. The sole exception is the mandatory leading `⏳` in the structural live-work WAIT line below; that glyph is protocol, not decoration.
 
 ---
 
@@ -136,6 +136,26 @@ Use a status grid. Lead with the current wave; show priors in a compact table.
 | 5/5  | Pending  | docs + commit            |
 ```
 
+### Waiting on a live reviewer or background task
+
+`In-flight` status prose is not a wait contract. Promise an automatic resume
+only while the task registry reports the named reviewer or other awaited task
+live. A parent-visible foreground completion or background notification means
+that attempt ended, even if its prose promises more work. Resume the native
+agent through `SendMessage` or an explicit rebind; never announce another wait
+without a live task.
+
+Before yielding for verified background work, end with this exact plain,
+unquoted line as the structural final line of the response (the leading `⏳`
+is the one permitted exception to the general no-emoji rule):
+
+⏳ **Waiting on `<what>`** — running in the background; I'll resume automatically when it finishes. Nothing for you to do.
+
+Name the exact reviewer or task being awaited. Do not add a summary, status
+line, sign-off, or any other text after it. Do not spawn a waiter or ask the
+user to poll; the registered completion notification is the wake mechanism.
+The Stop dispatcher rejects a dead-wait promise and recovers automatically.
+
 ### Recommendation memo — advisory / "what should we do?"
 
 Lead with the recommendation. Defend it briefly. Name the alternatives.
@@ -200,7 +220,7 @@ When tools fail mid-batch, surface the failure in the next user-facing line — 
 - **Mixed success.** Lead the headline with the failure ratio if anything failed: `**3 shipped, 1 blocked on lib/x.sh:42.**` The reader should not have to count the bullets to learn there was a blocker, and the blocker location belongs in the headline so the next action is obvious.
 - **Hidden decision.** When you made a judgment call the prompt did not authorize — chose library A over B, picked a refactor scope, named a flag — surface it under `**Asks.**` so the user can redirect cheaply. `I chose <X> over <Y> because <Z> — flag if you want a different call.` Hiding such calls is the most common operator-to-CEO trust failure.
 - **Trivial response.** A single sentence with the answer. No headline label, no rule, no `**Verification.**` stanza for a one-line edit that needs no test run.
-- **Long-running async work.** Mark items `In-flight` and explicitly say what is pending and how the user can check status (the exact command, the log path, the watch loop).
+- **Long-running async work.** Mark items `In-flight`. If a matching registered task is live, use the structural WAIT final line above and rely on its completion notification. Otherwise name how the user can check status, but do not promise an automatic resume.
 - **Unknown state.** Label it `Unknown:` and name what evidence would resolve it. The CEO would rather hear `Unknown: whether the migration is reversible — needs DBA confirmation` than a confident-sounding guess.
 - **Multiple parallel tool calls in flight.** Narrate the goal once before dispatching; do not narrate each tool individually.
 

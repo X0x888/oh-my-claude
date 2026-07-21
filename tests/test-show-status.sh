@@ -54,6 +54,17 @@ assert_output_NOT_contains() {
   fi
 }
 
+assert_text_contains() {
+  local label="$1" needle="$2" out="$3"
+  if [[ "${out}" == *"${needle}"* ]]; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: %s\n    needle=%q\n    output(first 600)=%q\n' \
+      "${label}" "${needle}" "${out:0:600}" >&2
+    fail=$((fail + 1))
+  fi
+}
+
 # Build a synthetic STATE_ROOT + SESSION_ID for each test.
 mk_session() {
   local _root _sid
@@ -326,6 +337,154 @@ else
   printf '  FAIL: T6: --help does not document --explain\n' >&2
   fail=$((fail + 1))
 fi
+
+# Explain must report what common.sh actually enforces, not whichever raw
+# row happens to be closest to the renderer. In particular, the Definition
+# and Constitution controls are user-authority only: project rows cannot
+# weaken them, malformed environment/config values are ignored, and a valid
+# environment override wins. A permitted project flag also proves that the
+# status surface follows common.sh's capped walk-up rather than checking only
+# ${PWD}/.claude.
+printf 'Test 6b: --explain reports validated runtime precedence and project authority\n'
+EXPLAIN_HOME="$(mktemp -d -t show-status-explain-home-XXXXXX)"
+EXPLAIN_PROJECT="${EXPLAIN_HOME}/work/project"
+EXPLAIN_NESTED="${EXPLAIN_PROJECT}/nested/deeper"
+mkdir -p "${EXPLAIN_HOME}/.claude" "${EXPLAIN_PROJECT}/.claude" "${EXPLAIN_NESTED}"
+cat > "${EXPLAIN_HOME}/.claude/oh-my-claude.conf" <<'EOF'
+definition_of_excellent=always
+quality_constitution=off
+taste_learning=adaptive
+quality_constitution_max_context_chars=4000
+metis_on_plan_gate=off
+gate_level=full
+installation_drift_check=off
+statusline_retention=NO
+statusline_width=false
+EOF
+cat > "${EXPLAIN_PROJECT}/.claude/oh-my-claude.conf" <<'EOF'
+definition_of_excellent=off
+quality_constitution=on
+taste_learning=off
+quality_constitution_max_context_chars=9999
+metis_on_plan_gate=on
+gate_level=standard
+gate_level=invalid
+installation_drift_check=true
+statusline_retention=on
+statusline_width=on
+EOF
+
+out_effective="$(
+  cd "${EXPLAIN_NESTED}"
+  env -u OMC_DEFINITION_OF_EXCELLENT \
+      -u OMC_QUALITY_CONSTITUTION \
+      -u OMC_TASTE_LEARNING \
+      -u OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS \
+      -u OMC_METIS_ON_PLAN_GATE \
+      HOME="${EXPLAIN_HOME}" bash "${SHOW_STATUS}" --explain 2>&1
+)"
+assert_text_contains "T6b: denied project Definition row cannot weaken user value" \
+  "definition_of_excellent=always (default=adaptive)" "${out_effective}"
+assert_text_contains "T6b: denied project Constitution row cannot override user value" \
+  "quality_constitution=off (default=on)" "${out_effective}"
+assert_text_contains "T6b: denied project taste row cannot override user value" \
+  "taste_learning=adaptive (default=review)" "${out_effective}"
+assert_text_contains "T6b: denied project context cap cannot override user value" \
+  "quality_constitution_max_context_chars=4000 (default=2400)" "${out_effective}"
+assert_text_contains "T6b: allowed project row is discovered by walk-up" \
+  "metis_on_plan_gate=on (default=off)" "${out_effective}"
+assert_text_contains "T6b: malformed later project duplicate retains last valid row" \
+  "gate_level=standard (default=full)" "${out_effective}"
+assert_text_contains "T6b: drift control is user-conf-only" \
+  "installation_drift_check=false (default=true)" "${out_effective}"
+assert_text_contains "T6b: retention control is user-conf-only and canonical" \
+  "statusline_retention=off (default=on)" "${out_effective}"
+assert_text_contains "T6b: width control is user-conf-only and canonical" \
+  "statusline_width=off (default=on)" "${out_effective}"
+
+out_env_effective="$(
+  cd "${EXPLAIN_NESTED}"
+  HOME="${EXPLAIN_HOME}" \
+    OMC_DEFINITION_OF_EXCELLENT=off \
+    OMC_QUALITY_CONSTITUTION=on \
+    OMC_TASTE_LEARNING=review \
+    OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=512 \
+    OMC_GATE_LEVEL=basic \
+    OMC_INSTALLATION_DRIFT_CHECK=YES \
+    OMC_STATUSLINE_RETENTION=1 \
+    OMC_STATUSLINE_WIDTH=TRUE \
+    bash "${SHOW_STATUS}" --explain 2>&1
+)"
+assert_text_contains "T6b: valid environment Definition value wins" \
+  "definition_of_excellent=off (default=adaptive)" "${out_env_effective}"
+assert_text_contains "T6b: valid environment Constitution value wins" \
+  "quality_constitution=on (default=on)" "${out_env_effective}"
+assert_text_contains "T6b: valid environment taste value wins" \
+  "taste_learning=review (default=review)" "${out_env_effective}"
+assert_text_contains "T6b: valid environment context cap wins" \
+  "quality_constitution_max_context_chars=512 (default=2400)" "${out_env_effective}"
+assert_text_contains "T6b: valid generic environment value wins" \
+  "gate_level=basic (default=full)" "${out_env_effective}"
+assert_text_contains "T6b: statusline drift env alias canonicalizes" \
+  "installation_drift_check=true (default=true)" "${out_env_effective}"
+assert_text_contains "T6b: statusline retention env alias canonicalizes" \
+  "statusline_retention=on (default=on)" "${out_env_effective}"
+assert_text_contains "T6b: statusline width env alias canonicalizes" \
+  "statusline_width=on (default=on)" "${out_env_effective}"
+
+out_invalid_env="$(
+  cd "${EXPLAIN_NESTED}"
+  HOME="${EXPLAIN_HOME}" \
+    OMC_DEFINITION_OF_EXCELLENT=invalid \
+    OMC_QUALITY_CONSTITUTION=invalid \
+    OMC_TASTE_LEARNING=invalid \
+    OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=0512 \
+    OMC_GATE_LEVEL=invalid \
+    OMC_INSTALLATION_DRIFT_CHECK=invalid \
+    OMC_STATUSLINE_RETENTION=invalid \
+    OMC_STATUSLINE_WIDTH=invalid \
+    bash "${SHOW_STATUS}" --explain 2>&1
+)"
+assert_text_contains "T6b: malformed environment Definition falls through to user" \
+  "definition_of_excellent=always (default=adaptive)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed environment Constitution falls through to user" \
+  "quality_constitution=off (default=on)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed environment taste falls through to user" \
+  "taste_learning=adaptive (default=review)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed environment context cap falls through to user" \
+  "quality_constitution_max_context_chars=4000 (default=2400)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed generic environment falls through to project" \
+  "gate_level=standard (default=full)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed drift env falls through to user" \
+  "installation_drift_check=false (default=true)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed retention env falls through to user" \
+  "statusline_retention=off (default=on)" "${out_invalid_env}"
+assert_text_contains "T6b: malformed width env falls through to user" \
+  "statusline_width=off (default=on)" "${out_invalid_env}"
+
+cat > "${EXPLAIN_HOME}/.claude/oh-my-claude.conf" <<'EOF'
+definition_of_excellent=best
+quality_constitution=maybe
+taste_learning=eager
+quality_constitution_max_context_chars=12001
+EOF
+out_invalid_user="$(
+  cd "${EXPLAIN_NESTED}"
+  env -u OMC_DEFINITION_OF_EXCELLENT \
+      -u OMC_QUALITY_CONSTITUTION \
+      -u OMC_TASTE_LEARNING \
+      -u OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS \
+      HOME="${EXPLAIN_HOME}" bash "${SHOW_STATUS}" --explain 2>&1
+)"
+assert_text_contains "T6b: malformed user Definition value reports runtime default" \
+  "definition_of_excellent=adaptive (default=adaptive)" "${out_invalid_user}"
+assert_text_contains "T6b: malformed user Constitution value reports runtime default" \
+  "quality_constitution=on (default=on)" "${out_invalid_user}"
+assert_text_contains "T6b: malformed user taste value reports runtime default" \
+  "taste_learning=review (default=review)" "${out_invalid_user}"
+assert_text_contains "T6b: out-of-range user context cap reports runtime default" \
+  "quality_constitution_max_context_chars=2400 (default=2400)" "${out_invalid_user}"
+rm -rf "${EXPLAIN_HOME}"
 
 # v1.31.0 Wave 6 (design-lens F-027): bare-positional argument forms
 # accepted in addition to --double-dash.

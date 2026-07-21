@@ -468,14 +468,14 @@ timing_lock_is_stale() {
 acquire_timing_lock() {
   local lockdir="$1" attempts=0 now owner_tmp observed_owner current_owner
   local reaper stale_dir
-  while ! mkdir "${lockdir}" 2>/dev/null; do
+  while ! (umask 077; mkdir "${lockdir}") 2>/dev/null; do
     observed_owner="$(cat "${lockdir}/owner" 2>/dev/null || true)"
     if timing_lock_is_stale "${lockdir}" "${observed_owner}"; then
       # Serialize reclamation itself. After the old directory moves away a new
       # writer may acquire the canonical path immediately; contenders cannot
       # act on their cached old owner until this reaper mutex is released.
       reaper="${lockdir}.reaper"
-      if mkdir "${reaper}" 2>/dev/null; then
+      if (umask 077; mkdir "${reaper}") 2>/dev/null; then
         current_owner="$(cat "${lockdir}/owner" 2>/dev/null || true)"
         if [[ "${current_owner}" == "${observed_owner}" ]] \
             && timing_lock_is_stale "${lockdir}" "${current_owner}"; then
@@ -497,8 +497,10 @@ acquire_timing_lock() {
   now="$(date +%s)"
   timing_lock_token="$$-${now}-${RANDOM}"
   owner_tmp="${lockdir}/owner.tmp.$$"
-  if ! printf '%s\t%s\t%s\n' "$$" "${timing_lock_token}" "${now}" \
-      > "${owner_tmp}" 2>/dev/null \
+  if ! (umask 077; set -o noclobber; \
+      printf '%s\t%s\t%s\n' "$$" "${timing_lock_token}" "${now}" \
+        > "${owner_tmp}") 2>/dev/null \
+      || [[ -L "${owner_tmp}" || ! -f "${owner_tmp}" ]] \
       || ! mv -f "${owner_tmp}" "${lockdir}/owner" 2>/dev/null; then
     rm -f "${owner_tmp}" 2>/dev/null || true
     rmdir "${lockdir}" 2>/dev/null || true

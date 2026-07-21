@@ -16,7 +16,7 @@ export OMC_LAZY_TIMING=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
 
-SESSION_ID="${SESSION_ID:-$(discover_latest_session)}"
+SESSION_ID="${SESSION_ID:-$(discover_current_project_session)}"
 if [[ -z "${SESSION_ID}" ]]; then
   printf 'record-council-coverage: no active session found under %s\n' "${STATE_ROOT}" >&2
   exit 1

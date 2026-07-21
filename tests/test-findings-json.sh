@@ -347,6 +347,13 @@ for agent in quality-reviewer excellence-reviewer oracle abstraction-critic meti
     FAIL=$((FAIL + 1))
     printf '  FAIL: %s.md missing FINDINGS_JSON contract\n' "${agent}"
   fi
+  if grep -q 'REVIEW_DISPATCH_ID' "${agent_md}"; then
+    PASS=$((PASS + 1))
+    printf '  PASS: %s.md preserves dispatch-ID terminal ordering\n' "${agent}"
+  else
+    FAIL=$((FAIL + 1))
+    printf '  FAIL: %s.md omits dispatch-ID terminal ordering\n' "${agent}"
+  fi
 done
 
 rm -rf "${TEST_HOME}"

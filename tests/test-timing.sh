@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for the time-tracking subsystem (lib/timing.sh + pretool/posttool
 # hooks + Stop epilogue + show-time). Cover the load-bearing behaviors:
-# lock-free append correctness, FIFO/LIFO pairing, prompt-seq epoch
+# serialized append correctness, FIFO/LIFO pairing, prompt-seq epoch
 # isolation, opt-out fast-path, aggregator math, format helpers, Stop
 # self-suppression on the exact blocked Stop attempt, and show-time
 # empty-state vs populated.
@@ -77,6 +77,58 @@ else
   pass=$((pass + 1))
 fi
 OMC_TIME_TRACKING="on"
+
+# ----------------------------------------------------------------------
+printf 'Test 1b: unavailable clock is a non-throwing telemetry no-op\n'
+reset_log
+clock_xs_log="$(timing_xs_log_path)"
+rm -f "${clock_xs_log}"
+clock_writer_rc=0
+(
+  # Indirectly consumed by the timing writers under test.
+  # shellcheck disable=SC2329
+  now_epoch() { return 1; }
+  timing_append_start "Bash" "clock-start" "" 1
+  timing_append_end "Bash" "clock-end" 1
+  timing_append_prompt_start 1
+  timing_append_directive "clock_failure" 10 1
+  timing_append_prompt_end 1 5
+  timing_record_session_summary \
+    '{"walltime_s":5,"tokens_main_in":0,"stale_reviewer_count":0}'
+) >/dev/null 2>&1 || clock_writer_rc=$?
+assert_eq "clock failure never escapes timing writers" "0" "${clock_writer_rc}"
+assert_eq "clock failure emits no per-session timing row" "0" \
+  "$([[ -s "$(timing_log_path)" ]] && printf 1 || printf 0)"
+assert_eq "clock failure emits no cross-session summary" "0" \
+  "$([[ -s "${clock_xs_log}" ]] && printf 1 || printf 0)"
+
+stop_clock_root="${TEST_STATE_ROOT}/stop-clock-failure"
+stop_clock_session="stop-clock-failure"
+stop_clock_dir="${stop_clock_root}/${stop_clock_session}"
+mkdir -p "${stop_clock_dir}"
+printf '%s\n' \
+  '{"prompt_seq":"1","session_id":"stop-clock-failure"}' \
+  >"${stop_clock_dir}/session_state.json"
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":100,"prompt_seq":1}' \
+  >"${stop_clock_dir}/timing.jsonl"
+stop_clock_payload='{"session_id":"stop-clock-failure"}'
+stop_clock_rc=0
+_stop_clock_failure_probe() {
+  local STATE_ROOT="${stop_clock_root}"
+  local HOME="${TEST_STATE_ROOT}/stop-clock-home"
+  mkdir -p "${HOME}/.claude/quality-pack"
+  # Indirectly consumed by the sourced Stop timing hook.
+  # shellcheck disable=SC2329
+  now_epoch() { return 1; }
+  . "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${stop_clock_payload}"
+}
+( _stop_clock_failure_probe ) >/dev/null 2>&1 || stop_clock_rc=$?
+assert_eq "clock failure never escapes Stop timing finalization" \
+  "0" "${stop_clock_rc}"
+assert_eq "clock failure cannot fabricate a prompt-end timestamp" "0" \
+  "$(jq -s '[.[] | select(.kind == "prompt_end")] | length' \
+    "${stop_clock_dir}/timing.jsonl")"
 
 # ----------------------------------------------------------------------
 printf 'Test 2: simple Bash start+end pair aggregates correctly\n'
@@ -193,6 +245,102 @@ assert_eq "domain_routing fire count summed" "2" "${domain_fires}"
 assert_eq "intent_classification chars recorded" "40" "${intent_chars}"
 
 # ----------------------------------------------------------------------
+printf 'Test 6c: aggregate rejects fractional numeric rows\n'
+reset_log
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":10,"prompt_seq":1}' \
+  '{"kind":"prompt_end","ts":20,"prompt_seq":1,"duration_s":10}' \
+  '{"kind":"prompt_start","ts":30.5,"prompt_seq":2}' \
+  '{"kind":"prompt_end","ts":40,"prompt_seq":2,"duration_s":9}' \
+  '{"kind":"directive_emitted","ts":11,"prompt_seq":1,"name":"fractional","chars":1.5}' \
+  '{"kind":"token_delta","ts":11,"prompt_seq":1,"main_in":1.5}' \
+  '{"kind":"token_delta","ts":12,"prompt_seq":1,"main_in":7,"agent_by_role":{"reviewer":{"input":1.5}}}' \
+  '{"kind":"token_delta","ts":13,"prompt_seq":1,"main_in":8,"agent_by_model":{"model":{"output":1000000000000000}}}' \
+  '{"kind":"prompt_end","prompt_seq":3,"duration_s":99}' \
+  '{"kind":"start","ts":50,"prompt_seq":3}' \
+  '{"kind":"token_delta","ts":51,"prompt_seq":3}' \
+  >"$(timing_log_path)"
+agg="$(timing_aggregate "$(timing_log_path)")"
+assert_eq "fractional prompt row is not rounded into authority" "10" \
+  "$(jq -r '.walltime_s' <<<"${agg}")"
+assert_eq "fractional directive row is dropped" "0" \
+  "$(jq -r '.directive_total_chars' <<<"${agg}")"
+assert_eq "fractional token row is dropped" "0" \
+  "$(jq -r '.tokens_main_in' <<<"${agg}")"
+assert_eq "malformed nested token buckets reject their complete rows" "0" \
+  "$(jq -r '[.agent_tokens_by_role[],.agent_tokens_by_model[]] | length' \
+    <<<"${agg}")"
+assert_eq "recognized rows missing kind-required provenance are rejected" "0" \
+  "$(jq -r '.active_pending + .orphan_end_count' <<<"${agg}")"
+
+# ----------------------------------------------------------------------
+printf 'Test 6d: aggregate saturates repeated bounded integers exactly\n'
+reset_log
+timing_uint_ceiling=999999999999999
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":1,"prompt_seq":1}' \
+  '{"kind":"prompt_end","ts":2,"prompt_seq":1,"duration_s":999999999999999}' \
+  '{"kind":"prompt_start","ts":3,"prompt_seq":2}' \
+  '{"kind":"prompt_end","ts":4,"prompt_seq":2,"duration_s":999999999999999}' \
+  '{"kind":"start","ts":1,"tool":"Agent","tool_use_id":"a1","subagent":"reviewer","prompt_seq":1}' \
+  '{"kind":"end","ts":999999999999999,"tool":"Agent","tool_use_id":"a1","prompt_seq":1}' \
+  '{"kind":"start","ts":1,"tool":"Agent","tool_use_id":"a2","subagent":"reviewer","prompt_seq":1}' \
+  '{"kind":"end","ts":999999999999999,"tool":"Agent","tool_use_id":"a2","prompt_seq":1}' \
+  '{"kind":"start","ts":1,"tool":"Bash","tool_use_id":"b1","prompt_seq":1}' \
+  '{"kind":"end","ts":999999999999999,"tool":"Bash","tool_use_id":"b1","prompt_seq":1}' \
+  '{"kind":"start","ts":1,"tool":"Bash","tool_use_id":"b2","prompt_seq":1}' \
+  '{"kind":"end","ts":999999999999999,"tool":"Bash","tool_use_id":"b2","prompt_seq":1}' \
+  '{"kind":"directive_emitted","ts":2,"prompt_seq":1,"name":"large","chars":999999999999999}' \
+  '{"kind":"directive_emitted","ts":3,"prompt_seq":1,"name":"large","chars":999999999999999}' \
+  '{"kind":"token_delta","ts":2,"prompt_seq":1,"main_in":999999999999999,"usage_rows":999999999999999,"agent_by_role":{"reviewer":{"input":999999999999999}}}' \
+  '{"kind":"token_delta","ts":3,"prompt_seq":1,"main_in":999999999999999,"usage_rows":999999999999999,"agent_by_role":{"reviewer":{"input":999999999999999}}}' \
+  >"$(timing_log_path)"
+agg="$(timing_aggregate "$(timing_log_path)")"
+for saturated_path in \
+    '.walltime_s' '.agent_total_s' '.agent_breakdown.reviewer' \
+    '.tool_total_s' '.tool_breakdown.Bash' \
+    '.directive_total_chars' '.directive_breakdown.large' \
+    '.tokens_main_in' '.token_usage_rows' \
+    '.agent_tokens_by_role.reviewer.input' '.concurrent_overhead_s'; do
+  assert_eq "${saturated_path} stays at the exact integer ceiling" \
+    "${timing_uint_ceiling}" "$(jq -r "${saturated_path}" <<<"${agg}")"
+done
+
+# Derived overlap can be larger than one stored field even though every input
+# is canonical. It must clamp after the exact arithmetic, not be rejected as
+# though the derived value itself came from an untrusted row.
+reset_log
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":1,"prompt_seq":1}' \
+  '{"kind":"prompt_end","ts":2,"prompt_seq":1,"duration_s":1}' \
+  '{"kind":"start","ts":1,"tool":"Agent","tool_use_id":"overlap-agent","subagent":"reviewer","prompt_seq":1}' \
+  '{"kind":"end","ts":999999999999999,"tool":"Agent","tool_use_id":"overlap-agent","prompt_seq":1}' \
+  '{"kind":"start","ts":1,"tool":"Bash","tool_use_id":"overlap-tool","prompt_seq":1}' \
+  '{"kind":"end","ts":999999999999999,"tool":"Bash","tool_use_id":"overlap-tool","prompt_seq":1}' \
+  >"$(timing_log_path)"
+agg="$(timing_aggregate "$(timing_log_path)")"
+assert_eq "derived overlap above the field ceiling saturates instead of zeroing" \
+  "${timing_uint_ceiling}" "$(jq -r '.concurrent_overhead_s' <<<"${agg}")"
+
+max_token_agg='{"tokens_main_in":999999999999999,"tokens_main_out":999999999999999,"tokens_main_cache_read":999999999999999,"tokens_main_cache_creation":999999999999999,"tokens_agent_in":999999999999999,"tokens_agent_out":999999999999999,"tokens_agent_cache_read":999999999999999,"tokens_agent_cache_creation":999999999999999}'
+assert_eq "multi-component token rendering preserves the full bounded sum" \
+  "tokens   in 5999999999.9M (33% cached) · out 1999999999.9M · agents 50%" \
+  "$(timing_token_line "${max_token_agg}")"
+
+# Same-prompt checkpoints can share a wall-clock second on a fast Stop retry.
+# Their eight-component total is a comparison key and legitimately exceeds
+# the per-field ceiling; selecting through a saturated key retained the older
+# cumulative checkpoint even when every component grew.
+reset_log
+printf '%s\n' \
+  '{"kind":"token_checkpoint","ts":9,"prompt_seq":9,"main_in":999999999999998,"main_out":999999999999998,"main_cache_read":999999999999998,"main_cache_creation":999999999999998,"agent_in":999999999999998,"agent_out":999999999999998,"agent_cache_read":999999999999998,"agent_cache_creation":999999999999998}' \
+  '{"kind":"token_checkpoint","ts":9,"prompt_seq":9,"main_in":999999999999999,"main_out":999999999999999,"main_cache_read":999999999999999,"main_cache_creation":999999999999999,"agent_in":999999999999999,"agent_out":999999999999999,"agent_cache_read":999999999999999,"agent_cache_creation":999999999999999}' \
+  >"$(timing_log_path)"
+agg="$(timing_aggregate "$(timing_log_path)")"
+assert_eq "same-second max-envelope checkpoint selects the larger cumulative total" \
+  "999999999999999" "$(jq -r '.tokens_main_in' <<<"${agg}")"
+
+# ----------------------------------------------------------------------
 printf 'Test 7: oneline format renders bucket totals\n'
 reset_log
 timing_append_prompt_start 20
@@ -284,8 +432,47 @@ assert_eq "prompt_seq #2" "2" "${seq2}"
 assert_eq "prompt_seq #3" "3" "${seq3}"
 assert_eq "current matches latest" "3" "$(timing_current_prompt_seq)"
 
+printf 'Test 11a: prompt_seq allocation is atomic and rejects poisoned arithmetic\n'
+write_state "prompt_seq" "0"
+seq_out_dir="${TEST_STATE_ROOT}/prompt-seq-results"
+mkdir -p "${seq_out_dir}"
+for i in $(seq 1 24); do
+  (timing_next_prompt_seq >"${seq_out_dir}/${i}") &
+done
+wait
+seq_values="$(sort -n "${seq_out_dir}"/* | paste -sd, -)"
+seq_expected="$(seq 1 24 | paste -sd, -)"
+assert_eq "concurrent prompt_seq callers receive unique contiguous epochs" \
+  "${seq_expected}" "${seq_values}"
+assert_eq "concurrent prompt_seq state reaches the exact caller count" \
+  "24" "$(timing_current_prompt_seq)"
+
+prompt_seq_marker="${TEST_STATE_ROOT}/prompt-seq-arithmetic-executed"
+write_state "prompt_seq" "x[\$(touch ${prompt_seq_marker})]"
+assert_eq "poisoned prompt_seq is not evaluated" "0" \
+  "$(timing_next_prompt_seq)"
+assert_eq "poisoned prompt_seq remains quarantined instead of being reset" \
+  "x[\$(touch ${prompt_seq_marker})]" "$(read_state "prompt_seq")"
+assert_eq "poisoned prompt_seq did not execute a command" "0" \
+  "$([[ -e "${prompt_seq_marker}" ]] && printf 1 || printf 0)"
+prompt_state_file="$(session_file "${STATE_JSON}")"
+jq '.prompt_seq = ("1" + "\u0000")' "${prompt_state_file}" \
+  >"${prompt_state_file}.tmp"
+mv "${prompt_state_file}.tmp" "${prompt_state_file}"
+assert_eq "NUL-bearing prompt_seq cannot be normalized before increment" "0" \
+  "$(timing_next_prompt_seq)"
+assert_eq "NUL-bearing prompt_seq cannot become current authority" "0" \
+  "$(timing_current_prompt_seq)"
+assert_eq "rejected NUL-bearing prompt_seq remains quarantined" "true" \
+  "$(jq -r '.prompt_seq == ("1" + "\u0000")' "${prompt_state_file}")"
+write_state "prompt_seq" "999999999999999"
+assert_eq "exhausted prompt_seq cannot wrap" "0" \
+  "$(timing_next_prompt_seq)"
+assert_eq "exhausted prompt_seq state is preserved" "999999999999999" \
+  "$(read_state "prompt_seq")"
+
 # ----------------------------------------------------------------------
-printf 'Test 12: lock-free append survives 30 concurrent writers\n'
+printf 'Test 12: serialized append survives 30 concurrent writers\n'
 reset_log
 target="$(timing_log_path)"
 n=30
@@ -349,6 +536,38 @@ assert_eq "merged domain_routing chars" "220" "${domain_chars}"
 completeness_fires="$(jq -r '.directive_counts.bias_defense_completeness // 0' <<<"${rollup}")"
 assert_eq "merged completeness directive fires" "2" "${completeness_fires}"
 
+# Cross-session ledgers are durable imported state, so malformed numeric rows
+# must not gain authority through rounding/clamping and repeated valid maxima
+# must saturate without first overflowing jq's exact-integer envelope.
+printf 'Test 13b: cross-session aggregate rejects malformed rows and saturates\n'
+rm -f "${xs_log}"
+timing_uint_ceiling=999999999999999
+printf '%s\n' \
+  '{"ts":1,"session_id":"max-a","walltime_s":999999999999999,"agent_breakdown":{"reviewer":999999999999999},"agent_tokens_by_role":{"reviewer":{"input":999999999999999}},"prompt_count":999999999999999}' \
+  '{"ts":2,"session_id":"max-b","walltime_s":999999999999999,"agent_breakdown":{"reviewer":999999999999999},"agent_tokens_by_role":{"reviewer":{"input":999999999999999}},"prompt_count":999999999999999}' \
+  '{"ts":3,"session_id":"fractional-top","walltime_s":1.5,"prompt_count":1}' \
+  '{"ts":4,"session_id":"fractional-map","walltime_s":7,"agent_breakdown":{"reviewer":1.5},"prompt_count":1}' \
+  '{"ts":5,"session_id":"oversized-bucket","walltime_s":8,"agent_tokens_by_role":{"reviewer":{"input":1000000000000000}},"prompt_count":1}' \
+  '{"ts":6,"session_id":"filtered-malformed-id","walltime_s":9,"agent_tokens_by_id":{"hidden":{"input":1.5}},"prompt_count":1}' \
+  '{"ts":7,"session_id":"filtered-nonobject-id","walltime_s":9,"agent_tokens_by_id":42,"prompt_count":1}' \
+  '{}' \
+  '{"tokens_main_in":7}' \
+  '{"ts":8,"tokens_main_in":9}' \
+  >"${xs_log}"
+rollup="$(timing_xs_aggregate 0)"
+assert_eq "cross-session malformed rows are rejected completely" "2" \
+  "$(jq -r '.sessions' <<<"${rollup}")"
+for saturated_path in \
+    '.walltime_s' '.agent_breakdown.reviewer' \
+    '.agent_tokens_by_role.reviewer.input' '.prompts'; do
+  assert_eq "cross-session ${saturated_path} saturates exactly" \
+    "${timing_uint_ceiling}" "$(jq -r "${saturated_path}" <<<"${rollup}")"
+done
+filtered_rollup="$(timing_xs_aggregate \
+  0 "${xs_log}" "" '["max-a::selected-only"]')"
+assert_eq "dispatch prefilter cannot hide a malformed unselected bucket" "2" \
+  "$(jq -r '.sessions' <<<"${filtered_rollup}")"
+
 # ----------------------------------------------------------------------
 printf 'Test 14: Stop self-suppression matches the exact blocked attempt\n'
 block_root="$(mktemp -d)"
@@ -361,7 +580,7 @@ now_ts="$(date +%s)"
 jq -nc --argjson ts "$(( now_ts - 12 ))" --argjson seq 1 \
   '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' > "${block_dir}/timing.jsonl"
 jq -nc --arg sid "${block_session}" --argjson now "${now_ts}" \
-  '{session_id:$sid,prompt_seq:1,stop_guard_attempt_seq:7,last_stop_block_attempt_seq:7,last_stop_block_ts:$now}' \
+  '{session_id:$sid,prompt_seq:"1",stop_guard_attempt_seq:"7",last_stop_block_attempt_seq:"7",last_stop_block_ts:($now|tostring)}' \
   > "${block_dir}/session_state.json"
 block_payload="$(jq -nc --arg sid "${block_session}" '{session_id:$sid}')"
 block_out="$(STATE_ROOT="${block_root}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
@@ -407,6 +626,21 @@ printf 'Test 17: timing_record_session_summary dedups by session_id\n'
 # session.
 xs_log="${HOME}/.claude/quality-pack/timing.jsonl"
 mkdir -p "$(dirname "${xs_log}")"
+rm -f "${xs_log}"
+
+# Aggregate data is payload, never publication authority. Reserved writer
+# fields must remain bound to the current session/clock/project/schema.
+SESSION_ID="summary-authority-session"
+timing_record_session_summary \
+  '{"_v":999,"ts":1,"session_id":"forged-session","project_key":"forged-project","walltime_s":5,"prompt_count":1}'
+assert_eq "summary payload cannot replace writer session identity" \
+  "summary-authority-session" "$(jq -r '.session_id' "${xs_log}")"
+assert_eq "summary payload cannot replace writer timestamp" \
+  "${TEST_NOW_EPOCH}" "$(jq -r '.ts' "${xs_log}")"
+assert_eq "summary payload cannot replace writer schema" "1" \
+  "$(jq -r '._v' "${xs_log}")"
+assert_eq "summary payload cannot replace writer project identity" "false" \
+  "$(jq -r '.project_key == "forged-project"' "${xs_log}")"
 rm -f "${xs_log}"
 
 # Simulate three sequential Stop events in the same session — each with
@@ -645,6 +879,15 @@ assert_ge "slice includes own Agent" "1" "${metis_in_slice}"
 # timing_latest_finalized_prompt_seq returns the highest finalized seq
 latest="$(timing_latest_finalized_prompt_seq "$(timing_log_path)")"
 assert_eq "latest finalized prompt detected" "101" "${latest}"
+printf '%s\n' \
+  '{"kind":"prompt_end","ts":999,"prompt_seq":9999,"duration_s":"bad"}' \
+  '{"kind":"prompt_end","prompt_seq":10000,"duration_s":1}' \
+  '{"kind":"prompt_end","ts":999,"prompt_seq":10001,"duration_s":1}' \
+  '{"kind":"prompt_end","ts":999,"prompt_seq":10002,"duration_s":1}' \
+  '{"kind":"prompt_start","ts":1000,"prompt_seq":10002}' \
+  >>"$(timing_log_path)"
+assert_eq "malformed, orphaned, or end-before-start boundaries cannot replace the latest finalized prompt" \
+  "101" "$(timing_latest_finalized_prompt_seq "$(timing_log_path)")"
 
 # ----------------------------------------------------------------------
 printf 'Test 19b: aggregator emits call-count maps\n'
@@ -670,7 +913,7 @@ printf 'Test 19: unrelated or expired blocks do NOT suppress a successful Stop\n
 # A current timestamp is insufficient: the attempt identity must match.
 now_ts="$(date +%s)"
 jq -nc --arg sid "${block_session}" --argjson now "${now_ts}" \
-  '{session_id:$sid,prompt_seq:1,stop_guard_attempt_seq:8,last_stop_block_attempt_seq:7,last_stop_block_ts:$now}' \
+  '{session_id:$sid,prompt_seq:"1",stop_guard_attempt_seq:"8",last_stop_block_attempt_seq:"7",last_stop_block_ts:($now|tostring)}' \
   > "${block_dir}/session_state.json"
 unrelated_out="$(STATE_ROOT="${block_root}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${block_payload}" 2>&1 || true)"
@@ -681,7 +924,7 @@ esac
 
 # Even an exact sequence is rejected after the 300-second compatibility bound.
 jq -nc --arg sid "${block_session}" --argjson old "$(( now_ts - 301 ))" \
-  '{session_id:$sid,prompt_seq:1,stop_guard_attempt_seq:9,last_stop_block_attempt_seq:9,last_stop_block_ts:$old}' \
+  '{session_id:$sid,prompt_seq:"1",stop_guard_attempt_seq:"9",last_stop_block_attempt_seq:"9",last_stop_block_ts:($old|tostring)}' \
   > "${block_dir}/session_state.json"
 expired_out="$(STATE_ROOT="${block_root}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${block_payload}" 2>&1 || true)"
@@ -854,7 +1097,7 @@ jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 \
   '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook_log}"
 
 # Persist prompt_seq state so the hook script doesn't try to finalize again.
-jq -nc --arg sid "${hook_session}" '{prompt_seq:1,session_id:$sid}' \
+jq -nc --arg sid "${hook_session}" '{prompt_seq:"1",session_id:$sid}' \
   > "${hook_session_dir}/session_state.json"
 
 # Pipe in the hook payload.
@@ -905,7 +1148,7 @@ jq -nc --argjson ts "${now_ts}" --argjson seq 1 \
   '{kind:"prompt_start",ts:$ts,prompt_seq:$seq}' >> "${sub_log}"
 jq -nc --argjson ts "$(( now_ts + 3 ))" --argjson seq 1 --argjson dur 3 \
   '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${sub_log}"
-jq -nc --arg sid "${sub_session}" '{prompt_seq:1,session_id:$sid}' \
+jq -nc --arg sid "${sub_session}" '{prompt_seq:"1",session_id:$sid}' \
   > "${sub_dir}/session_state.json"
 
 sub_payload="$(jq -nc --arg sid "${sub_session}" '{session_id:$sid}')"
@@ -1231,7 +1474,7 @@ jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 '{kin
 jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook47_log}"
 # State: 3 stop_guard_blocks fired AND user invoked /ulw-skip to bypass
 # (session_outcome=skip-released is the v1.34.2 marker).
-jq -nc --arg sid "${hook47_session}" '{prompt_seq:1,session_id:$sid,stop_guard_blocks:"3",session_outcome:"skip-released"}' > "${hook47_dir}/session_state.json"
+jq -nc --arg sid "${hook47_session}" '{prompt_seq:"1",session_id:$sid,stop_guard_blocks:"3",session_outcome:"skip-released"}' > "${hook47_dir}/session_state.json"
 hook47_payload="$(jq -nc --arg sid "${hook47_session}" '{session_id:$sid}')"
 hook47_out="$(STATE_ROOT="${hook47_root}" HOME="${HOME}" \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook47_payload}" 2>&1 || true)"
@@ -1246,7 +1489,7 @@ case "${ctx47}" in
 esac
 # Also positive control: when outcome=completed AND blocks > 0, the
 # outcome card SHOULD render the count.
-jq -nc --arg sid "${hook47_session}" '{prompt_seq:1,session_id:$sid,stop_guard_blocks:"2",session_outcome:"completed"}' > "${hook47_dir}/session_state.json"
+jq -nc --arg sid "${hook47_session}" '{prompt_seq:"1",session_id:$sid,stop_guard_blocks:"2",session_outcome:"completed"}' > "${hook47_dir}/session_state.json"
 hook47_out2="$(STATE_ROOT="${hook47_root}" HOME="${HOME}" \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook47_payload}" 2>&1 || true)"
 ctx47_2="$(printf '%s' "${hook47_out2}" \
@@ -1276,7 +1519,7 @@ jq -nc --argjson ts "${now_ts}" --arg tool "Bash" --argjson seq 1 '{kind:"start"
 jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook44_log}"
 jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook44_log}"
 # State carries serendipity_count=2 — should produce an Outcome line.
-jq -nc --arg sid "${hook44_session}" '{prompt_seq:1,session_id:$sid,serendipity_count:"2"}' > "${hook44_dir}/session_state.json"
+jq -nc --arg sid "${hook44_session}" '{prompt_seq:"1",session_id:$sid,serendipity_count:"2"}' > "${hook44_dir}/session_state.json"
 hook44_payload="$(jq -nc --arg sid "${hook44_session}" '{session_id:$sid}')"
 hook44_out="$(STATE_ROOT="${hook44_root}" HOME="${HOME}" \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook44_payload}" 2>&1 || true)"
@@ -1304,7 +1547,7 @@ jq -nc --argjson ts "${now_ts}" --arg tool "Bash" --argjson seq 1 '{kind:"start"
 jq -nc --argjson ts "$(( now_ts + 12 ))" --arg tool "Bash" --argjson seq 1 '{kind:"end",ts:$ts,tool:$tool,prompt_seq:$seq}' >> "${hook45_log}"
 jq -nc --argjson ts "$(( now_ts + 12 ))" --argjson seq 1 --argjson dur 12 '{kind:"prompt_end",ts:$ts,prompt_seq:$seq,duration_s:$dur}' >> "${hook45_log}"
 # State has zero signal — Outcome line must be silent.
-jq -nc --arg sid "${hook45_session}" '{prompt_seq:1,session_id:$sid}' > "${hook45_dir}/session_state.json"
+jq -nc --arg sid "${hook45_session}" '{prompt_seq:"1",session_id:$sid}' > "${hook45_dir}/session_state.json"
 hook45_payload="$(jq -nc --arg sid "${hook45_session}" '{session_id:$sid}')"
 hook45_out="$(STATE_ROOT="${hook45_root}" HOME="${HOME}" \
   bash "${SCRIPTS_DIR}/stop-time-summary.sh" <<<"${hook45_payload}" 2>&1 || true)"
@@ -1427,6 +1670,1172 @@ assert_eq "TTL source directory claimed after export" "0" \
 
 STATE_ROOT="${saved_state_root}"
 OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# A NUL-bearing ownership marker must fail open before jq emits raw bytes.
+# Otherwise Bash strips the NUL and the sweep silently suppresses source-owned
+# summary/gate evidence as if a valid handoff had occurred.
+printf 'Test 44a: TTL sweep rejects normalized transfer ownership\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/resume-sweep-nul-state"
+OMC_STATE_TTL_DAYS=-1
+nul_sweep_sid="resume-sweep-nul-source"
+nul_sweep_target="resume-sweep-nul-target"
+mkdir -p "${STATE_ROOT}/${nul_sweep_sid}"
+jq -nc --arg sid "${nul_sweep_sid}" --arg target "${nul_sweep_target}" '
+  {session_start_ts:"100",last_user_prompt_ts:"110",task_domain:"coding",
+   task_intent:"execution",subagent_dispatch_count:"9",project_key:"p-resume",
+   resume_transferred_to:($target + "\u0000"),session_id:$sid}
+' >"${STATE_ROOT}/${nul_sweep_sid}/session_state.json"
+printf '%s\n' \
+  '{"ts":101,"gate":"nul-source-gate","event":"block"}' \
+  >"${STATE_ROOT}/${nul_sweep_sid}/gate_events.jsonl"
+summary44a="${HOME}/.claude/quality-pack/session_summary.jsonl"
+gates44a="${HOME}/.claude/quality-pack/gate_events.jsonl"
+rm -f "${summary44a}" "${gates44a}" "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL NUL transfer marker preserves source summary" "1" \
+  "$(jq -sr --arg sid "${nul_sweep_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${summary44a}" 2>/dev/null || printf 0)"
+assert_eq "TTL NUL transfer marker preserves source gate" "1" \
+  "$(jq -sr --arg sid "${nul_sweep_sid}" \
+    '[.[] | select(.session_id == $sid and .gate == "nul-source-gate")]
+      | length' "${gates44a}" 2>/dev/null || printf 0)"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# A malformed source must not partially change the global gate ledger or be
+# deleted. Once repaired, immediate retry is lossless and the summary's
+# occurrence-aware publication remains exactly-once.
+printf 'Test 44b: TTL sweep retains failed exports and retries idempotently\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/failed-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+failed_sid="failed-sweep-session"
+mkdir -p "${STATE_ROOT}/${failed_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution","project_key":"p-failed"}' \
+  > "${STATE_ROOT}/${failed_sid}/session_state.json"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:failed-sweep-session:1","ts":101,"gate":"test","event":"block","details":{}}' \
+  > "${STATE_ROOT}/${failed_sid}/gate_events.jsonl"
+printf '{"broken":' >> "${STATE_ROOT}/${failed_sid}/gate_events.jsonl"
+summary44b="${HOME}/.claude/quality-pack/session_summary.jsonl"
+gates44b="${HOME}/.claude/quality-pack/gate_events.jsonl"
+rm -f "${summary44b}" "${gates44b}" "${STATE_ROOT}/.last_sweep"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:sentinel:1","ts":1,"gate":"sentinel","event":"block","details":{},"session_id":"sentinel"}' \
+  > "${gates44b}"
+gates44b_before="$(cksum < "${gates44b}")"
+_sweep_stale_sessions_locked
+assert_eq "TTL malformed gate source leaves destination byte-identical" \
+  "${gates44b_before}" "$(cksum < "${gates44b}")"
+assert_eq "TTL malformed gate source directory is retained" "1" \
+  "$([[ -d "${STATE_ROOT}/${failed_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL failed export does not advance the daily marker" "0" \
+  "$([[ -e "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:failed-sweep-session:1","ts":101,"gate":"test","event":"block","details":{}}' \
+  > "${STATE_ROOT}/${failed_sid}/gate_events.jsonl"
+_sweep_stale_sessions_locked
+assert_eq "TTL repaired source is removed after complete export" "0" \
+  "$([[ -d "${STATE_ROOT}/${failed_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL retry publishes the gate row once" "1" \
+  "$(jq -sr --arg sid "${failed_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${gates44b}")"
+assert_eq "TTL retry keeps one exact session summary" "1" \
+  "$(jq -sr --arg sid "${failed_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' "${summary44b}")"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Marker publication is no-follow and canonical. Invalid/future values must
+# trigger a real pass, then be replaced atomically without touching a symlink
+# target.
+printf 'Test 44c: TTL marker validation and no-follow publication\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/marker-sweep-state"
+OMC_STATE_TTL_DAYS=1
+mkdir -p "${STATE_ROOT}"
+marker_target="${TEST_STATE_ROOT}/marker-target"
+printf '%s\n' 'do-not-touch' >"${marker_target}"
+ln -s "${marker_target}" "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL marker symlink target remains unchanged" "do-not-touch" \
+  "$(cat "${marker_target}")"
+assert_eq "TTL marker symlink is atomically replaced" "0" \
+  "$([[ -L "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+assert_eq "TTL replacement marker is canonical current epoch" \
+  "${TEST_NOW_EPOCH}" "$(cat "${STATE_ROOT}/.last_sweep")"
+marker_dir_target="${TEST_STATE_ROOT}/marker-dir-target"
+mkdir -p "${marker_dir_target}"
+printf '%s\n' 'keep-directory' >"${marker_dir_target}/sentinel"
+rm -f "${STATE_ROOT}/.last_sweep"
+ln -s "${marker_dir_target}" "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL directory-symlink marker target remains unchanged" "keep-directory" \
+  "$(cat "${marker_dir_target}/sentinel")"
+assert_eq "TTL directory-symlink marker is replaced without traversal" "0" \
+  "$([[ -L "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+assert_eq "TTL directory-symlink replacement is canonical" \
+  "${TEST_NOW_EPOCH}" "$(cat "${STATE_ROOT}/.last_sweep")"
+printf '0%s\n' "${TEST_NOW_EPOCH}" >"${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL leading-zero marker is rejected and replaced" \
+  "${TEST_NOW_EPOCH}" "$(cat "${STATE_ROOT}/.last_sweep")"
+printf '%s\n' "$((TEST_NOW_EPOCH + 86400))" >"${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL future marker is rejected and replaced" \
+  "${TEST_NOW_EPOCH}" "$(cat "${STATE_ROOT}/.last_sweep")"
+printf '%040d\n' 1 >"${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL oversized marker is rejected and replaced" \
+  "${TEST_NOW_EPOCH}" "$(cat "${STATE_ROOT}/.last_sweep")"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# A generation changed after the pre-lock snapshot must remain live. The next
+# pass claims the new exact generation and emits one stable summary.
+printf 'Test 44d: TTL claim rechecks the generation under writer locks\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/changed-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+changed_sid="changed-sweep-session"
+mkdir -p "${STATE_ROOT}/${changed_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${changed_sid}/session_state.json"
+changed_ready="${TEST_STATE_ROOT}/changed-sweep.ready"
+changed_release="${TEST_STATE_ROOT}/changed-sweep.release"
+OMC_TEST_SWEEP_PRECLAIM_READY_FILE="${changed_ready}"
+OMC_TEST_SWEEP_PRECLAIM_RELEASE_FILE="${changed_release}"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked &
+changed_sweep_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${changed_ready}" ]] && break
+  sleep 0.01
+done
+assert_eq "TTL changed-generation race reaches preclaim barrier" "1" \
+  "$([[ -e "${changed_ready}" ]] && printf 1 || printf 0)"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"120","task_domain":"research","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${changed_sid}/session_state.json.next"
+mv "${STATE_ROOT}/${changed_sid}/session_state.json.next" \
+  "${STATE_ROOT}/${changed_sid}/session_state.json"
+: >"${changed_release}"
+wait "${changed_sweep_pid}"
+unset OMC_TEST_SWEEP_PRECLAIM_READY_FILE OMC_TEST_SWEEP_PRECLAIM_RELEASE_FILE
+assert_eq "TTL changed generation remains visible" "research" \
+  "$(jq -r '.task_domain' "${STATE_ROOT}/${changed_sid}/session_state.json")"
+assert_eq "TTL changed-generation failure leaves no marker" "0" \
+  "$([[ -e "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+_sweep_stale_sessions_locked
+assert_eq "TTL retry removes the newly claimed generation" "0" \
+  "$([[ -d "${STATE_ROOT}/${changed_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL changed retry publishes one stable summary" "1" \
+  "$(jq -sr --arg sid "${changed_sid}" \
+    '[.[] | select(.session_id == $sid and .domain == "research")] | length' \
+    "${HOME}/.claude/quality-pack/session_summary.jsonl")"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Publication may finish while the same session ID is revived. The old claim
+# retires, but the new visible generation is never deleted.
+printf 'Test 44e: TTL exported claim preserves a revived session generation\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/revived-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+revived_sid="revived-sweep-session"
+mkdir -p "${STATE_ROOT}/${revived_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${revived_sid}/session_state.json"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:revived-sweep-session:1","ts":101,"gate":"old","event":"block","details":{}}' \
+  >"${STATE_ROOT}/${revived_sid}/gate_events.jsonl"
+revived_ready="${TEST_STATE_ROOT}/revived-sweep.ready"
+revived_release="${TEST_STATE_ROOT}/revived-sweep.release"
+OMC_TEST_SWEEP_EXPORTED_READY_FILE="${revived_ready}"
+OMC_TEST_SWEEP_EXPORTED_RELEASE_FILE="${revived_release}"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked &
+revived_sweep_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${revived_ready}" ]] && break
+  sleep 0.01
+done
+assert_eq "TTL revival race reaches exported-receipt barrier" "1" \
+  "$([[ -e "${revived_ready}" ]] && printf 1 || printf 0)"
+printf '%s\n' \
+  '{"session_start_ts":"200","last_user_prompt_ts":"210","task_domain":"writing","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${revived_sid}/session_state.json"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:revived-sweep-session:2","ts":201,"gate":"new","event":"block","details":{}}' \
+  >"${STATE_ROOT}/${revived_sid}/gate_events.jsonl"
+: >"${revived_release}"
+wait "${revived_sweep_pid}"
+unset OMC_TEST_SWEEP_EXPORTED_READY_FILE OMC_TEST_SWEEP_EXPORTED_RELEASE_FILE
+assert_eq "TTL revival preserves the new state generation" "writing" \
+  "$(jq -r '.task_domain' "${STATE_ROOT}/${revived_sid}/session_state.json")"
+assert_eq "TTL revival publishes only the claimed old gate" "1" \
+  "$(jq -sr --arg sid "${revived_sid}" \
+    '[.[] | select(.session_id == $sid and .gate == "old")] | length' \
+    "${HOME}/.claude/quality-pack/gate_events.jsonl")"
+assert_eq "TTL revival does not publish the new live gate" "0" \
+  "$(jq -sr --arg sid "${revived_sid}" \
+    '[.[] | select(.session_id == $sid and .gate == "new")] | length' \
+    "${HOME}/.claude/quality-pack/gate_events.jsonl")"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# An exported receipt survives cleanup failure. Recovery consumes it without
+# duplicating summary/gate rows and a retired cleanup residue never wedges.
+printf 'Test 44f: TTL exported receipts recover cleanup idempotently\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/cleanup-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+cleanup_sid="cleanup-sweep-session"
+mkdir -p "${STATE_ROOT}/${cleanup_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${cleanup_sid}/session_state.json"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:cleanup-sweep-session:1","ts":101,"gate":"cleanup","event":"block","details":{}}' \
+  >"${STATE_ROOT}/${cleanup_sid}/gate_events.jsonl"
+OMC_TEST_SWEEP_FAIL_BEFORE_SOURCE_RMDIR=1
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+unset OMC_TEST_SWEEP_FAIL_BEFORE_SOURCE_RMDIR
+assert_eq "TTL cleanup failure retains exported claim" "1" \
+  "$(find "${STATE_ROOT}/.sweep-cleanup" -maxdepth 1 -type d \
+    -name 'claim.*' | wc -l | tr -d '[:space:]')"
+assert_eq "TTL cleanup failure leaves marker untouched" "0" \
+  "$([[ -e "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+_sweep_stale_sessions_locked
+assert_eq "TTL cleanup recovery removes source" "0" \
+  "$([[ -d "${STATE_ROOT}/${cleanup_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL cleanup recovery keeps one summary" "1" \
+  "$(jq -sr --arg sid "${cleanup_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${HOME}/.claude/quality-pack/session_summary.jsonl")"
+assert_eq "TTL cleanup recovery keeps one gate" "1" \
+  "$(jq -sr --arg sid "${cleanup_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${HOME}/.claude/quality-pack/gate_events.jsonl")"
+partial_sid="partial-claim-session"
+mkdir -p "${STATE_ROOT}/${partial_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${partial_sid}/session_state.json"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:partial-claim-session:1","ts":101,"gate":"partial","event":"block","details":{}}' \
+  >"${STATE_ROOT}/${partial_sid}/gate_events.jsonl"
+rm -f "${STATE_ROOT}/.last_sweep"
+OMC_TEST_SWEEP_FAIL_AFTER_MOVE_COUNT=1
+_sweep_stale_sessions_locked
+unset OMC_TEST_SWEEP_FAIL_AFTER_MOVE_COUNT
+assert_eq "TTL interrupted claim retains a prepared receipt" "prepared" \
+  "$(find "${STATE_ROOT}/.sweep-cleanup" -mindepth 2 -maxdepth 2 \
+    -name receipt.json -type f -exec jq -r \
+      'select(.session_id == "partial-claim-session") | .phase' {} \;)"
+_sweep_stale_sessions_locked
+assert_eq "TTL interrupted claim recovery removes source" "0" \
+  "$([[ -d "${STATE_ROOT}/${partial_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL interrupted claim recovery publishes one gate" "1" \
+  "$(jq -sr --arg sid "${partial_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${HOME}/.claude/quality-pack/gate_events.jsonl")"
+retired_sid="retired-cleanup-session"
+mkdir -p "${STATE_ROOT}/${retired_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${retired_sid}/session_state.json"
+rm -f "${STATE_ROOT}/.last_sweep"
+OMC_TEST_SWEEP_FAIL_AFTER_RETIRE_RENAME=1
+_sweep_stale_sessions_locked
+unset OMC_TEST_SWEEP_FAIL_AFTER_RETIRE_RENAME
+assert_eq "TTL interrupted retirement removes the claimed source" "0" \
+  "$([[ -d "${STATE_ROOT}/${retired_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL interrupted retirement leaves a recognizable residue" "1" \
+  "$(find "${STATE_ROOT}/.sweep-cleanup" -maxdepth 1 -type d \
+    -name '.retired.*' | wc -l | tr -d '[:space:]')"
+_sweep_stale_sessions_locked
+assert_eq "TTL retired residue is pruned without wedging retry" "0" \
+  "$(find "${STATE_ROOT}/.sweep-cleanup" -maxdepth 1 -type d \
+    -name '.retired.*' | wc -l | tr -d '[:space:]')"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Unsafe control inputs and a destination symlink fail closed. Already-large
+# aggregates are not capped while any deletion-authoritative export failed.
+printf 'Test 44g: TTL rejects unsafe inputs/destinations before cleanup or caps\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/unsafe-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+mkdir -p "${STATE_ROOT}/unsafe-edits" "${STATE_ROOT}/unsafe-findings" \
+  "${STATE_ROOT}/unsafe-frontier" "${STATE_ROOT}/unsafe-destination" \
+  "${STATE_ROOT}/unsafe-lock"
+for unsafe_sid in unsafe-edits unsafe-findings unsafe-frontier \
+    unsafe-destination unsafe-lock; do
+  printf '%s\n' \
+    '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+    >"${STATE_ROOT}/${unsafe_sid}/session_state.json"
+done
+unsafe_target="${TEST_STATE_ROOT}/unsafe-edits-target"
+printf '%s\n' 'path' >"${unsafe_target}"
+ln -s "${unsafe_target}" "${STATE_ROOT}/unsafe-edits/edited_files.log"
+printf '%s\n' '[]' >"${STATE_ROOT}/unsafe-findings/findings.json"
+dd if=/dev/zero \
+  of="${STATE_ROOT}/unsafe-frontier/quality_frontier_history.jsonl" \
+  bs=1048576 count=9 2>/dev/null
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:unsafe-destination:1","ts":101,"gate":"unsafe","event":"block","details":{}}' \
+  >"${STATE_ROOT}/unsafe-destination/gate_events.jsonl"
+misfires_cap_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
+rm -f "${misfires_cap_file}" "${STATE_ROOT}/.last_sweep"
+for _row in $(seq 1 1001); do printf '{"row":%s}\n' "${_row}"; done \
+  >"${misfires_cap_file}"
+misfires_before="$(cksum <"${misfires_cap_file}")"
+gate_symlink_target="${TEST_STATE_ROOT}/gate-symlink-target"
+printf '%s\n' '{"sentinel":true}' >"${gate_symlink_target}"
+rm -f "${HOME}/.claude/quality-pack/gate_events.jsonl"
+ln -s "${gate_symlink_target}" \
+  "${HOME}/.claude/quality-pack/gate_events.jsonl"
+OMC_TEST_SWEEP_CLAIM_LOCK_FAIL_SID="unsafe-lock"
+_sweep_stale_sessions_locked
+unset OMC_TEST_SWEEP_CLAIM_LOCK_FAIL_SID
+assert_eq "TTL symlinked edited-files input is retained" "1" \
+  "$([[ -d "${STATE_ROOT}/unsafe-edits" ]] && printf 1 || printf 0)"
+assert_eq "TTL malformed findings input is retained" "1" \
+  "$([[ -d "${STATE_ROOT}/unsafe-findings" ]] && printf 1 || printf 0)"
+assert_eq "TTL oversized frontier input is retained" "1" \
+  "$([[ -d "${STATE_ROOT}/unsafe-frontier" ]] && printf 1 || printf 0)"
+assert_eq "TTL forced claim-lock failure preserves source" "1" \
+  "$([[ -f "${STATE_ROOT}/unsafe-lock/session_state.json" ]] \
+    && printf 1 || printf 0)"
+assert_eq "TTL destination-symlink failure retains a durable claim" "1" \
+  "$(find "${STATE_ROOT}/.sweep-cleanup" -mindepth 2 -maxdepth 2 \
+    -name receipt.json -type f -exec jq -r \
+      'select(.session_id == "unsafe-destination") | 1' {} \; \
+    | wc -l | tr -d '[:space:]')"
+assert_eq "TTL export failure skips aggregate caps" \
+  "${misfires_before}" "$(cksum <"${misfires_cap_file}")"
+assert_eq "TTL destination symlink target remains unchanged" \
+  '{"sentinel":true}' "$(cat "${gate_symlink_target}")"
+assert_eq "TTL destination symlink is not replaced on failed export" "1" \
+  "$([[ -L "${HOME}/.claude/quality-pack/gate_events.jsonl" ]] \
+    && printf 1 || printf 0)"
+assert_eq "TTL unsafe batch leaves marker untouched" "0" \
+  "$([[ -e "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+rm -f "${HOME}/.claude/quality-pack/gate_events.jsonl"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Recovery receipts and frozen payload numerics are deletion authority. Their
+# internal identities must agree exactly, and every numeric spelling must stay
+# inside the shared exact-integer persistence range before a source path or
+# cross-session summary can be authorized.
+printf 'Test 44g2: TTL receipt identity and numeric authority fail closed\n'
+receipt_cases="${TEST_STATE_ROOT}/sweep-receipt-authority"
+mkdir -p "${receipt_cases}"
+valid_receipt="${receipt_cases}/valid.json"
+printf '%s\n' \
+  '{"_v":1,"claim_id":"claim.receipt-session.ABC123","created_at":101,"host":"host-a","phase":"claimed","session_id":"receipt-session","source_identity":"1:2","source_mtime":100,"summary_id":"ss:host-a:receipt-session:deadbeef"}' \
+  >"${valid_receipt}"
+_sweep_receipt_status() {
+  local receipt="$1" rc=0
+  _sweep_claim_receipt_valid "${receipt}" >/dev/null 2>&1 || rc=$?
+  printf '%s' "${rc}"
+}
+_sweep_generation_status() {
+  local source="$1" rc=0
+  _sweep_validate_generation_inputs "${source}" >/dev/null 2>&1 || rc=$?
+  printf '%s' "${rc}"
+}
+assert_eq "TTL canonical relational receipt is accepted" "0" \
+  "$(_sweep_receipt_status "${valid_receipt}")"
+assert_eq "TTL path identity comes from the exact claim-bound receipt" \
+  "receipt-session" \
+  "$(_sweep_claim_session_id_for_path \
+    "${valid_receipt}" "claim.receipt-session.ABC123")"
+wrong_claim_rc=0
+_sweep_claim_session_id_for_path \
+  "${valid_receipt}" "claim.other-session.ABC123" \
+  >/dev/null 2>&1 || wrong_claim_rc=$?
+assert_eq "TTL path identity rejects a different claim basename" "1" \
+  "${wrong_claim_rc}"
+
+jq '.claim_id="claim.other-session.ABC123"' "${valid_receipt}" \
+  >"${receipt_cases}/claim-mismatch.json"
+assert_eq "TTL receipt rejects claim/session disagreement" "1" \
+  "$(_sweep_receipt_status "${receipt_cases}/claim-mismatch.json")"
+jq '.summary_id="ss:host-a:other-session:deadbeef"' "${valid_receipt}" \
+  >"${receipt_cases}/summary-session-mismatch.json"
+assert_eq "TTL receipt rejects summary/session disagreement" "1" \
+  "$(_sweep_receipt_status \
+    "${receipt_cases}/summary-session-mismatch.json")"
+jq '.summary_id="ss:other-host:receipt-session:deadbeef"' \
+  "${valid_receipt}" >"${receipt_cases}/summary-host-mismatch.json"
+assert_eq "TTL receipt rejects summary/host disagreement" "1" \
+  "$(_sweep_receipt_status "${receipt_cases}/summary-host-mismatch.json")"
+for unsafe_sid in '..' '.sweep-cleanup' '_watchdog'; do
+  safe_label="${unsafe_sid//./dot}"
+  jq --arg sid "${unsafe_sid}" '
+    .session_id=$sid
+    | .claim_id=("claim."+$sid+".ABC123")
+    | .summary_id=("ss:"+.host+":"+$sid+":deadbeef")
+  ' "${valid_receipt}" >"${receipt_cases}/${safe_label}.json"
+  assert_eq "TTL receipt rejects unsafe relational session ${unsafe_sid}" "1" \
+    "$(_sweep_receipt_status "${receipt_cases}/${safe_label}.json")"
+done
+jq '.source_mtime=1000000000000000' "${valid_receipt}" \
+  >"${receipt_cases}/mtime-overflow.json"
+assert_eq "TTL receipt rejects oversized source mtime" "1" \
+  "$(_sweep_receipt_status "${receipt_cases}/mtime-overflow.json")"
+jq '.created_at=1e100' "${valid_receipt}" \
+  >"${receipt_cases}/created-at-overflow.json"
+assert_eq "TTL receipt rejects exponent timestamp overflow" "1" \
+  "$(_sweep_receipt_status "${receipt_cases}/created-at-overflow.json")"
+
+numeric_source="${receipt_cases}/numeric-source"
+mkdir -p "${numeric_source}"
+printf '%s\n' '{"code_edit_count":999999999999999}' \
+  >"${numeric_source}/session_state.json"
+assert_eq "TTL generation accepts the exact numeric ceiling" "0" \
+  "$(_sweep_generation_status "${numeric_source}")"
+printf '%s\n' '{"code_edit_count":"999999999999999"}' \
+  >"${numeric_source}/session_state.json"
+assert_eq "TTL generation accepts the canonical string ceiling" "0" \
+  "$(_sweep_generation_status "${numeric_source}")"
+printf '%s\n' '{"code_edit_count":1000000000000000}' \
+  >"${numeric_source}/session_state.json"
+assert_eq "TTL generation rejects an oversized JSON number" "1" \
+  "$(_sweep_generation_status "${numeric_source}")"
+printf '%s\n' '{"code_edit_count":1e100}' \
+  >"${numeric_source}/session_state.json"
+assert_eq "TTL generation rejects an exponent overflow" "1" \
+  "$(_sweep_generation_status "${numeric_source}")"
+printf '%s\n' '{"code_edit_count":"1000000000000000"}' \
+  >"${numeric_source}/session_state.json"
+assert_eq "TTL generation rejects an oversized numeric string" "1" \
+  "$(_sweep_generation_status "${numeric_source}")"
+
+recovered_claim="${receipt_cases}/claim.receipt-session.ABC123"
+mkdir -p "${recovered_claim}/payload"
+cp "${valid_receipt}" "${recovered_claim}/receipt.json"
+cp "${numeric_source}/session_state.json" \
+  "${recovered_claim}/payload/session_state.json"
+recovered_summary_rc=0
+_sweep_build_claim_summary "${recovered_claim}" \
+  >/dev/null 2>&1 || recovered_summary_rc=$?
+assert_eq "TTL recovered summary revalidates its frozen numeric payload" "1" \
+  "${recovered_summary_rc}"
+
+# ----------------------------------------------------------------------
+# Legitimate identical legacy rows retain their occurrence count, while a
+# post-gate crash retries the same claim without manufacturing duplicates.
+printf 'Test 44h: TTL occurrence merge preserves legacy duplicates across retry\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/legacy-duplicate-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+legacy_sid="legacy-duplicate-session"
+mkdir -p "${STATE_ROOT}/${legacy_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${legacy_sid}/session_state.json"
+printf '%s\n%s\n' \
+  '{"ts":101,"gate":"legacy-duplicate","event":"block","details":{}}' \
+  '{"ts":101,"gate":"legacy-duplicate","event":"block","details":{}}' \
+  >"${STATE_ROOT}/${legacy_sid}/gate_events.jsonl"
+rm -f "${HOME}/.claude/quality-pack/gate_events.jsonl" \
+  "${STATE_ROOT}/.last_sweep"
+OMC_TEST_SWEEP_FAIL_AFTER_EXPORT=gates
+_sweep_stale_sessions_locked
+unset OMC_TEST_SWEEP_FAIL_AFTER_EXPORT
+_sweep_stale_sessions_locked
+assert_eq "TTL legacy duplicate occurrences survive retry exactly" "2" \
+  "$(jq -sr --arg sid "${legacy_sid}" \
+    '[.[] | select(.session_id == $sid and .gate == "legacy-duplicate")]
+      | length' "${HOME}/.claude/quality-pack/gate_events.jsonl")"
+assert_eq "TTL partial-export retry keeps one summary identity" "1" \
+  "$(jq -sr --arg sid "${legacy_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${HOME}/.claude/quality-pack/session_summary.jsonl")"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Timing has its own per-file mutex. A writer that lands after the sweep's
+# unlocked snapshot but before its locked recheck must survive and abort claim.
+printf 'Test 44i: TTL claim serializes with the independent timing writer\n'
+_test_hold_timing_writer() {
+  local file="$1" ready="$2" go="$3" wrote="$4" release="$5"
+  : >"${ready}"
+  while [[ ! -e "${go}" ]]; do sleep 0.01; done
+  printf '%s\n' \
+    '{"kind":"start","ts":999,"tool":"Bash","tool_use_id":"ttl-race"}' \
+    >>"${file}"
+  : >"${wrote}"
+  while [[ ! -e "${release}" ]]; do sleep 0.01; done
+}
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/timing-writer-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+timing_sweep_sid="timing-writer-sweep"
+mkdir -p "${STATE_ROOT}/${timing_sweep_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${timing_sweep_sid}/session_state.json"
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":100,"prompt_seq":1}' \
+  >"${STATE_ROOT}/${timing_sweep_sid}/timing.jsonl"
+timing_preclaim_ready="${TEST_STATE_ROOT}/timing-preclaim.ready"
+timing_preclaim_release="${TEST_STATE_ROOT}/timing-preclaim.release"
+timing_holder_ready="${TEST_STATE_ROOT}/timing-holder.ready"
+timing_writer_go="${TEST_STATE_ROOT}/timing-writer.go"
+timing_writer_wrote="${TEST_STATE_ROOT}/timing-writer.wrote"
+timing_holder_release="${TEST_STATE_ROOT}/timing-holder.release"
+OMC_TEST_SWEEP_PRECLAIM_READY_FILE="${timing_preclaim_ready}"
+OMC_TEST_SWEEP_PRECLAIM_RELEASE_FILE="${timing_preclaim_release}"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked &
+timing_sweep_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${timing_preclaim_ready}" ]] && break
+  sleep 0.01
+done
+_with_lockdir "${STATE_ROOT}/${timing_sweep_sid}/timing.jsonl.lock" \
+  "test-ttl-timing-writer" _test_hold_timing_writer \
+    "${STATE_ROOT}/${timing_sweep_sid}/timing.jsonl" \
+    "${timing_holder_ready}" "${timing_writer_go}" \
+    "${timing_writer_wrote}" "${timing_holder_release}" &
+timing_holder_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${timing_holder_ready}" ]] && break
+  sleep 0.01
+done
+: >"${timing_preclaim_release}"
+: >"${timing_writer_go}"
+for _wait in $(seq 1 500); do
+  [[ -e "${timing_writer_wrote}" ]] && break
+  sleep 0.01
+done
+: >"${timing_holder_release}"
+wait "${timing_holder_pid}"
+wait "${timing_sweep_pid}"
+unset OMC_TEST_SWEEP_PRECLAIM_READY_FILE OMC_TEST_SWEEP_PRECLAIM_RELEASE_FILE
+assert_eq "TTL timing race preserves the writer row" "1" \
+  "$(jq -s '[.[] | select(.tool_use_id == "ttl-race")] | length' \
+    "${STATE_ROOT}/${timing_sweep_sid}/timing.jsonl")"
+assert_eq "TTL timing race retains the changed source generation" "1" \
+  "$([[ -d "${STATE_ROOT}/${timing_sweep_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL timing race leaves marker untouched" "0" \
+  "$([[ -e "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Ordinary sessions retain bounded managed subdirectories. They are claimed
+# as exact flat trees; nested/symlink-bearing trees remain live and fail closed.
+printf 'Test 44j: TTL claims managed flat directories without recursive trust\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/managed-directory-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+managed_dir_sid="managed-directory-session"
+mkdir -p "${STATE_ROOT}/${managed_dir_sid}/.verification-starts" \
+  "${STATE_ROOT}/${managed_dir_sid}/.closeout-material-generations" \
+  "${STATE_ROOT}/${managed_dir_sid}/.plan-txn.committed.crash"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${managed_dir_sid}/session_state.json"
+printf '%s\n' '{"tool_use_id":"tool-1"}' \
+  >"${STATE_ROOT}/${managed_dir_sid}/.verification-starts/tool-1.json"
+printf '%s\n' 'generation|nonce' \
+  >"${STATE_ROOT}/${managed_dir_sid}/.closeout-material-generations/1.nonce"
+printf '%s\n' '{"status":"committed"}' \
+  >"${STATE_ROOT}/${managed_dir_sid}/.plan-txn.committed.crash/.ready"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL ordinary managed-directory session is removed" "0" \
+  "$([[ -d "${STATE_ROOT}/${managed_dir_sid}" ]] && printf 1 || printf 0)"
+assert_eq "TTL managed-directory session publishes one summary" "1" \
+  "$(jq -sr --arg sid "${managed_dir_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${HOME}/.claude/quality-pack/session_summary.jsonl")"
+
+unsafe_tree_sid="unsafe-managed-tree-session"
+mkdir -p "${STATE_ROOT}/${unsafe_tree_sid}/.verification-starts/nested"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${unsafe_tree_sid}/session_state.json"
+printf '%s\n' 'retain' \
+  >"${STATE_ROOT}/${unsafe_tree_sid}/.verification-starts/nested/sentinel"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL nested managed tree is retained fail-closed" "retain" \
+  "$(cat "${STATE_ROOT}/${unsafe_tree_sid}/.verification-starts/nested/sentinel")"
+assert_eq "TTL nested-tree failure withholds marker" "0" \
+  "$([[ -e "${STATE_ROOT}/.last_sweep" ]] && printf 1 || printf 0)"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# STATE_ROOT itself is deletion authority. A symlink must be rejected before
+# quarantine pruning or sweep-lock acquisition can traverse its target.
+printf 'Test 44k: TTL rejects a symlinked state root before traversal\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+foreign_state_root="${TEST_STATE_ROOT}/foreign-state-root"
+STATE_ROOT="${TEST_STATE_ROOT}/symlink-state-root"
+OMC_STATE_TTL_DAYS=-1
+mkdir -p "${foreign_state_root}/.resume-quarantine/stale-slot"
+printf '%s\n' 'must-survive' \
+  >"${foreign_state_root}/.resume-quarantine/stale-slot/sentinel"
+ln -s "${foreign_state_root}" "${STATE_ROOT}"
+sweep_stale_sessions
+assert_eq "TTL symlinked root does not prune foreign quarantine" \
+  "must-survive" \
+  "$(cat "${foreign_state_root}/.resume-quarantine/stale-slot/sentinel")"
+assert_eq "TTL symlinked root does not create a foreign sweep lock" "0" \
+  "$([[ -e "${foreign_state_root}/.sweep.lock" \
+      || -L "${foreign_state_root}/.sweep.lock" ]] && printf 1 || printf 0)"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# A reused native session ID denotes a new deletion generation. Summary
+# retries dedupe one claim, but a later inode/claim generation remains distinct.
+printf 'Test 44l: TTL summary identity distinguishes reused session IDs\n'
+saved_state_root="${STATE_ROOT}"
+saved_ttl_days="${OMC_STATE_TTL_DAYS}"
+STATE_ROOT="${TEST_STATE_ROOT}/reused-id-sweep-state"
+OMC_STATE_TTL_DAYS=-1
+reused_sid="reused-summary-session"
+mkdir -p "${STATE_ROOT}/${reused_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"100","last_user_prompt_ts":"110","task_domain":"coding","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${reused_sid}/session_state.json"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+mkdir -p "${STATE_ROOT}/${reused_sid}"
+printf '%s\n' \
+  '{"session_start_ts":"200","last_user_prompt_ts":"210","task_domain":"writing","task_intent":"execution"}' \
+  >"${STATE_ROOT}/${reused_sid}/session_state.json"
+rm -f "${STATE_ROOT}/.last_sweep"
+_sweep_stale_sessions_locked
+assert_eq "TTL reused session ID retains both generation summaries" "2" \
+  "$(jq -sr --arg sid "${reused_sid}" \
+    '[.[] | select(.session_id == $sid)] | length' \
+    "${HOME}/.claude/quality-pack/session_summary.jsonl")"
+assert_eq "TTL reused session summaries have distinct ownership IDs" "2" \
+  "$(jq -sr --arg sid "${reused_sid}" \
+    '[.[] | select(.session_id == $sid) | ._sweep_id] | unique | length' \
+    "${HOME}/.claude/quality-pack/session_summary.jsonl")"
+STATE_ROOT="${saved_state_root}"
+OMC_STATE_TTL_DAYS="${saved_ttl_days}"
+
+# ----------------------------------------------------------------------
+# Resume copies preserve durable gate event IDs while changing aggregation
+# attribution. The global merge keeps one producer event, preserves ID-less
+# occurrence semantics, and refuses a conflicting payload for the same ID.
+printf 'Test 44m: gate-event merge deduplicates resume attribution copies\n'
+gate_merge_destination="${TEST_STATE_ROOT}/gate-resume-merge.jsonl"
+gate_source_rows="${TEST_STATE_ROOT}/gate-resume-source.jsonl"
+gate_target_rows="${TEST_STATE_ROOT}/gate-resume-target.jsonl"
+gate_conflict_rows="${TEST_STATE_ROOT}/gate-resume-conflict.jsonl"
+gate_oversized_rows="${TEST_STATE_ROOT}/gate-resume-oversized.jsonl"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:resume-source:1","ts":101,"host":"host-a","gate":"quality","event":"block","details":{"reason":"same"}}' \
+  >"${gate_source_rows}"
+cp "${gate_source_rows}" "${gate_target_rows}"
+_sweep_append_gate_events \
+  "${gate_source_rows}" resume-source "${gate_merge_destination}" aaaaaaaaaaaa
+_sweep_append_gate_events \
+  "${gate_target_rows}" resume-target "${gate_merge_destination}" bbbbbbbbbbbb
+assert_eq "gate resume copy contributes one durable event ID" "1" \
+  "$(jq -s '[.[] | select(.event_id == "ge:resume-source:1")] | length' \
+    "${gate_merge_destination}")"
+assert_eq "gate resume copy keeps first stable attribution" "resume-source" \
+  "$(jq -r 'select(.event_id == "ge:resume-source:1") | .session_id' \
+    "${gate_merge_destination}")"
+gate_merge_before="$(cksum <"${gate_merge_destination}")"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:resume-source:1","ts":101,"host":"host-a","gate":"different","event":"block","details":{"reason":"conflict"}}' \
+  >"${gate_conflict_rows}"
+gate_conflict_rc=0
+_sweep_append_gate_events \
+  "${gate_conflict_rows}" resume-target "${gate_merge_destination}" bbbbbbbbbbbb \
+  || gate_conflict_rc=$?
+assert_eq "conflicting producer payload for one gate ID fails closed" "1" \
+  "${gate_conflict_rc}"
+assert_eq "gate conflict leaves destination generation unchanged" \
+  "${gate_merge_before}" "$(cksum <"${gate_merge_destination}")"
+printf '%s\n' \
+  '{"_v":1,"event_id":"ge:resume-source:1000000000000000","ts":102,"host":"host-a","gate":"quality","event":"block","details":{}}' \
+  >"${gate_oversized_rows}"
+gate_oversized_rc=0
+_sweep_append_gate_events \
+  "${gate_oversized_rows}" resume-target "${gate_merge_destination}" bbbbbbbbbbbb \
+  || gate_oversized_rc=$?
+assert_eq "oversized gate sequence fails the durable merge envelope" "1" \
+  "${gate_oversized_rc}"
+assert_eq "oversized gate sequence leaves destination unchanged" \
+  "${gate_merge_before}" "$(cksum <"${gate_merge_destination}")"
+
+# ----------------------------------------------------------------------
+printf 'Test 48: stale prompt-end cannot append after waiting for state lock\n'
+saved_session_id="${SESSION_ID}"
+SESSION_ID="timing-generation-race"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '%s\n' '{"ulw_enforcement_generation":"4801"}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+prompt_end_log="$(timing_log_path)"
+prompt_end_ready="${TEST_STATE_ROOT}/prompt-end-generation.ready"
+prompt_end_release="${TEST_STATE_ROOT}/prompt-end-generation.release"
+(
+  export SESSION_ID
+  export _OMC_ULW_CAPTURED_GENERATION="4801"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${prompt_end_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${prompt_end_release}"
+  timing_append_prompt_end 480 9
+) &
+prompt_end_pid=$!
+prompt_end_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${prompt_end_ready}" ]]; then
+    prompt_end_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "prompt-end reached deterministic pre-acquire barrier" "1" \
+  "${prompt_end_barrier_seen}"
+jq '.ulw_enforcement_generation="4802"' \
+  "${STATE_ROOT}/${SESSION_ID}/session_state.json" \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json.tmp"
+mv "${STATE_ROOT}/${SESSION_ID}/session_state.json.tmp" \
+  "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+: >"${prompt_end_release}"
+wait "${prompt_end_pid}" || true
+assert_eq "stale prompt-end appended no timing row" "0" \
+  "$(grep -c '"kind":"prompt_end"' "${prompt_end_log}" \
+      2>/dev/null || echo 0)"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 49: stale session summary cannot publish after waiting for state lock\n'
+saved_session_id="${SESSION_ID}"
+SESSION_ID="timing-summary-generation-race"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '%s\n' '{"ulw_enforcement_generation":"4901"}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+summary_generation_log="$(timing_xs_log_path)"
+summary_generation_ready="${TEST_STATE_ROOT}/summary-generation.ready"
+summary_generation_release="${TEST_STATE_ROOT}/summary-generation.release"
+(
+  export SESSION_ID
+  export _OMC_ULW_CAPTURED_GENERATION="4901"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${summary_generation_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${summary_generation_release}"
+  timing_record_session_summary \
+    '{"walltime_s":5,"prompt_count":1,"tokens_main_out":1}'
+) &
+summary_generation_pid=$!
+summary_generation_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${summary_generation_ready}" ]]; then
+    summary_generation_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "session summary reached deterministic pre-acquire barrier" "1" \
+  "${summary_generation_barrier_seen}"
+jq '.ulw_enforcement_generation="4902"' \
+  "${STATE_ROOT}/${SESSION_ID}/session_state.json" \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json.tmp"
+mv "${STATE_ROOT}/${SESSION_ID}/session_state.json.tmp" \
+  "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+: >"${summary_generation_release}"
+wait "${summary_generation_pid}" || true
+assert_eq "stale session summary published no cross-session row" "0" \
+  "$(jq -Rr --arg sid "${SESSION_ID}" \
+      'fromjson? | select((.session_id // .session // "") == $sid) | 1' \
+      "${summary_generation_log}" 2>/dev/null | wc -l | tr -d ' ')"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 50: same-generation source transfer suppresses a waiting summary\n'
+saved_session_id="${SESSION_ID}"
+SESSION_ID="timing-summary-source-transfer-race"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '%s\n' '{"ulw_enforcement_generation":"5001"}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+source_transfer_log="$(timing_xs_log_path)"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":5}'
+source_transfer_ready="${TEST_STATE_ROOT}/summary-source-transfer.ready"
+source_transfer_release="${TEST_STATE_ROOT}/summary-source-transfer.release"
+(
+  export SESSION_ID
+  export _OMC_ULW_CAPTURED_GENERATION="5001"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${source_transfer_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${source_transfer_release}"
+  timing_record_session_summary \
+    '{"walltime_s":50,"prompt_count":5,"tokens_main_out":500}'
+) &
+source_transfer_pid=$!
+source_transfer_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${source_transfer_ready}" ]]; then
+    source_transfer_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "source transfer reached deterministic pre-acquire barrier" "1" \
+  "${source_transfer_barrier_seen}"
+jq '.resume_transferred_to="timing-summary-transfer-owner"' \
+  "${STATE_ROOT}/${SESSION_ID}/session_state.json" \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json.tmp"
+mv "${STATE_ROOT}/${SESSION_ID}/session_state.json.tmp" \
+  "${STATE_ROOT}/${SESSION_ID}/session_state.json"
+: >"${source_transfer_release}"
+wait "${source_transfer_pid}" || true
+assert_eq "same-generation transferred source retained only its old checkpoint" \
+  "5" \
+  "$(jq -sr --arg sid "${SESSION_ID}" \
+      '[.[] | select(.session_id == $sid) | .tokens_main_out] | first // 0' \
+      "${source_transfer_log}" 2>/dev/null)"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 51: same-generation target handoff refreshes summary ancestry\n'
+saved_session_id="${SESSION_ID}"
+summary_ancestor_sid="timing-summary-late-ancestor"
+summary_target_sid="timing-summary-late-target"
+SESSION_ID="${summary_ancestor_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":51}'
+SESSION_ID="${summary_target_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '%s\n' '{"ulw_enforcement_generation":"5101"}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+target_transfer_ready="${TEST_STATE_ROOT}/summary-target-transfer.ready"
+target_transfer_release="${TEST_STATE_ROOT}/summary-target-transfer.release"
+(
+  export SESSION_ID
+  export _OMC_ULW_CAPTURED_GENERATION="5101"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${target_transfer_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${target_transfer_release}"
+  timing_record_session_summary \
+    '{"walltime_s":8,"prompt_count":2,"tokens_main_out":81}'
+) &
+target_transfer_pid=$!
+target_transfer_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${target_transfer_ready}" ]]; then
+    target_transfer_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "target handoff reached deterministic pre-acquire barrier" "1" \
+  "${target_transfer_barrier_seen}"
+jq --arg target "${summary_target_sid}" \
+  '.resume_transferred_to=$target' \
+  "${STATE_ROOT}/${summary_ancestor_sid}/session_state.json" \
+  >"${STATE_ROOT}/${summary_ancestor_sid}/session_state.json.tmp"
+mv "${STATE_ROOT}/${summary_ancestor_sid}/session_state.json.tmp" \
+  "${STATE_ROOT}/${summary_ancestor_sid}/session_state.json"
+jq --arg source "${summary_ancestor_sid}" \
+  '.resume_source_session_id=$source
+    | .resume_ancestry_version=1
+    | .resume_ancestor_session_ids=[$source]' \
+  "${STATE_ROOT}/${summary_target_sid}/session_state.json" \
+  >"${STATE_ROOT}/${summary_target_sid}/session_state.json.tmp"
+mv "${STATE_ROOT}/${summary_target_sid}/session_state.json.tmp" \
+  "${STATE_ROOT}/${summary_target_sid}/session_state.json"
+: >"${target_transfer_release}"
+wait "${target_transfer_pid}" || true
+assert_eq "same-generation target retired the newly bound ancestor row" "0" \
+  "$(jq -sr --arg sid "${summary_ancestor_sid}" \
+      '[.[] | select(.session_id == $sid)] | length' \
+      "$(timing_xs_log_path)" 2>/dev/null)"
+assert_eq "same-generation target published one cumulative checkpoint" "1" \
+  "$(jq -sr --arg sid "${summary_target_sid}" \
+      '[.[] | select(.session_id == $sid and .tokens_main_out == 81)] | length' \
+      "$(timing_xs_log_path)" 2>/dev/null)"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 51b: NUL-bearing resume ownership cannot normalize into authority\n'
+saved_session_id="${SESSION_ID}"
+nul_fence_sid="timing-summary-nul-fence"
+SESSION_ID="${nul_fence_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+jq -nc --arg sid "${nul_fence_sid}" \
+  '{session_id:$sid,resume_transferred_to:("another-owner" + "\u0000")}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":511}'
+assert_eq "NUL-bearing transfer fence cannot suppress its source summary" "1" \
+  "$(jq -sr --arg sid "${nul_fence_sid}" \
+      '[.[] | select(.session_id == $sid and .tokens_main_out == 511)] | length' \
+      "$(timing_xs_log_path)" 2>/dev/null)"
+
+nul_ancestor_sid="timing-summary-nul-ancestor"
+nul_target_sid="timing-summary-nul-target"
+SESSION_ID="${nul_ancestor_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":512}'
+jq -nc --arg target "${nul_target_sid}" \
+  '{resume_transferred_to:($target + "\u0000")}' \
+  >"${STATE_ROOT}/${nul_ancestor_sid}/session_state.json"
+SESSION_ID="${nul_target_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+jq -nc --arg source "${nul_ancestor_sid}" \
+  '{resume_source_session_id:$source}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":6,"prompt_count":1,"tokens_main_out":513}'
+assert_eq "NUL-bearing ancestor owner cannot authorize source-row deletion" "1" \
+  "$(jq -sr --arg sid "${nul_ancestor_sid}" \
+      '[.[] | select(.session_id == $sid and .tokens_main_out == 512)] | length' \
+      "$(timing_xs_log_path)" 2>/dev/null)"
+
+nul_source_sid="timing-summary-nul-source-id"
+nul_source_target_sid="timing-summary-nul-source-target"
+SESSION_ID="${nul_source_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":5,"prompt_count":1,"tokens_main_out":514}'
+jq -nc --arg target "${nul_source_target_sid}" \
+  '{resume_transferred_to:$target}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+SESSION_ID="${nul_source_target_sid}"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+jq -nc --arg source "${nul_source_sid}" \
+  '{resume_source_session_id:($source + "\u0000")}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+timing_record_session_summary \
+  '{"walltime_s":6,"prompt_count":1,"tokens_main_out":515}'
+assert_eq "NUL-bearing target source ID cannot authorize source-row deletion" "1" \
+  "$(jq -sr --arg sid "${nul_source_sid}" \
+      '[.[] | select(.session_id == $sid and .tokens_main_out == 514)] | length' \
+      "$(timing_xs_log_path)" 2>/dev/null)"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 52: prompt-end publication is unique under its timing-log lock\n'
+saved_session_id="${SESSION_ID}"
+SESSION_ID="timing-prompt-end-unique"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+rm -f "$(timing_log_path)"
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":1,"prompt_seq":5200}' \
+  '{"kind":"prompt_end","ts":1,"prompt_seq":5200,"duration_s":"bad"}' \
+  >"$(timing_log_path)"
+timing_append_prompt_end 5200 6
+assert_eq "malformed prompt-end cannot suppress its valid replacement" "1" \
+  "$(jq -s '[.[] | select(.kind == "prompt_end"
+      and .prompt_seq == 5200 and (.duration_s | type) == "number")] | length' \
+    "$(timing_log_path)")"
+
+rm -f "$(timing_log_path)"
+printf '%s\n' \
+  '{"kind":"prompt_end","ts":1,"prompt_seq":5205,"duration_s":1}' \
+  >"$(timing_log_path)"
+timing_append_prompt_end 5205 2
+assert_eq "orphan end without a start does not accumulate duplicates" "1" \
+  "$(jq -s '[.[] | select(.kind == "prompt_end" and .prompt_seq == 5205)]
+      | length' "$(timing_log_path)")"
+
+summary_poison_sid="timing-prompt-end-poison-summary"
+summary_poison_dir="${STATE_ROOT}/${summary_poison_sid}"
+mkdir -p "${summary_poison_dir}"
+summary_poison_start=$(( $(date +%s) - 6 ))
+printf '{"prompt_seq":"5202"}\n' >"${summary_poison_dir}/session_state.json"
+printf '%s\n' \
+  "{\"kind\":\"prompt_start\",\"ts\":${summary_poison_start},\"prompt_seq\":5202}" \
+  '{"kind":"prompt_end","ts":1,"prompt_seq":5202,"duration_s":"bad"}' \
+  '{torn' >"${summary_poison_dir}/timing.jsonl"
+summary_poison_payload="$(jq -nc --arg sid "${summary_poison_sid}" \
+  '{session_id:$sid}')"
+STATE_ROOT="${STATE_ROOT}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" \
+    <<<"${summary_poison_payload}" >/dev/null 2>&1 || true
+assert_eq "Stop finalizer ignores malformed/torn prompt-end authority" "1" \
+  "$(jq -Rsr '[split("\n")[] | fromjson?
+      | select(.kind == "prompt_end" and .prompt_seq == 5202
+        and (.duration_s | type) == "number")] | length' \
+    "${summary_poison_dir}/timing.jsonl")"
+
+rm -f "$(timing_log_path)"
+printf '%s\n' \
+  '{"kind":"prompt_end","ts":1,"prompt_seq":5203,"duration_s":1}' \
+  '{"kind":"prompt_start","ts":2,"prompt_seq":5203}' \
+  >"$(timing_log_path)"
+timing_append_prompt_end 5203 2
+assert_eq "end-before-start cannot suppress the ordered prompt end" "2" \
+  "$(jq -s '[.[] | select(.kind == "prompt_end" and .prompt_seq == 5203)]
+      | length' "$(timing_log_path)")"
+
+summary_order_sid="timing-prompt-end-order-summary"
+summary_order_dir="${STATE_ROOT}/${summary_order_sid}"
+mkdir -p "${summary_order_dir}"
+printf '{"prompt_seq":"5204"}\n' >"${summary_order_dir}/session_state.json"
+summary_order_start=$(( $(date +%s) - 2 ))
+printf '%s\n' \
+  '{"kind":"prompt_end","ts":1,"prompt_seq":5204,"duration_s":1}' \
+  "{\"kind\":\"prompt_start\",\"ts\":${summary_order_start},\"prompt_seq\":5204}" \
+  >"${summary_order_dir}/timing.jsonl"
+summary_order_payload="$(jq -nc --arg sid "${summary_order_sid}" \
+  '{session_id:$sid}')"
+STATE_ROOT="${STATE_ROOT}" HOME="${HOME}" OMC_TIME_CARD_MIN_SECONDS=0 \
+  bash "${SCRIPTS_DIR}/stop-time-summary.sh" \
+    <<<"${summary_order_payload}" >/dev/null 2>&1 || true
+assert_eq "Stop finalizer repairs an orphan end that precedes its start" "2" \
+  "$(jq -s '[.[] | select(.kind == "prompt_end" and .prompt_seq == 5204)]
+      | length' "${summary_order_dir}/timing.jsonl")"
+
+rm -f "$(timing_log_path)"
+printf '%s\n' \
+  '{"kind":"prompt_start","ts":1,"prompt_seq":5201}' \
+  >"$(timing_log_path)"
+( timing_append_prompt_end 5201 7 ) &
+prompt_unique_a=$!
+( timing_append_prompt_end 5201 9 ) &
+prompt_unique_b=$!
+wait "${prompt_unique_a}"
+wait "${prompt_unique_b}"
+assert_eq "concurrent prompt-end callbacks publish one row" "1" \
+  "$(jq -s '[.[] | select(.kind == "prompt_end" and .prompt_seq == 5201)] | length' \
+    "$(timing_log_path)")"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 53: per-session rotation cannot lose a waiting hot-path append\n'
+saved_session_id="${SESSION_ID}"
+SESSION_ID="timing-cap-writer-race"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+cap_race_log="$(timing_log_path)"
+rm -f "${cap_race_log}"
+for cap_row in 1 2 3 4 5 6; do
+  printf '{"kind":"start","ts":1,"tool":"seed","prompt_seq":%s}\n' \
+    "${cap_row}" >>"${cap_race_log}"
+done
+cap_race_ready="${TEST_STATE_ROOT}/timing-cap.ready"
+cap_race_release="${TEST_STATE_ROOT}/timing-cap.release"
+cap_writer_done="${TEST_STATE_ROOT}/timing-cap-writer.done"
+(
+  export OMC_TIMING_PER_SESSION_CAP=5
+  export OMC_TIMING_PER_SESSION_RETAIN=3
+  export OMC_TEST_TIMING_CAP_READY_FILE="${cap_race_ready}"
+  export OMC_TEST_TIMING_CAP_RELEASE_FILE="${cap_race_release}"
+  timing_append_prompt_end 5301 3
+) &
+cap_owner_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${cap_race_ready}" ]] && break
+  sleep 0.01
+done
+assert_eq "rotation reaches deterministic pre-rename barrier" "1" \
+  "$([[ -e "${cap_race_ready}" ]] && printf 1 || printf 0)"
+(
+  timing_append_start "Bash" "cap-waiting-writer" "" 5301
+  : >"${cap_writer_done}"
+) &
+cap_writer_pid=$!
+sleep 0.1
+assert_eq "hot writer waits behind the rotation mutex" "0" \
+  "$([[ -e "${cap_writer_done}" ]] && printf 1 || printf 0)"
+: >"${cap_race_release}"
+wait "${cap_owner_pid}"
+wait "${cap_writer_pid}"
+assert_eq "waiting append survives rotation rename" "1" \
+  "$(jq -s '[.[] | select(.tool_use_id == "cap-waiting-writer")] | length' \
+    "${cap_race_log}")"
+SESSION_ID="${saved_session_id}"
+
+# ----------------------------------------------------------------------
+printf 'Test 54: timing TTL filtering cannot overwrite a fresh summary\n'
+saved_session_id="${SESSION_ID}"
+SESSION_ID="timing-ttl-writer-race"
+mkdir -p "${STATE_ROOT}/${SESSION_ID}"
+printf '{}\n' >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+ttl_race_log="$(timing_xs_log_path)"
+ttl_cutoff=$(( TEST_NOW_EPOCH - 100 ))
+printf '{"ts":%s,"session_id":"ttl-stale","walltime_s":5}\n' \
+  "$(( ttl_cutoff - 1 ))" >"${ttl_race_log}"
+printf '{"ts":%s,"session_id":"ttl-fresh","walltime_s":5}\n' \
+  "${TEST_NOW_EPOCH}" >>"${ttl_race_log}"
+ttl_race_ready="${TEST_STATE_ROOT}/timing-ttl.ready"
+ttl_race_release="${TEST_STATE_ROOT}/timing-ttl.release"
+ttl_writer_done="${TEST_STATE_ROOT}/timing-ttl-writer.done"
+(
+  export OMC_TEST_TIMING_TTL_READY_FILE="${ttl_race_ready}"
+  export OMC_TEST_TIMING_TTL_RELEASE_FILE="${ttl_race_release}"
+  with_cross_session_log_lock "${ttl_race_log}" \
+    _sweep_retain_timing_locked "${ttl_race_log}" "${ttl_cutoff}" 10000 8000
+) &
+ttl_owner_pid=$!
+for _wait in $(seq 1 500); do
+  [[ -e "${ttl_race_ready}" ]] && break
+  sleep 0.01
+done
+assert_eq "TTL filter reaches deterministic pre-rename barrier" "1" \
+  "$([[ -e "${ttl_race_ready}" ]] && printf 1 || printf 0)"
+(
+  timing_record_session_summary \
+    '{"walltime_s":5,"prompt_count":1,"tokens_main_out":54}'
+  : >"${ttl_writer_done}"
+) &
+ttl_writer_pid=$!
+sleep 0.1
+assert_eq "summary writer waits behind TTL transaction" "0" \
+  "$([[ -e "${ttl_writer_done}" ]] && printf 1 || printf 0)"
+: >"${ttl_race_release}"
+wait "${ttl_owner_pid}"
+wait "${ttl_writer_pid}"
+assert_eq "TTL transaction removes only the stale row" "0" \
+  "$(jq -s '[.[] | select(.session_id == "ttl-stale")] | length' \
+    "${ttl_race_log}")"
+assert_eq "TTL transaction retains the pre-existing fresh row" "1" \
+  "$(jq -s '[.[] | select(.session_id == "ttl-fresh")] | length' \
+    "${ttl_race_log}")"
+assert_eq "post-filter summary append survives" "1" \
+  "$(jq -s --arg sid "${SESSION_ID}" \
+    '[.[] | select(.session_id == $sid and .tokens_main_out == 54)] | length' \
+    "${ttl_race_log}")"
+SESSION_ID="${saved_session_id}"
 
 # ----------------------------------------------------------------------
 printf '\n=== Timing Tests: %d passed, %d failed ===\n' "${pass}" "${fail}"

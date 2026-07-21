@@ -78,6 +78,30 @@ assert_eq() {
   fi
 }
 
+# Current record-subagent-summary producer shape for hand-authored causal FIFO
+# fixtures. Receipt admission deliberately rejects plausible fragments, so
+# correlation tests must exercise the same complete schema that the runtime
+# producer publishes. Keep this local helper aligned with the authoritative
+# causal_outcome validator in common.sh.
+producer_outcome_fixture() {
+  local patch_json="${1:-}"
+  [[ -n "${patch_json}" ]] || patch_json='{}'
+  jq -nc --argjson patch "${patch_json}" '
+    {ts:1,agent_type:"quality-reviewer",status:"accepted",reason:"",
+     verdict:"CLEAN",findings_count:0,finding_ids:"none",
+     objective_cycle_id:0,objective_prompt_ts:0,review_revision:0,
+     ulw_enforcement_generation:"migration"} + $patch
+  '
+}
+
+# Foreground delivery now leaves a bounded replay receipt after atomically
+# consuming its causal row. Tests asserting one-shot FIFO behavior count only
+# producer outcomes, not that durable replay authority.
+causal_outcome_count() {
+  jq -s '[.[] | select((.notification_receipt // false) != true)] | length' \
+    "$1"
+}
+
 # ---------------------------------------------------------------------------
 # Test 1: prompt-intent-router last_assistant_state directive (A4-MED-3)
 # ---------------------------------------------------------------------------
@@ -199,8 +223,9 @@ printf '{"task_intent":"execution","workflow_mode":"ultrawork"}\n' \
 jq -nc --arg msg $'Historical accepted review.\nVERDICT: CLEAN' \
   '{ts:1,agent_type:"quality-reviewer",message:$msg}' \
   >"${session_dir}/subagent_summaries.jsonl"
-jq -nc '{ts:2,agent_type:"quality-reviewer",status:"ignored",
-  reason:"abandoned-dispatch-completion",message:""}' \
+producer_outcome_fixture \
+  '{"ts":2,"status":"ignored","reason":"abandoned-dispatch-completion",
+    "verdict":"UNREPORTED","findings_count":0,"finding_ids":"none"}' \
   >"${session_dir}/agent_completion_outcomes.jsonl"
 hook_payload='{"session_id":"'"${session_id}"'","tool_name":"Agent","tool_input":{"subagent_type":"quality-reviewer","description":"late old return"}}'
 reflect_ignored="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
@@ -214,13 +239,15 @@ assert_contains "reflect carries bounded ignored reason" \
 assert_not_contains "reflect never reaches back to historical same-agent CLEAN" \
   "verdict=CLEAN" "${reflect_ignored}"
 assert_eq "reflect consumes ignored outcome once" "0" \
-  "$(jq -s 'length' "${session_dir}/agent_completion_outcomes.jsonl")"
+  "$(causal_outcome_count \
+    "${session_dir}/agent_completion_outcomes.jsonl")"
 
 # Missing echoed IDs are also ignored. The PostToolUse description has the
 # trusted requested ID; the no-ID ignored fallback correlates the completion
 # without granting it authority or consulting history.
-jq -nc '{ts:3,agent_type:"quality-reviewer",status:"ignored",
-  reason:"dispatch-id-mismatch",message:""}' \
+producer_outcome_fixture \
+  '{"ts":3,"status":"ignored","reason":"dispatch-id-mismatch",
+    "verdict":"UNREPORTED","findings_count":0,"finding_ids":"none"}' \
   >"${session_dir}/agent_completion_outcomes.jsonl"
 hook_payload='{"session_id":"'"${session_id}"'","tool_name":"Agent","tool_input":{"subagent_type":"quality-reviewer","description":"[review-rebind:missing-reflect] replacement"}}'
 reflect_missing_id="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
@@ -236,9 +263,10 @@ assert_not_contains "missing-ID reflection does not reuse historical CLEAN" \
 
 # Accepted outcomes use the same one-shot path and still produce the structured
 # capsule rather than duplicating model prose.
-jq -nc \
-  '{ts:4,agent_type:"frontend-developer",status:"accepted",reason:"",
-    verdict:"SHIP",findings_count:0,finding_ids:"none"}' \
+producer_outcome_fixture \
+  '{"ts":4,"agent_type":"frontend-developer","status":"accepted",
+    "reason":"","verdict":"SHIP","findings_count":0,
+    "finding_ids":"none"}' \
   >"${session_dir}/agent_completion_outcomes.jsonl"
 hook_payload='{"session_id":"'"${session_id}"'","tool_name":"Agent","tool_input":{"subagent_type":"frontend-developer","description":"accepted return"}}'
 reflect_accepted="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
@@ -257,10 +285,12 @@ mkdir -p "${session_dir}"
 printf '{"task_intent":"execution","workflow_mode":"ultrawork"}\n' \
   >"${session_dir}/session_state.json"
 for outcome_i in $(seq 1 40); do
-  jq -nc --argjson i "${outcome_i}" \
-    '{ts:(1000+$i),agent_type:("wide-worker-"+($i|tostring)),
-      status:"accepted",reason:"",verdict:"SHIP",findings_count:0,
-      finding_ids:"none"}' >>"${session_dir}/agent_completion_outcomes.jsonl"
+  outcome_patch="$(jq -nc --argjson i "${outcome_i}" '
+    {ts:(1000+$i),agent_type:("wide-worker-"+($i|tostring)),
+     status:"accepted",reason:"",verdict:"SHIP",findings_count:0,
+     finding_ids:"none"}')"
+  producer_outcome_fixture "${outcome_patch}" \
+    >>"${session_dir}/agent_completion_outcomes.jsonl"
 done
 hook_payload='{"session_id":"'"${session_id}"'","tool_name":"Agent","tool_input":{"subagent_type":"wide-worker-1","description":"first of forty"}}'
 reflect_wide="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
@@ -270,7 +300,8 @@ reflect_wide="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
 assert_contains "reflect finds the first live outcome beyond old 32-row cap" \
   "agent=wide-worker-1; verdict=SHIP" "${reflect_wide}"
 assert_eq "reflect removes only the correlated outcome from forty" "39" \
-  "$(jq -s 'length' "${session_dir}/agent_completion_outcomes.jsonl")"
+  "$(causal_outcome_count \
+    "${session_dir}/agent_completion_outcomes.jsonl")"
 assert_eq "reflect leaves the other high-fan-out outcomes intact" "1" \
   "$(jq -s '[.[] | select(.agent_type == "wide-worker-40")] | length' \
     "${session_dir}/agent_completion_outcomes.jsonl")"
@@ -279,18 +310,24 @@ assert_eq "reflect leaves the other high-fan-out outcomes intact" "1" \
 # exact-agent missing-ID outcome. Without an ID, short labels do not alias a
 # namespaced role and accidentally consume an unrelated plugin completion.
 : >"${session_dir}/agent_completion_outcomes.jsonl"
-jq -nc '{ts:1,agent_type:"quality-reviewer",status:"ignored",
-  reason:"older-missing-id",verdict:"UNREPORTED",findings_count:0,
-  finding_ids:"none"}' >>"${session_dir}/agent_completion_outcomes.jsonl"
-jq -nc '{ts:2,agent_type:"plugin:quality-reviewer",status:"ignored",
-  reason:"namespaced-unrelated",verdict:"UNREPORTED",findings_count:0,
-  finding_ids:"none"}' >>"${session_dir}/agent_completion_outcomes.jsonl"
-jq -nc '{ts:3,agent_type:"quality-reviewer",status:"ignored",
-  reason:"newest-missing-id",verdict:"UNREPORTED",findings_count:0,
-  finding_ids:"none"}' >>"${session_dir}/agent_completion_outcomes.jsonl"
-jq -nc '{ts:4,agent_type:"plugin:quality-reviewer",status:"ignored",
-  reason:"namespaced-newer-unrelated",verdict:"UNREPORTED",findings_count:0,
-  finding_ids:"none"}' >>"${session_dir}/agent_completion_outcomes.jsonl"
+producer_outcome_fixture \
+  '{"ts":1,"status":"ignored","reason":"older-missing-id",
+    "verdict":"UNREPORTED","findings_count":0,"finding_ids":"none"}' \
+  >>"${session_dir}/agent_completion_outcomes.jsonl"
+producer_outcome_fixture \
+  '{"ts":2,"agent_type":"plugin:quality-reviewer","status":"ignored",
+    "reason":"namespaced-unrelated","verdict":"UNREPORTED",
+    "findings_count":0,"finding_ids":"none"}' \
+  >>"${session_dir}/agent_completion_outcomes.jsonl"
+producer_outcome_fixture \
+  '{"ts":3,"status":"ignored","reason":"newest-missing-id",
+    "verdict":"UNREPORTED","findings_count":0,"finding_ids":"none"}' \
+  >>"${session_dir}/agent_completion_outcomes.jsonl"
+producer_outcome_fixture \
+  '{"ts":4,"agent_type":"plugin:quality-reviewer","status":"ignored",
+    "reason":"namespaced-newer-unrelated","verdict":"UNREPORTED",
+    "findings_count":0,"finding_ids":"none"}' \
+  >>"${session_dir}/agent_completion_outcomes.jsonl"
 hook_payload='{"session_id":"'"${session_id}"'","tool_name":"Agent","tool_input":{"subagent_type":"quality-reviewer","description":"[review-rebind:compat-newest] retry"}}'
 reflect_newest="$(HOME="${_test_home}" STATE_ROOT="${_test_state_root}" \
   bash "${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/reflect-after-agent.sh" \

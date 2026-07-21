@@ -4,7 +4,8 @@
 # an `end` row in `<session>/timing.jsonl`. Pairs with pretool-timing.sh
 # at aggregation time (Stop hook / /ulw-time / status / report).
 #
-# Lock-free hot path: a single sub-PIPE_BUF JSONL append per call.
+# Hot path: one sub-PIPE_BUF JSONL append under the timing log's dedicated
+# mutex, without taking the broader session-state lock.
 
 set -euo pipefail
 
@@ -46,7 +47,12 @@ tool_use_id="$(json_get '.tool_use_id')"
 # registry for first-class WAIT/dead-wait decisions.
 if [[ "${HOOK_JSON}" == *"running in background with ID:"* ]] \
    && [[ "$(json_get '.tool_response' 2>/dev/null || true)" == *"running in background with ID:"* ]]; then
-  write_state "bg_work_dispatched_ts" "$(now_epoch)" 2>/dev/null || true
+  _bg_work_dispatched_ts="$(now_epoch 2>/dev/null || true)"
+  if _timing_epoch_is_valid "${_bg_work_dispatched_ts}"; then
+    write_state "bg_work_dispatched_ts" "${_bg_work_dispatched_ts}" \
+      2>/dev/null || true
+  fi
+  unset _bg_work_dispatched_ts
 fi
 
 prompt_seq="$(timing_current_prompt_seq)"

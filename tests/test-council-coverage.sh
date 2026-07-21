@@ -93,6 +93,18 @@ start_agent() {
     | bash "${HOOK_DIR}/record-pending-agent.sh" start
 }
 
+return_reviewer() {
+  local reviewer_type="$1" agent="$2" message="$3" native_id="$4"
+  jq -nc \
+    --arg session "${SESSION_ID}" \
+    --arg agent "${agent}" \
+    --arg message "${message}" \
+    --arg native_id "${native_id}" \
+    '{session_id:$session,agent_type:$agent,agent_id:$native_id,
+      last_assistant_message:$message}' \
+    | bash "${HOOK_DIR}/record-reviewer.sh" "${reviewer_type}"
+}
+
 one_primary_payload() {
   local agent="$1"
   jq -nc --arg agent "${agent}" '{
@@ -207,15 +219,22 @@ assert_eq "wrong-phase denial leaves pending provenance byte-identical" \
   "${wrong_pending_before}" "$(cat "${wrong_pending}")"
 assert_eq "wrong-phase denial leaves durable dispatch audit byte-identical" \
   "${wrong_dispatches_before}" "$(cat "${wrong_dispatches}")"
+# This deliberately partial claim models a pre-native migration row only for
+# the same-agent denial above.  The current publication barrier must fence an
+# unrelated hook while such an expired claim is still live because it lacks
+# the native/digest/message authority required for exact replay.  Restore the
+# legitimate unclaimed primary before exercising the independent unlisted
+# identity gate.
+jq -c 'del(.completion_claim_id,.completion_claim_ts,.completion_claim_effects_complete)' \
+  "${wrong_pending}" >"${wrong_pending}.tmp"
+mv "${wrong_pending}.tmp" "${wrong_pending}"
+wrong_pending_unclaimed="$(cat "${wrong_pending}")"
 unlisted_rebind="$(dispatch "beta:auditor" \
   "[council:primary] [review-rebind:unlisted] invalid selection")"
 assert_contains "unlisted rebound dispatch is denied" \
   'unlisted-exact-agent' "${unlisted_rebind}"
 assert_eq "unlisted denial leaves legitimate primary live" \
-  "${wrong_pending_before}" "$(cat "${wrong_pending}")"
-jq -c 'del(.completion_claim_id,.completion_claim_ts,.completion_claim_effects_complete)' \
-  "${wrong_pending}" >"${wrong_pending}.tmp"
-mv "${wrong_pending}.tmp" "${wrong_pending}"
+  "${wrong_pending_unclaimed}" "$(cat "${wrong_pending}")"
 return_agent "alpha:auditor"
 completed_primary_duplicate="$(dispatch "alpha:auditor" \
   "[council:primary] do not repay completed selection")"
@@ -240,39 +259,43 @@ assert_eq "completed primary replacement remains the one live audit row" "1" \
     "${STATE_ROOT}/${SESSION_ID}/council_dispatches.jsonl")"
 return_agent "alpha:auditor" $'Late original primary.\nVERDICT: CLEAN'
 
-new_session "effects-complete-reviewer-recovery"
+new_session "summary-first-reviewer-rendezvous"
 effects_base="$(one_primary_payload "quality-reviewer")"
 coverage init "${effects_base}" >/dev/null
 dispatch "quality-reviewer" "[council:primary] reviewer summary-first crash" >/dev/null
-return_agent "quality-reviewer" $'Council review returned.\nVERDICT: CLEAN'
+start_agent "quality-reviewer" "native-effects-reviewer"
+return_agent "quality-reviewer" $'Council review returned.\nVERDICT: CLEAN' \
+  "native-effects-reviewer"
 effects_pending="${STATE_ROOT}/${SESSION_ID}/pending_agents.jsonl"
-assert_eq "summary-first Council reviewer keeps effects-complete coordination row" \
-  "true" "$(jq -r '.completion_claim_effects_complete // false' "${effects_pending}")"
-effects_expired="$(( $(date +%s) - 121 ))"
-jq -c --argjson expired "${effects_expired}" '.completion_claim_ts=$expired' \
-  "${effects_pending}" >"${effects_pending}.tmp"
-mv "${effects_pending}.tmp" "${effects_pending}"
+assert_eq "summary-first Council reviewer publishes no provisional claim" \
+  "false" "$(jq -r '.completion_claim_effects_complete // false' "${effects_pending}")"
+assert_eq "summary-first Council reviewer leaves one receipt-bound waiter" \
+  "1" "$(jq -s 'length' \
+    "${STATE_ROOT}/${SESSION_ID}/reviewer_summary_waiters.jsonl")"
 effects_reconciliation="$(printf '%s' "${effects_base}" | jq '.reconciliation={
-  status:"primary-complete",evidence:"summary-side Council return committed",
+  status:"primary-complete",evidence:"receipt-bound Council return committed",
   primary_returns:["quality-reviewer"],gap_fill_returns:[],
   coverage_results:[{coverage_id:"security",status:"evidenced",evidence:"return",reason:"covered"}]
 }')"
 if coverage update "${effects_reconciliation}" >/dev/null 2>&1; then
+  bad "summary-first waiter reconciled before dedicated reviewer publication"
+else
+  ok
+fi
+return_reviewer "standard" "quality-reviewer" \
+  $'Council review returned.\nVERDICT: CLEAN' "native-effects-reviewer"
+assert_missing "dedicated reviewer replay settles the Council pending row" \
+  "${effects_pending}"
+assert_missing "dedicated reviewer replay settles its summary waiter" \
+  "${STATE_ROOT}/${SESSION_ID}/reviewer_summary_waiters.jsonl"
+assert_eq "dedicated reviewer replay records exactly one Council return" "1" \
+  "$(jq -s '[.[] | select(.actual_agent == "quality-reviewer")] | length' \
+    "${STATE_ROOT}/${SESSION_ID}/council_returns.jsonl")"
+if coverage update "${effects_reconciliation}" >/dev/null 2>&1; then
   ok
 else
-  bad "stale effects-complete coordination row blocked Council reconciliation"
+  bad "dedicated reviewer receipt did not unblock Council reconciliation"
 fi
-effects_retry_unbound="$(dispatch "quality-reviewer" \
-  "ordinary reviewer retry after second-hook crash")"
-assert_contains "stale effects-complete reviewer recovery requires explicit ID" \
-  '[review-rebind:' "${effects_retry_unbound}"
-effects_retry_bound="$(dispatch "quality-reviewer" \
-  "[review-rebind:effects-retry] recover missing reviewer dimension; emit REVIEW_DISPATCH_ID: effects-retry immediately before VERDICT")"
-assert_eq "ordinary ID-bound reviewer retry can recover missing second hook" "" \
-  "${effects_retry_bound}"
-assert_eq "accepted Council return is not charged as another Council dispatch" "1" \
-  "$(jq -s '[.[] | select((.review_dispatch_superseded // false) != true)] | length' \
-    "${STATE_ROOT}/${SESSION_ID}/council_dispatches.jsonl")"
 
 new_session "invalid-rebind-verdict"
 invalid_base="$(one_primary_payload "alpha:auditor")"
@@ -677,15 +700,22 @@ printf 'Current-objective custom provenance:\n'
 new_session "stale-return"
 coverage init "$(one_primary_payload "custom-auditor")" >/dev/null
 dispatch "custom-auditor" "[council:primary] current custom audit" >/dev/null
+start_agent "custom-auditor" "native-stale-custom-auditor"
 state_file="${STATE_ROOT}/${SESSION_ID}/session_state.json"
-jq '.last_user_prompt_ts="101" | .prompt_revision="2"' "${state_file}" >"${state_file}.tmp"
+jq '.last_user_prompt_ts="101"
+    | .prompt_revision="2"
+    | .review_cycle_id="2"
+    | .review_cycle_prompt_ts="101"' \
+  "${state_file}" >"${state_file}.tmp"
 mv "${state_file}.tmp" "${state_file}"
-return_agent "custom-auditor" $'Native prose only\nVERDICT: FINDINGS (1)'
+return_agent "custom-auditor" $'Native prose only\nVERDICT: FINDINGS (1)' \
+  "native-stale-custom-auditor"
 assert_missing "stale Council completion does not record a current return" \
   "${STATE_ROOT}/${SESSION_ID}/council_returns.jsonl"
 assert_missing "stale Council completion does not impose the custom contract" \
   "${STATE_ROOT}/${SESSION_ID}/discovered_scope.jsonl"
-return_agent "custom-auditor" $'Later manual prose\nVERDICT: FINDINGS (1)'
+return_agent "custom-auditor" $'Later manual prose\nVERDICT: FINDINGS (1)' \
+  "native-stale-custom-auditor"
 assert_missing "later manual completion does not inherit Council provenance" \
   "${STATE_ROOT}/${SESSION_ID}/discovered_scope.jsonl"
 

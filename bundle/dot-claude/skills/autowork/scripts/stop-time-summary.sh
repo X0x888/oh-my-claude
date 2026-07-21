@@ -56,10 +56,11 @@ recent_gate_block=0
 stop_attempt_seq="$(read_state "stop_guard_attempt_seq" 2>/dev/null || true)"
 blocked_attempt_seq="$(read_state "last_stop_block_attempt_seq" 2>/dev/null || true)"
 last_stop_block_ts="$(read_state "last_stop_block_ts" 2>/dev/null || true)"
-[[ "${stop_attempt_seq}" =~ ^[0-9]+$ ]] || stop_attempt_seq=0
-[[ "${blocked_attempt_seq}" =~ ^[0-9]+$ ]] || blocked_attempt_seq=0
-[[ "${last_stop_block_ts}" =~ ^[0-9]+$ ]] || last_stop_block_ts=0
-now_ts="$(now_epoch)"
+_timing_uint_is_valid "${stop_attempt_seq}" || stop_attempt_seq=0
+_timing_uint_is_valid "${blocked_attempt_seq}" || blocked_attempt_seq=0
+_timing_epoch_is_valid "${last_stop_block_ts}" || last_stop_block_ts=0
+now_ts="$(now_epoch 2>/dev/null || true)"
+_timing_epoch_is_valid "${now_ts}" || now_ts=0
 if (( stop_attempt_seq > 0 && stop_attempt_seq == blocked_attempt_seq )) \
     && (( last_stop_block_ts > 0 && now_ts - last_stop_block_ts >= 0 \
           && now_ts - last_stop_block_ts <= 300 )); then
@@ -69,25 +70,48 @@ fi
 # --- Finalize the current prompt's walltime (idempotent) ---
 log_path="$(timing_log_path)"
 current_seq="$(timing_current_prompt_seq)"
-[[ "${current_seq}" =~ ^[0-9]+$ ]] || current_seq=0
+_timing_uint_is_valid "${current_seq}" || current_seq=0
 
 if (( recent_gate_block == 0 && current_seq > 0 )) && [[ -f "${log_path}" ]]; then
-  needs_end="$(jq -sr --argjson seq "${current_seq}" '
-    ([.[] | select(.kind=="prompt_end" and (.prompt_seq // 0) == $seq)] | length) as $end_count
-    | ([.[] | select(.kind=="prompt_start" and (.prompt_seq // 0) == $seq)] | length) as $start_count
-    | if $start_count > 0 and $end_count == 0 then "yes" else "no" end
+  needs_end="$(jq -Rsr --argjson seq "${current_seq}" '
+    def canonical_uint:
+      type == "number" and floor == . and . >= 0
+      and . <= 999999999999999;
+    reduce (split("\n")[] | select(length > 0) | fromjson?
+        | select(type == "object")) as $row
+      ({started:false, ended:false};
+        if ($row.kind == "prompt_start"
+            and ($row.ts | canonical_uint) and $row.ts > 0
+            and ($row.prompt_seq | canonical_uint)
+            and $row.prompt_seq == $seq) then
+          .started = true
+        elif ($row.kind == "prompt_end"
+            and ($row.ts | canonical_uint) and $row.ts > 0
+            and ($row.prompt_seq | canonical_uint)
+            and $row.prompt_seq == $seq
+            and ($row.duration_s | canonical_uint)
+            and .started) then
+          .ended = true
+        else . end)
+    | if .started and (.ended | not) then "yes" else "no" end
   ' < "${log_path}" 2>/dev/null || printf 'no')"
 
   if [[ "${needs_end}" == "yes" ]]; then
-    start_ts="$(jq -sr --argjson seq "${current_seq}" '
-      [.[] | select(.kind=="prompt_start" and (.prompt_seq // 0) == $seq)]
+    start_ts="$(jq -Rsr --argjson seq "${current_seq}" '
+      def canonical_uint:
+        type == "number" and floor == . and . >= 0
+        and . <= 999999999999999;
+      [split("\n")[] | select(length > 0) | fromjson?
+        | select(type == "object" and .kind == "prompt_start"
+          and (.ts | canonical_uint) and .ts > 0
+          and (.prompt_seq | canonical_uint) and .prompt_seq == $seq)]
       | first
       | (.ts // 0)
     ' < "${log_path}" 2>/dev/null || printf '0')"
     start_ts="${start_ts:-0}"
-    [[ "${start_ts}" =~ ^[0-9]+$ ]] || start_ts=0
-    now_ts="$(now_epoch)"
-    if (( start_ts > 0 )); then
+    _timing_epoch_is_valid "${start_ts}" || start_ts=0
+    now_ts="$(now_epoch 2>/dev/null || true)"
+    if _timing_epoch_is_valid "${now_ts}" && (( start_ts > 0 )); then
       duration=$(( now_ts - start_ts ))
       (( duration < 0 )) && duration=0
       timing_append_prompt_end "${current_seq}" "${duration}"

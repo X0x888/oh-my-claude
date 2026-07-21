@@ -38,7 +38,8 @@ SESSION_ID="$(json_get '.session_id')"
 # check entirely; the dispatcher re-invokes us with OMC_DEFERRED_DISPATCH=1.
 if [[ "${OMC_LAZY_SESSION_START:-off}" == "on" ]] && [[ "${OMC_DEFERRED_DISPATCH:-0}" != "1" ]]; then
   ensure_session_dir
-  printf '%s\n' "session-start-drift-check.sh" >> "${STATE_ROOT}/${SESSION_ID}/.deferred_session_start_hooks" 2>/dev/null || true
+  append_limited_state ".deferred_session_start_hooks" \
+    "session-start-drift-check.sh" 8 2>/dev/null || true
   exit 0
 fi
 
@@ -66,9 +67,19 @@ fi
 # calm message in the source repo itself.
 in_source_repo=0
 conf="${HOME}/.claude/oh-my-claude.conf"
-if [[ -f "${conf}" ]]; then
-  conf_repo_path="$(grep -E '^repo_path=' "${conf}" 2>/dev/null \
-    | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | xargs)"
+if [[ -f "${conf}" ]] \
+    && jq -Rse 'index("\u0000") == null' "${conf}" >/dev/null 2>&1; then
+  # Metadata keys use exact-key, last-write semantics. Trim only value-edge
+  # whitespace: repository paths may legitimately contain repeated spaces,
+  # quotes, apostrophes, or backslashes, none of which are conf syntax.
+  conf_repo_path=""
+  while IFS= read -r conf_line || [[ -n "${conf_line}" ]]; do
+    [[ "${conf_line}" == repo_path=* ]] || continue
+    conf_value="${conf_line#repo_path=}"
+    conf_value="${conf_value#"${conf_value%%[![:space:]]*}"}"
+    conf_value="${conf_value%"${conf_value##*[![:space:]]}"}"
+    conf_repo_path="${conf_value}"
+  done < "${conf}"
   if [[ -n "${conf_repo_path}" ]] && [[ -d "${conf_repo_path}" ]]; then
     # Resolve both to canonical absolute paths so symlinks / relative
     # PWD don't produce spurious mismatches. PWD must be at OR under

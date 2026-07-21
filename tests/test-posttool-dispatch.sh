@@ -248,6 +248,26 @@ assert_eq "T6b: external revision advances on same generation" "1" \
   "$(jq -r '.last_external_edit_revision // ""' "${state}")"
 assert_eq "T6b: external scope identifies document surface" "doc" \
   "$(jq -r '.external_edit_scope // ""' "${state}")"
+assert_eq "T6b: connector aggregate event advances" "1" \
+  "$(jq -r '.external_edit_event_count // ""' "${state}")"
+assert_eq "T6b: connector document event advances" "1" \
+  "$(jq -r '.external_doc_edit_event_count // ""' "${state}")"
+assert_eq "T6b: connector does not contaminate Bash event count" "" \
+  "$(jq -r '.bash_edit_event_count // ""' "${state}")"
+assert_eq "T6b: connector does not claim unknown Bash scope" "" \
+  "$(jq -r '.bash_unknown_edit_scope // ""' "${state}")"
+external_snapshot="$(
+  SESSION_ID="d6b" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+    bash -c '. "$1"; review_cycle_edit_snapshot | paste -sd, -' _ "${COMMON}"
+)"
+assert_eq "T6b: pathless document event maps to prose without a unique path" \
+  "0,1,0,0,0,1" "${external_snapshot}"
+external_dims="$(
+  SESSION_ID="d6b" OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1 \
+    bash -c '. "$1"; get_required_dimensions' _ "${COMMON}"
+)"
+assert_eq "T6b: pathless document event routes prose review" "prose" \
+  "${external_dims}"
 teardown_session
 
 # ----------------------------------------------------------------------
@@ -319,6 +339,31 @@ run_dispatch "${payload_t9}" >/dev/null
 state="${TEST_HOME}/.claude/quality-pack/state/d9/session_state.json"
 assert_eq "T9: out-of-worktree scratch mutation leaves edit clock empty" "" \
   "$(jq -r '.last_edit_ts // ""' "${state}")"
+teardown_session
+
+# ----------------------------------------------------------------------
+printf 'T9b: corrupt Bash baselines fail closed as edits\n'
+setup_session "d9b"
+work="${TEST_HOME}/repo"
+init_git_worktree "${work}"
+scratch="${TEST_HOME}/scratch.tmp"
+payload_t9b="$(jq -nc --arg cwd "${work}" --arg scratch "${scratch}" '{
+  session_id:"d9b",tool_name:"Bash",tool_use_id:"tu-corrupt-baseline",cwd:$cwd,
+  tool_input:{command:("touch " + $scratch)},tool_response:{exit_code:0}
+}')"
+run_pretool "${payload_t9b}" >/dev/null
+baseline_t9b="$(find \
+  "${TEST_HOME}/.claude/quality-pack/state/d9b/.bash-mutation-baselines" \
+  -type f -print -quit)"
+printf '\0' >>"${baseline_t9b}"
+touch "${scratch}"
+run_dispatch "${payload_t9b}" >/dev/null
+state="${TEST_HOME}/.claude/quality-pack/state/d9b/session_state.json"
+rc=0; [[ -n "$(jq -r '.last_edit_ts // ""' "${state}")" ]] || rc=1
+assert_true "T9b: raw-NUL baseline cannot suppress edit clock" "${rc}"
+assert_eq "T9b: corrupt baseline is consumed" "0" \
+  "$(find "${TEST_HOME}/.claude/quality-pack/state/d9b/.bash-mutation-baselines" \
+    -type f 2>/dev/null | wc -l | tr -d ' ')"
 teardown_session
 
 # ----------------------------------------------------------------------
@@ -420,6 +465,15 @@ signature_matches() {
     bash_command_has_mutation_signature "${OMC_PREDICATE_COMMAND}"
   ' 2>/dev/null
 }
+proven_reader_matches() {
+  local command="$1"
+  OMC_PREDICATE_COMMAND="${command}" HOME="${ORIG_HOME}" bash -c '
+    set -euo pipefail
+    export OMC_LAZY_CLASSIFIER=1 OMC_LAZY_TIMING=1
+    . "'"${COMMON}"'"
+    _omc_bash_command_is_proven_read_only "${OMC_PREDICATE_COMMAND}" "${PWD}"
+  ' 2>/dev/null
+}
 for command in \
   'printf x > app.js' \
   'printf x > "app.js"' \
@@ -463,6 +517,35 @@ for command in \
   'printf x > /dev/null'; do
   rc=0; predicate_matches "${command}" && rc=1 || rc=0
   assert_true "T14 negative: ${command}" "${rc}"
+done
+# `find` and `sed` embed their own action languages (`-exec`/`-fprint` and
+# `w`/GNU `e`), so they cannot be admitted from a command-prefix check. Output
+# switches on otherwise observational tools and git-grep's explicit pager
+# executor likewise leave the zero-baseline fast path.
+for command in \
+  'find . -maxdepth 1 -type f' \
+  'find . -fprint ./find.out' \
+  'find . -fprint0 ./find0.out' \
+  'find . -fprintf ./find-format.out %p' \
+  'find . -fls ./find-ls.out' \
+  'find . -okdir touch ./find-ok.out {} +' \
+  "sed -n 'w ./sed.out' input" \
+  "sed -e 'e touch ./sed-exec.out' input" \
+  'sed -ni.bak s/x/y/ input' \
+  'sort -o./sort.out input' \
+  'sort -uo./sort.out input' \
+  'diff --output=./diff.out before after' \
+  'git grep --open-files-in-pager=touch needle' \
+  'git grep -Otouch needle'; do
+  rc=0; proven_reader_matches "${command}" && rc=1 || rc=0
+  assert_true "T14 unsafe reader form is not proven read-only: ${command}" "${rc}"
+done
+for command in \
+  'sort input' \
+  'diff before after' \
+  'git status --short'; do
+  rc=0; proven_reader_matches "${command}" || rc=$?
+  assert_true "T14 narrow reader form remains proven: ${command}" "${rc}"
 done
 for command in \
   "bash --noprofile -c 'printf > .env'" \
@@ -1209,6 +1292,19 @@ run_dispatch "${payload_t40}" >/dev/null
 state="${TEST_HOME}/.claude/quality-pack/state/d40/session_state.json"
 rc=0; [[ -n "$(jq -r '.last_code_edit_ts // ""' "${state}")" ]] || rc=1
 assert_true "T40: hidden index flag cannot suppress worktree mutation" "${rc}"
+teardown_session
+
+# ----------------------------------------------------------------------
+printf 'T41: NUL-bearing lifecycle identity cannot address a valid session\n'
+setup_session "d41"
+payload_t41="$(jq -nc '{
+  session_id:("d41" + "\u0000"),tool_name:"Bash",tool_use_id:"tu-nul-sid",
+  cwd:"/tmp",tool_input:{command:"pytest -q"},tool_response:"1 passed"
+}')"
+run_dispatch "${payload_t41}" >/dev/null
+assert_eq "T41: invalid identity publishes no timing into normalized target" "0" \
+  "$([[ -e "${TEST_HOME}/.claude/quality-pack/state/d41/timing.jsonl" ]] \
+    && printf 1 || printf 0)"
 teardown_session
 
 # ----------------------------------------------------------------------

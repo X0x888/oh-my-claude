@@ -234,6 +234,145 @@ assert_eq "poisoned totals: malformed nested numerics normalize" "0,0,0,0" \
 assert_eq "poisoned totals: cursor advances only with retained attribution" "1" \
   "$(read_state token_transcript_rows)"
 
+# State values are outer JSON strings. jq -r can decode a stored NUL and Bash
+# command substitution then drops it, turning invalid scalar/cursor authority
+# into a valid-looking decimal unless type/grammar checks run before raw output.
+printf '\n--- NUL-bearing state and cursor authority fail closed ---\n'
+new_session
+rm -rf "${TRANSCRIPT%.jsonl}"
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":77}}}' \
+  >"${TRANSCRIPT}"
+jq -nc '{token_tracking_initialized:("1" + "\u0000"),
+  token_transcript_cursors:"{}",token_totals:"{}"}' \
+  >"$(session_file "${STATE_JSON}")"
+timing_capture_session_tokens "${TRANSCRIPT}" 2
+assert_eq "NUL-bearing initialized flag cannot expose pre-enable backlog" "0" \
+  "$(grep -c token_delta "${LOG}" 2>/dev/null || echo 0)"
+
+new_session
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":5}}}' \
+  >"${TRANSCRIPT}"
+jq -nc '{token_tracking_initialized:"1",token_transcript_cursors:"{}",
+  token_totals:("{\"main_out\":\"9" + "\u0000" + "\"}")}' \
+  >"$(session_file "${STATE_JSON}")"
+timing_capture_session_tokens "${TRANSCRIPT}" 1
+assert_eq "outer NUL cannot normalize poisoned cumulative token state" "5" \
+  "$(timing_aggregate "${LOG}" | jq -r '.tokens_main_out')"
+
+new_session
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":10}}}' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":20}}}' \
+  >"${TRANSCRIPT}"
+_nul_cursor_identity="$(_timing_file_identity "${TRANSCRIPT}")"
+_nul_cursor_bytes="$(head -n 1 "${TRANSCRIPT}" | wc -c | tr -d '[:space:]')"
+_nul_cursor_blob="$(jq -ncr --arg f "${TRANSCRIPT}" \
+  --arg ident "${_nul_cursor_identity}" --arg bytes "${_nul_cursor_bytes}" '
+  {($f):{identity:$ident,rows:("1" + "\u0000"),
+    bytes:($bytes + "\u0000")}} | tojson')"
+jq -nc --arg cursors "${_nul_cursor_blob}" \
+  '{token_tracking_initialized:"1",token_transcript_cursors:$cursors,
+    token_totals:"{}"}' >"$(session_file "${STATE_JSON}")"
+timing_capture_session_tokens "${TRANSCRIPT}" 1
+assert_eq "NUL-bearing row/byte cursors cannot skip transcript history" "30" \
+  "$(timing_aggregate "${LOG}" | jq -r '.tokens_main_out')"
+
+new_session
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":10}}}' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":20}}}' \
+  >"${TRANSCRIPT}"
+_nul_identity="$(_timing_file_identity "${TRANSCRIPT}")"
+_nul_identity_bytes="$(head -n 1 "${TRANSCRIPT}" | wc -c \
+  | tr -d '[:space:]')"
+_nul_identity_blob="$(jq -ncr --arg f "${TRANSCRIPT}" \
+  --arg ident "${_nul_identity}" --argjson bytes "${_nul_identity_bytes}" '
+  {($f):{identity:($ident + "\u0000"),rows:1,bytes:$bytes}} | tojson')"
+jq -nc --arg cursors "${_nul_identity_blob}" \
+  '{token_tracking_initialized:"1",token_transcript_cursors:$cursors,
+    token_totals:"{}"}' >"$(session_file "${STATE_JSON}")"
+timing_capture_session_tokens "${TRANSCRIPT}" 1
+assert_eq "NUL-bearing cursor identity cannot skip transcript history" "30" \
+  "$(timing_aggregate "${LOG}" | jq -r '.tokens_main_out')"
+
+new_session
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":10}}}' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":0,"output_tokens":20}}}' \
+  >"${TRANSCRIPT}"
+jq -nc '{token_tracking_initialized:"1",token_transcript_cursors:"{}",
+  token_transcript_rows:("1" + "\u0000"),token_totals:"{}"}' \
+  >"$(session_file "${STATE_JSON}")"
+timing_capture_session_tokens "${TRANSCRIPT}" 1
+assert_eq "NUL-bearing legacy row cursor cannot skip transcript history" "30" \
+  "$(timing_aggregate "${LOG}" | jq -r '.tokens_main_out')"
+
+new_session
+rm -rf "${TRANSCRIPT%.jsonl}"
+printf '%s\n' '{"type":"user","message":{"content":"parent"}}' \
+  >"${TRANSCRIPT}"
+_nul_manifest_dir="${TRANSCRIPT%.jsonl}/subagents"
+mkdir -p "${_nul_manifest_dir}"
+printf '%s\n' \
+  '{"type":"assistant","isSidechain":true,"attributionAgent":"nul-manifest","message":{"model":"manifest-model","usage":{"input_tokens":0,"output_tokens":42}}}' \
+  >"${_nul_manifest_dir}/manifest-agent.jsonl"
+_nul_live_manifest="$(_timing_agent_transcript_manifest \
+  "${_nul_manifest_dir}")"
+jq -nc --arg manifest "${_nul_live_manifest}" \
+  '{token_tracking_initialized:"1",token_transcript_cursors:"{}",
+    token_agent_transcript_manifest:($manifest + "\u0000"),
+    token_totals:"{}"}' >"$(session_file "${STATE_JSON}")"
+timing_capture_session_tokens "${TRANSCRIPT}" 1
+assert_eq "NUL-bearing agent manifest cannot hide a new sidechain" "42" \
+  "$(timing_aggregate "${LOG}" | jq -r '.tokens_agent_out')"
+
+# Transcript usage is an imported numeric boundary. Invalid source values are
+# ignored component-by-component, while valid observations in the same slice
+# survive and repeated canonical maxima saturate exactly. Exercise both the
+# ordinary per-file reducer and the batched new-sidechain reducer.
+printf '\n--- transcript token numerics reject poison and saturate ---\n'
+cat > "${TRANSCRIPT}" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":7,"output_tokens":999999999999999,"cache_read_input_tokens":3,"cache_creation_input_tokens":4}}}
+{"type":"assistant","message":{"usage":{"input_tokens":1.5,"output_tokens":999999999999999,"cache_read_input_tokens":1000000000000000,"cache_creation_input_tokens":"8"}}}
+{"type":"assistant","message":{"usage":{"input_tokens":1000000000000000,"output_tokens":5,"cache_read_input_tokens":2.5,"cache_creation_input_tokens":6}}}
+EOF
+_numeric_slice="$(_timing_sum_token_slice "${TRANSCRIPT}" 1 main null)"
+assert_eq "single-file reducer preserves valid components and saturates" \
+  "7,999999999999999,3,10,3" \
+  "$(jq -r '.totals | [.main_in,.main_out,.main_cache_read,.main_cache_creation,.usage_rows] | join(",")' \
+    <<<"${_numeric_slice}")"
+
+_numeric_agent_dir="${TRANSCRIPT%.jsonl}/subagents"
+rm -rf "${TRANSCRIPT%.jsonl}"
+mkdir -p "${_numeric_agent_dir}"
+cp "${TRANSCRIPT}" "${_numeric_agent_dir}/numeric-a.jsonl"
+cp "${TRANSCRIPT}" "${_numeric_agent_dir}/numeric-b.jsonl"
+_numeric_a="${_numeric_agent_dir}/numeric-a.jsonl"
+_numeric_b="${_numeric_agent_dir}/numeric-b.jsonl"
+_numeric_a_spec="${_numeric_a}"$'\t'"$(_timing_file_identity "${_numeric_a}")"$'\t'"$(_timing_file_size "${_numeric_a}")"
+_numeric_b_spec="${_numeric_b}"$'\t'"$(_timing_file_identity "${_numeric_b}")"$'\t'"$(_timing_file_size "${_numeric_b}")"
+_numeric_batch="$(_timing_sum_new_agent_files \
+  "${_numeric_a_spec}" "${_numeric_b_spec}")"
+assert_eq "batched reducer preserves valid components and saturates" \
+  "14,999999999999999,6,20,6" \
+  "$(jq -r '.totals | [.agent_in,.agent_out,.agent_cache_read,.agent_cache_creation,.usage_rows] | join(",")' \
+    <<<"${_numeric_batch}")"
+
+# The append decision is a presence check, not another bounded token field.
+# Multiple non-zero components may legitimately sum above the per-field cap.
+new_session
+rm -rf "${TRANSCRIPT%.jsonl}"
+cat > "${TRANSCRIPT}" <<'EOF'
+{"type":"assistant","message":{"usage":{"input_tokens":999999999999999,"output_tokens":999999999999999,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+EOF
+timing_capture_session_tokens "${TRANSCRIPT}" 1
+assert_eq "multi-component maximum emits a token delta" "1" \
+  "$(grep -c token_delta "${LOG}" 2>/dev/null || echo 0)"
+assert_eq "multi-component maximum emits a healing checkpoint" "1" \
+  "$(grep -c token_checkpoint "${LOG}" 2>/dev/null || echo 0)"
+
 # A genuine jq/merge failure must leave both sides of the cursor+totals
 # transaction untouched. The public hook remains fail-open, and the next Stop
 # retries the same complete transcript slice after the local fault clears.
@@ -541,9 +680,9 @@ cat > "${_xs_poison_log}" <<'EOF'
 {"ts":103,"session_id":"valid-two","walltime_s":3,"tokens_main_in":8,"agent_tokens_by_role":{"quality-reviewer":{"output":2}}}
 EOF
 _xs_poison_agg="$(timing_xs_aggregate 0 "${_xs_poison_log}")"
-assert_eq "cross-session poison: valid rows remain visible" "3" \
+assert_eq "cross-session poison: malformed rows are rejected" "2" \
   "$(jq -r '.sessions' <<<"${_xs_poison_agg}")"
-assert_eq "cross-session poison: string numerics normalize without collapse" "20" \
+assert_eq "cross-session poison: valid token numerics remain visible" "20" \
   "$(jq -r '.tokens_main_in' <<<"${_xs_poison_agg}")"
 assert_eq "cross-session poison: walltime remains typed and additive" "8" \
   "$(jq -r '.walltime_s' <<<"${_xs_poison_agg}")"
@@ -859,6 +998,53 @@ assert_eq "many sidechains: unchanged recapture stats only the parent" "1" \
   "$(wc -l < "${_identity_probe}" | tr -d ' ')"
 assert_eq "many sidechains: unchanged recapture cannot duplicate totals" "100" \
   "$(timing_aggregate "${LOG}" | jq -r '.tokens_agent_out')"
+
+# The public capture does an inexpensive generation fast-check before taking
+# the session mutex. A release -> reactivation can land while it waits; the
+# locked body must reject the old generation before cursor/totals/log commit.
+printf '\n--- stale-generation token capture mutation fence ---\n'
+new_session
+rm -rf "${TRANSCRIPT%.jsonl}"
+printf '%s\n' \
+  '{"type":"assistant","message":{"usage":{"input_tokens":3,"output_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}' \
+  >"${TRANSCRIPT}"
+printf '%s\n' '{"ulw_enforcement_generation":"4801"}' \
+  >"${STATE_ROOT}/${SESSION_ID}/session_state.json"
+token_race_sid="${SESSION_ID}"
+token_race_log="${LOG}"
+token_ready="${TEST_HOME}/token-generation.ready"
+token_release="${TEST_HOME}/token-generation.release"
+(
+  export SESSION_ID="${token_race_sid}"
+  export _OMC_ULW_CAPTURED_GENERATION="4801"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${token_ready}"
+  export OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${token_release}"
+  timing_capture_session_tokens "${TRANSCRIPT}" 1
+) &
+token_pid=$!
+token_barrier_seen=0
+for _wait in $(seq 1 500); do
+  if [[ -e "${token_ready}" ]]; then
+    token_barrier_seen=1
+    break
+  fi
+  sleep 0.01
+done
+assert_eq "stale capture reaches deterministic pre-acquire barrier" "1" \
+  "${token_barrier_seen}"
+jq '.ulw_enforcement_generation="4802"' \
+  "${STATE_ROOT}/${token_race_sid}/session_state.json" \
+  >"${STATE_ROOT}/${token_race_sid}/session_state.json.tmp"
+mv "${STATE_ROOT}/${token_race_sid}/session_state.json.tmp" \
+  "${STATE_ROOT}/${token_race_sid}/session_state.json"
+: >"${token_release}"
+wait "${token_pid}" || true
+assert_eq "stale capture does not commit token totals" "" \
+  "$(jq -r '.token_totals // ""' \
+      "${STATE_ROOT}/${token_race_sid}/session_state.json")"
+assert_eq "stale capture does not append token detail" "0" \
+  "$(grep -Ec 'token_(delta|checkpoint)' "${token_race_log}" \
+      2>/dev/null || echo 0)"
 
 # token line empty when no token data
 assert_eq "empty token line on no data" "" "$(timing_token_line '{}')"

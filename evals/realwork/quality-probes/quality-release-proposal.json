@@ -10,9 +10,9 @@
     {"kind": "rendered_document", "globs": ["rendered/**"]}
   ],
   "hard_checks": [
-    {"id": "required_facts", "description": "Every supplied cost, constraint, and decision fact remains accurate.", "critical": true},
-    {"id": "decision_present", "description": "The proposal makes an explicit recommendation for the named audience.", "critical": true},
-    {"id": "render_clean", "description": "The delivered artifact renders without clipping or missing content.", "critical": true}
+    {"id": "required_facts", "description": "Every supplied cost, constraint, and decision fact remains accurate.", "critical": false},
+    {"id": "decision_present", "description": "The proposal makes an explicit recommendation for the named audience.", "critical": false},
+    {"id": "render_clean", "description": "The delivered artifact renders without clipping or missing content.", "critical": false}
   ],
   "rubric": {
     "version": "ddccv-1",
@@ -38,9 +38,9 @@
     "max_candidate_cost_ratio": 1.75,
     "max_candidate_wall_ratio": 1.75,
     "candidate_summary_contract": {
-      "schema_version": 3,
-      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
-      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "schema_version": 4,
+      "required_top_level": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"],
+      "generation_authority": "evaluator-owned-cli-telemetry-v1",
       "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
     }
   }

@@ -261,6 +261,26 @@ else
   fail_msg "F-004: default cap should yield ≤30 candidates, got ${candidate_count_default}"
 fi
 
+# A literal NUL in a numeric timestamp can be normalized by jq before the
+# claimability predicates run. It must remain excluded even when it is the
+# newest directory and would otherwise win the capped scan.
+raw_resume_sid="ffffffff-eeee-dddd-cccc-000000000001"
+raw_resume_dir="${f004_state}/${raw_resume_sid}"
+mkdir -p "${raw_resume_dir}"
+printf '%s\0%s\n' \
+  '{"schema_version":1,"captured_at_ts":'"${now_ts}" \
+  ',"cwd":"/tmp/f004","project_key":"k","original_objective":"x","last_user_prompt":"y","matcher":"Stop"}' \
+  >"${raw_resume_dir}/resume_request.json"
+touch "${raw_resume_dir}"
+raw_resume_rows="$(STATE_ROOT="${f004_state}" \
+  OMC_RESUME_SCAN_MAX_SESSIONS=100 \
+  bash -c "source '${COMMON_SH}'; find_claimable_resume_requests")"
+if [[ "${raw_resume_rows}" != *"${raw_resume_sid}"* ]]; then
+  ok
+else
+  fail_msg "F-004: raw-NUL resume timestamp became claim authority"
+fi
+
 # ----------------------------------------------------------------------
 # F-005 — omc_check_install_drift returns tag:<v> or commits:<v>:<n>
 # from a fixture conf+repo.
@@ -275,12 +295,14 @@ fi
 
 # Fixture: a fake repo with VERSION=1.99.0, conf with installed_version=1.36.0.
 # Expect tag:1.99.0.
-f005_repo="${TEST_TMP}/f005-repo"
+f005_repo="${TEST_TMP}/f005 repo with spaces"
 mkdir -p "${f005_repo}"
 echo '1.99.0' > "${f005_repo}/VERSION"
 f005_home="${TEST_TMP}/f005-home"
 mkdir -p "${f005_home}/.claude"
 cat > "${f005_home}/.claude/oh-my-claude.conf" <<EOF
+installed_version=0.0.1
+repo_path=${TEST_TMP}/missing earlier repo
 installed_version=1.36.0
 repo_path=${f005_repo}
 EOF
@@ -294,7 +316,7 @@ else
 fi
 
 # Fixture: VERSION matches but commits-ahead via a real git repo.
-f005_git="${TEST_TMP}/f005-git"
+f005_git="${TEST_TMP}/f005 git with spaces"
 mkdir -p "${f005_git}"
 (
   cd "${f005_git}" || exit 1

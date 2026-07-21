@@ -27,6 +27,7 @@
 #                                     blindspot inventory, emits up to 9
 #                                     directives, runs once per prompt
 #                                     so 1.5s upper bound is acceptable)
+#   dispatch-recovery-guard.sh: 200 — universal causal-fence fast path
 #   pretool-intent-guard.sh:  300  — runs on every PreToolUse; benchmark uses
 #                                     a real opaque Bash snapshot candidate
 #   quality-constitution-authority-guard.sh: 300 — always-on mutation authority
@@ -67,6 +68,7 @@ fi
 emit_budgets() {
   cat <<'EOF'
 prompt-intent-router.sh|1500
+dispatch-recovery-guard.sh|200
 pretool-intent-guard.sh|300
 quality-constitution-authority-guard.sh|300
 pretool-timing.sh|200
@@ -136,7 +138,7 @@ emit_payload_for_hook() {
         --arg prompt "ulw implement a small feature with tests" \
         '{session_id:$session_id, cwd:$cwd, prompt:$prompt}'
       ;;
-    pretool-intent-guard.sh|quality-constitution-authority-guard.sh)
+    dispatch-recovery-guard.sh|pretool-intent-guard.sh|quality-constitution-authority-guard.sh)
       jq -nc \
         --arg session_id "${sid}" \
         --arg cwd "${PWD}" \
@@ -302,7 +304,8 @@ benchmark_hook() {
     }
     hook_home="${bench_home}"
   fi
-  if [[ "${hook}" == "pretool-intent-guard.sh" \
+  if [[ "${hook}" == "dispatch-recovery-guard.sh" \
+      || "${hook}" == "pretool-intent-guard.sh" \
       || "${hook}" == "closeout-display.sh" \
       || "${hook}" == "closeout-preflight.sh" \
       || "${hook}" == "stop-dispatch.sh" ]] \

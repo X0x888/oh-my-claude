@@ -229,32 +229,15 @@ printf 'record-plan uses the durable publication lock budget:\n'
 
 reset_state
 rm -f "${plan_file}"
-plan_budget_shim="${TEST_STATE_ROOT}/plan-budget-shim"
 plan_budget_count="${TEST_STATE_ROOT}/plan-budget-count"
-mkdir -p "${plan_budget_shim}"
 printf '0\n' >"${plan_budget_count}"
-printf '%s\n' \
-  '#!/bin/sh' \
-  'dest=""' \
-  'for arg in "$@"; do dest="$arg"; done' \
-  'case "${dest}" in' \
-  '  */.state.lock.owner)' \
-  '    count="$(cat "${OMC_PLAN_BUDGET_COUNT}" 2>/dev/null || printf 0)"' \
-  '    count=$((count + 1))' \
-  '    printf "%s\n" "${count}" >"${OMC_PLAN_BUDGET_COUNT}"' \
-  '    if [ "${count}" -le 6 ]; then exit 1; fi' \
-  '    ;;' \
-  'esac' \
-  'exec /bin/ln "$@"' \
-  >"${plan_budget_shim}/ln"
-chmod +x "${plan_budget_shim}/ln"
 plan_budget_payload="$(jq -nc --arg sid "${SESSION_ID}" \
   --arg msg $'PLAN_BODY_BUDGET\nVERDICT: PLAN_READY' \
   '{session_id:$sid,agent_type:"planner-budget",last_assistant_message:$msg}')"
 plan_budget_rc=0
 printf '%s' "${plan_budget_payload}" \
-  | env PATH="${plan_budget_shim}:${PATH}" \
-    OMC_PLAN_BUDGET_COUNT="${plan_budget_count}" \
+  | env OMC_TEST_STATE_LOCK_DENY_ATTEMPTS=6 \
+    OMC_TEST_STATE_LOCK_ATTEMPT_FILE="${plan_budget_count}" \
     OMC_STATE_LOCK_MAX_ATTEMPTS=2 \
     OMC_RECORD_PLAN_LOCK_MAX_ATTEMPTS=20 \
     STATE_ROOT="${TEST_STATE_ROOT}" \
@@ -326,8 +309,9 @@ rm -f "${plan_file}" "${plan_symlink_target}"
 # ===========================================================================
 # Test 7: a planner waiting on the state lock cannot publish after /ulw-off.
 #
-# Pause record-plan at its first state-lock mkdir, after it has captured the
-# active enforcement generation but before the artifact/state transaction.
+# Pause record-plan immediately before state-lock acquisition, after it has
+# captured the active enforcement generation but before the artifact/state
+# transaction.
 # Deactivation wins the real session lock; when the planner resumes, its
 # in-lock interval check must reject the stale callback without creating either
 # current_plan.md or executable plan state.
@@ -345,32 +329,16 @@ with_state_lock_batch \
   "plan_revision" "0"
 touch "$(session_file ".ulw_active")"
 
-plan_race_shim="${TEST_STATE_ROOT}/plan-race-shim"
 plan_race_ready="${TEST_STATE_ROOT}/plan-race-ready"
 plan_race_release="${TEST_STATE_ROOT}/plan-race-release"
-mkdir -p "${plan_race_shim}"
-printf '%s\n' \
-  '#!/bin/sh' \
-  'dest=""' \
-  'for arg in "$@"; do dest="$arg"; done' \
-  'case "${dest}" in' \
-  '  */.state.lock.owner)' \
-  '    /usr/bin/touch "${OMC_PLAN_RACE_READY}"' \
-  '    while [ ! -f "${OMC_PLAN_RACE_RELEASE}" ]; do /bin/sleep 0.01; done' \
-  '    ;;' \
-  'esac' \
-  'exec /bin/ln "$@"' \
-  >"${plan_race_shim}/ln"
-chmod +x "${plan_race_shim}/ln"
 
 plan_race_payload="$(jq -nc --arg sid "${SESSION_ID}" \
   --arg msg $'STALE_PLAN_BODY\nVERDICT: PLAN_READY' \
   '{session_id:$sid,agent_type:"quality-planner",last_assistant_message:$msg}')"
 (
   printf '%s' "${plan_race_payload}" \
-    | env PATH="${plan_race_shim}:${PATH}" \
-      OMC_PLAN_RACE_READY="${plan_race_ready}" \
-      OMC_PLAN_RACE_RELEASE="${plan_race_release}" \
+    | env OMC_TEST_STATE_LOCK_PREACQUIRE_READY_FILE="${plan_race_ready}" \
+      OMC_TEST_STATE_LOCK_PREACQUIRE_RELEASE_FILE="${plan_race_release}" \
       STATE_ROOT="${TEST_STATE_ROOT}" \
       bash "${RECORD_PLAN}" >/dev/null 2>&1
 ) &

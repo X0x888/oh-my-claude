@@ -166,17 +166,29 @@ assert_contains "T3: help mentions native artifact coverage" "native spreadsheet
 assert_contains "T3: help mentions quantitative coverage" "quantitative/data-analysis" "${out}"
 assert_contains "T3: help mentions regulated coverage" "regulated/high-stakes" "${out}"
 assert_contains "T3: help mentions producer" "real session -> result producer contract" "${out}"
-assert_contains "T3: help mentions pairwise evaluator" "blind pairwise quality-evaluator contract" "${out}"
+assert_contains "T3: help mentions pairwise evaluator" "causal-generation blind pairwise quality-evaluator contract" "${out}"
 assert_contains "T3: help mentions optional receipt" "--pairwise-receipt FILE" "${out}"
+assert_contains "T3: help mentions campaign receipt" "--pairwise-campaign-receipt FILE" "${out}"
 
-printf 'Test 4: an explicitly supplied pairwise receipt is a fail-closed surface\n'
-pairwise_receipt="${TMP_DIR}/campaign receipt.json"
+printf 'Test 4: raw pairwise evidence carries its sealed campaign authority\n'
+pairwise_receipt="${TMP_DIR}/pair receipt.json"
+pairwise_campaign_receipt="${TMP_DIR}/campaign receipt.json"
 printf '{}\n' > "${pairwise_receipt}"
-receipt_ok="$(mk_stub pairwise-receipt-ok 0 '{"pass":true,"failures":[]}')"
+printf '{}\n' > "${pairwise_campaign_receipt}"
+receipt_arg_log="${TMP_DIR}/pairwise-claim-argv.json"
+receipt_ok="${TMP_DIR}/pairwise-receipt-ok.sh"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'set -euo pipefail' \
+  'jq -nc '\''$ARGS.positional'\'' -- "$@" >"${PAIRWISE_ARG_LOG}"' \
+  'printf '\''%s\n'\'' '\''{"pass":true,"failures":[]}'\''' \
+  >"${receipt_ok}"
+chmod +x "${receipt_ok}"
 receipt_fail="$(mk_stub pairwise-receipt-fail 1 '{"pass":false,"failures":["win_rate"]}')"
 
 out="$(
-  PAIRWISE_RECEIPT_CHECK_OVERRIDE="bash ${receipt_ok}" \
+  PAIRWISE_ARG_LOG="${receipt_arg_log}" \
+    PAIRWISE_RECEIPT_CHECK_OVERRIDE="bash ${receipt_ok}" \
     run_tool \
       "${classification_ok}" \
       "${routing_ok}" \
@@ -188,13 +200,21 @@ out="$(
       "${realwork_producer_ok}" \
       "${realwork_pairwise_ok}" \
       --pairwise-receipt "${pairwise_receipt}" \
+      --pairwise-campaign-receipt "${pairwise_campaign_receipt}" \
       --json
 )"
 assert_jq_eq "T4: receipt adds a tenth surface" '.counts.ok' "10" "${out}"
 assert_jq_eq "T4: passing receipt is OK" '.surfaces[] | select(.name=="pairwise_receipt") | .status' "OK" "${out}"
 assert_jq_eq "T4: passing receipt has a useful summary" '.surfaces[] | select(.name=="pairwise_receipt") | .summary' 'pairwise claim gate: PASS' "${out}"
 assert_jq_eq "T4: receipt output is captured" '.surfaces[] | select(.name=="pairwise_receipt") | .output' '{"pass":true,"failures":[]}' "${out}"
-assert_contains "T4: spaced receipt path reaches command" "campaign\\ receipt.json" "$(printf '%s' "${out}" | jq -r '.surfaces[] | select(.name=="pairwise_receipt") | .command')"
+assert_contains "T4: spaced pair receipt path reaches command" "pair\\ receipt.json" "$(printf '%s' "${out}" | jq -r '.surfaces[] | select(.name=="pairwise_receipt") | .command')"
+assert_contains "T4: spaced campaign receipt path reaches command" "campaign\\ receipt.json" "$(printf '%s' "${out}" | jq -r '.surfaces[] | select(.name=="pairwise_receipt") | .command')"
+assert_jq_eq "T4: claim gate argv receives the canonical pair receipt" '.[0]' \
+  "${pairwise_receipt}" "$(cat "${receipt_arg_log}")"
+assert_jq_eq "T4: claim gate argv names campaign authority" '.[1]' \
+  "--campaign-receipt" "$(cat "${receipt_arg_log}")"
+assert_jq_eq "T4: claim gate argv receives the canonical campaign receipt" '.[2]' \
+  "${pairwise_campaign_receipt}" "$(cat "${receipt_arg_log}")"
 
 set +e
 out="$(
@@ -210,6 +230,7 @@ out="$(
       "${realwork_producer_ok}" \
       "${realwork_pairwise_ok}" \
       --pairwise-receipt "${pairwise_receipt}" \
+      --pairwise-campaign-receipt "${pairwise_campaign_receipt}" \
       --json 2>&1
 )"
 rc="$?"
@@ -218,6 +239,30 @@ assert_eq "T4: failed claim receipt exits non-zero" "1" "${rc}"
 assert_jq_eq "T4: failed receipt is FAIL" '.surfaces[] | select(.name=="pairwise_receipt") | .status' "FAIL" "${out}"
 assert_jq_eq "T4: failed receipt names the empirical blocker" '.surfaces[] | select(.name=="pairwise_receipt") | .summary' 'pairwise claim gate: FAIL (win_rate)' "${out}"
 assert_jq_eq "T4: failed receipt makes readiness fail" '.result' "fail" "${out}"
+
+set +e
+out="$(run_tool \
+  "${classification_ok}" "${routing_ok}" "${design_contract_ok}" \
+  "${inline_design_contract_ok}" "${benchmark_ok}" "${realwork_validate_ok}" \
+  "${realwork_scoring_ok}" "${realwork_producer_ok}" "${realwork_pairwise_ok}" \
+  --pairwise-receipt "${pairwise_receipt}" 2>&1)"
+rc="$?"
+set -e
+assert_eq "T4: pair receipts without campaign authority are rejected" "2" "${rc}"
+assert_contains "T4: missing campaign authority is named" \
+  "requires --pairwise-campaign-receipt" "${out}"
+
+set +e
+out="$(run_tool \
+  "${classification_ok}" "${routing_ok}" "${design_contract_ok}" \
+  "${inline_design_contract_ok}" "${benchmark_ok}" "${realwork_validate_ok}" \
+  "${realwork_scoring_ok}" "${realwork_producer_ok}" "${realwork_pairwise_ok}" \
+  --pairwise-campaign-receipt "${pairwise_campaign_receipt}" 2>&1)"
+rc="$?"
+set -e
+assert_eq "T4: campaign authority without pair receipts is rejected" "2" "${rc}"
+assert_contains "T4: missing raw pairs are named" \
+  "requires at least one --pairwise-receipt" "${out}"
 
 printf 'Test 5: docs inventory the professional-readiness helper\n'
 readme_contents="$(cat "${README_REAL}")"

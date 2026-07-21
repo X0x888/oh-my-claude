@@ -1244,13 +1244,27 @@ assert_contains "T45c — empty-state names the evidence bar" "50% reprompt-rate
 
 printf 'Test 46: Auto-tune section — populated row renders old -> new, host, evidence\n'
 NOW="$(date +%s)"
-printf '{"_v":1,"ts":%s,"flag":"objective_contract_min_files","old":4,"new":5,"evidence":"reprompt_rate_pct=66 blocks=12 reprompts=8 window_days=7","host":"ci-host"}\n' \
-  "${NOW}" > "${QP}/auto-tune.jsonl"
+{
+  printf '{"_v":1,"ts":%s,"flag":"objective_contract_min_files","old":4,"new":5,"evidence":"reprompt_rate_pct=66 blocks=12 reprompts=8 window_days=7","host":"ci-host"}\n' \
+    "${NOW}"
+  printf '{"_v":1,"ts":%s,"flag":"objective_contract_min_files","old":5,"new":6,"evidence":"FUTURE-MUST-NOT-COUNT","host":"future-host"}\n' \
+    "$((NOW + 86400))"
+  printf '{"_v":1,"ts":"%s","flag":"objective_contract_min_files","old":5,"new":6,"evidence":"STRING-TS-MUST-NOT-COUNT","host":"string-host"}\n' \
+    "${NOW}"
+  printf '{"_v":1,"ts":%s.5,"flag":"objective_contract_min_files","old":5,"new":6,"evidence":"FRACTIONAL-TS-MUST-NOT-COUNT","host":"fractional-host"}\n' \
+    "${NOW}"
+} > "${QP}/auto-tune.jsonl"
 out="$(run_report week)"
 assert_contains "T46a — window total rendered" "1 auto-tune application" "${out}"
 assert_contains "T46b — old -> new delta rendered" "4 -> 5" "${out}"
 assert_contains "T46c — host rendered" "ci-host" "${out}"
 assert_contains "T46d — evidence rendered" "reprompt_rate_pct=66" "${out}"
+assert_not_contains "T46e — future rows excluded from bounded window" \
+  "FUTURE-MUST-NOT-COUNT" "${out}"
+assert_not_contains "T46f — numeric-string timestamps excluded" \
+  "STRING-TS-MUST-NOT-COUNT" "${out}"
+assert_not_contains "T46g — fractional timestamps excluded" \
+  "FRACTIONAL-TS-MUST-NOT-COUNT" "${out}"
 rm -f "${QP}/auto-tune.jsonl"
 
 # ----------------------------------------------------------------------
@@ -1621,6 +1635,25 @@ assert_not_contains "T53g — quarantined decision reason stays hidden" \
 
 rm -rf "${STATE53:?}/${SOURCE53:?}" "${STATE53:?}/${TARGET53:?}" \
   "${STATE53:?}/.resume-quarantine"
+rm -f "${QP}/session_summary.jsonl" "${QP}/gate_events.jsonl"
+
+NUL_SOURCE53="resume-nul-source-T53"
+NUL_TARGET53="resume-nul-target-T53"
+mkdir -p "${STATE53}/${NUL_SOURCE53}"
+jq -nc --arg source "${NUL_SOURCE53}" --arg target "${NUL_TARGET53}" \
+  --argjson now "${NOW53}" '
+  {session_id:$source,session_start_ts:$now,last_user_prompt_ts:$now,
+   task_domain:"coding",task_intent:"execution",subagent_dispatch_count:1,
+   resume_transferred_to:($target + "\u0000")}
+' >"${STATE53}/${NUL_SOURCE53}/session_state.json"
+printf '{"ts":%s,"gate":"nul-owner-source-gate","event":"block"}\n' \
+  "${NOW53}" >"${STATE53}/${NUL_SOURCE53}/gate_events.jsonl"
+: >"${QP}/session_summary.jsonl"
+: >"${QP}/gate_events.jsonl"
+nul_out53="$(run_report all --sweep)"
+assert_contains "T53h — NUL-bearing transfer marker cannot hide live evidence" \
+  "nul-owner-source-gate" "${nul_out53}"
+rm -rf "${STATE53:?}/${NUL_SOURCE53:?}"
 rm -f "${QP}/session_summary.jsonl" "${QP}/gate_events.jsonl"
 
 # ----------------------------------------------------------------------

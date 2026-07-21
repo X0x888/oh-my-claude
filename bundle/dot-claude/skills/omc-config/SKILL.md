@@ -14,7 +14,7 @@ This skill walks the user through oh-my-claude's runtime flags using `AskUserQue
 
 The user can override detection by passing `setup`, `update`, or `change` as the argument.
 
-The skill writes ONLY to `oh-my-claude.conf`. It does not edit `settings.json` (that's the harness's job at install time) or session state. It can trigger two side effects when the user opts in: rewriting agent model assignments via `switch-tier.sh`, and registering the watchdog scheduler via `install-resume-watchdog.sh`.
+The skill's primary artifact is `oh-my-claude.conf`, and it never edits session state. Three deliberate side effects keep the selected persistent configuration real immediately: changing a model tier/override can rewrite agent assignments via `switch-tier.sh`; enabling the watchdog can register its scheduler via `install-resume-watchdog.sh`; and every explicit user-scope `output_style` write atomically reconciles the bundled `settings.json` `outputStyle` field while preserving a custom style. A conflicting `OMC_OUTPUT_STYLE` is reported and still governs a later installer invocation; it does not silently prevent materialization of the saved choice the user just requested.
 
 ---
 
@@ -86,7 +86,7 @@ options:
   - label: "User-wide (Recommended)"
     description: "~/.claude/oh-my-claude.conf — applies to every project on this machine."
   - label: "This project only"
-    description: "./.claude/oh-my-claude.conf — overrides project-safe settings here. Security, persistence, auto-tune, and model authority remain user-wide."
+    description: "./.claude/oh-my-claude.conf — overrides project-safe settings here. Security, persistence, machine-wide scheduler/output, model authority, and statusline preferences remain user-wide."
 ```
 
 Map the user's answers back to short tokens:
@@ -119,7 +119,7 @@ This writes the preset atomically. Validation runs first, so a bad value never h
 
 ### Path B — fine-tune
 
-Walk the clusters below (six at user scope, four at project scope). Use one
+Walk the clusters below (six at user scope, three at project scope). Use one
 `AskUserQuestion` call per cluster. The Definition & Taste cluster deliberately
 uses one call containing four short questions because its controls form one
 authority boundary and must still be independently selectable.
@@ -259,7 +259,11 @@ options:
 At user scope, always emit `model_tier=<value>` (single-select — the user has
 explicitly chosen). At project scope, emit neither model flag.
 
-**Cluster 6 — Output style** (single-select)
+**Cluster 6 — Output style** (single-select, user scope only)
+
+If `$SCOPE` is `project`, skip this cluster and emit no `output_style` pair.
+The preference synchronizes user-wide `~/.claude/settings.json`, so a
+project-scoped config must not change it as a side effect.
 
 ```
 question: "Output style installer behavior?"
@@ -273,7 +277,8 @@ options:
     description: "Skip the outputStyle merge entirely so install never touches settings.json. Both bundled files are still copied to ~/.claude/output-styles/ for reference. Use when you have your own output style. output_style=preserve."
 ```
 
-Always emit `output_style=<value>` (single-select — user has explicitly chosen).
+At user scope, always emit `output_style=<value>` (single-select — the user has
+explicitly chosen).
 
 After all applicable clusters:
 
@@ -304,7 +309,13 @@ set, preventing a removed pin from lingering in direct-skill frontmatter.
 
 ### 5b — Watchdog scheduler
 
-Read the new `resume_watchdog` value. If it's `on` AND the user has not previously run the watchdog installer (heuristic: `~/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist` on macOS, `~/.config/systemd/user/oh-my-claude-resume-watchdog.timer` on Linux — check existence), ask:
+Only perform this step for `$SCOPE=user`. Project presets omit the user-only
+`resume_watchdog` switch, and project configuration must never register a
+machine-wide scheduler. At user scope, read the new `resume_watchdog` value. If
+it's `on` AND the user has not previously run the watchdog installer
+(heuristic: `~/Library/LaunchAgents/dev.ohmyclaude.resume-watchdog.plist` on
+macOS, `~/.config/systemd/user/oh-my-claude-resume-watchdog.timer` on Linux —
+check existence), ask:
 
 ```
 question: "Install the watchdog scheduler now?"
@@ -352,9 +363,9 @@ oh-my-claude configured.
 
 Add a one-line restart hint when needed:
 
-- If `gate_level`, `guard_exhaustion_mode`, `quality_policy`, or any `*_file_count` changed → "Restart Claude Code to pick up the new gate level."
+- If `gate_level`, `guard_exhaustion_mode`, `quality_policy`, or any `*_file_count` changed → "The new gate setting applies on the next prompt or relevant hook; no restart is required."
 - If user-scope `model_tier` changed → "Tier change applied to agent files; new sessions use the new tier automatically."
-- If project scope was selected → "Security, persistence, auto-tune, and model authority remain user-wide; this project cannot weaken enforcement, write team memory, self-tune global policy, or silently change model strength/spend."
+- If project scope was selected → "Protected security/enforcement boundaries, persistence promotion, auto-tune, model authority, machine-wide watchdog/output/retention settings, and statusline display preferences remain user-wide; privacy-sensitive project controls may reduce capture but cannot re-enable a user opt-out. This project cannot weaken the protected user-only enforcement boundaries, write team memory, self-tune global policy, silently change model strength/spend, register a scheduler, delete cross-project data, or publish dead display overrides."
 - If any Definition/Constitution control changed → "Definition and taste changes apply on the next real user prompt; no restart is required."
 - If only watchdog/memory/telemetry flags changed → no restart needed.
 
@@ -369,14 +380,15 @@ Then offer one follow-up:
 - The user hasn't installed oh-my-claude yet — Step 1 surfaces this via `not-installed`.
 - The user wants to inspect ONLY (no changes) — `bash ~/.claude/skills/autowork/scripts/omc-config.sh show` gives them that without the question flow.
 - The user wants to change agent model assignments only with no flag work — `bash ~/.claude/switch-tier.sh <tier>` is the direct command.
-- The user wants to manage `settings.json` (hooks, permissions, env vars) — that's the `update-config` skill's domain. This skill is `oh-my-claude.conf` only.
+- The user wants to manage arbitrary `settings.json` hooks, permissions, or env vars — that's the `update-config` skill's domain. This skill only synchronizes `settings.outputStyle` as the documented side effect of changing `output_style`.
 
 ---
 
 ## Edge cases
 
 - **Project scope without `.claude/` dir.** `set`/`apply-preset` create the directory. Note this in the summary so the user knows.
-- **User-only flags at project scope.** Direct writes fail atomically for `pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `definition_of_excellent`, `quality_constitution`, `taste_learning`, `quality_constitution_max_context_chars`, `model_tier`, `model_overrides`, `repo_lessons`, and `auto_tune`. Project presets omit those keys. Use user scope; for model controls, a deliberate launch-time `OMC_MODEL_TIER` / `OMC_MODEL_OVERRIDES` environment value is also supported.
+- **User-only flags at project scope.** Direct writes fail atomically for `pretool_intent_guard`, `bg_spawn_gate`, `agent_first_gate`, `no_defer_mode`, `quality_policy`, `definition_of_excellent`, `quality_constitution`, `taste_learning`, `quality_constitution_max_context_chars`, `model_tier`, `model_overrides`, `council_deep_default`, `workflow_substrate`, `repo_lessons`, `auto_tune`, `output_style`, `resume_watchdog`, `resume_watchdog_cooldown_secs`, `resume_session_ttl_secs`, `resume_request_ttl_days`, `resume_scan_max_sessions`, `claude_bin`, `state_ttl_days`, `time_tracking_xs_retain_days`, `custom_verify_mcp_tools`, `custom_verify_patterns`, `installation_drift_check`, `statusline_retention`, and `statusline_width`. Project presets omit deny-listed keys they contain. Use user scope; for model controls, a deliberate launch-time `OMC_MODEL_TIER` / `OMC_MODEL_OVERRIDES` environment value is also supported. Council depth and Workflow substrate are user-owned model/cost/execution postures; custom-verification matchers are restricted because they broaden which tool calls may mint verification evidence; resume TTL/scan breadth are restricted so project hooks and the machine-wide watchdog cannot disagree about claimability.
+- **Monotonic project privacy/authorization/notices.** Project conf may turn `classifier_telemetry`, `auto_memory`, `prompt_persist`, `stop_failure_capture`, `transcript_archive`, `time_tracking`, `token_tracking`, `model_drift_canary`, and `blindspot_inventory` off, but cannot turn one on over a user/default opt-out. It may reduce `resume_request_per_cwd_cap`, but cannot raise it or choose unlimited `0` unless the user baseline is already unlimited. It may shorten `wave_override_ttl_seconds`, but cannot widen the user/default stale-wave commit-authorization window. It may suppress `whats_new_session_hint` or `self_audit_nudge`, but cannot re-enable a machine-wide notice the user disabled. Direct unsafe writes fail atomically; project presets omit unsafe promotions and report them.
 - **Inherit pins are definition-backed, not a hidden model enum.** Claude Code's Agent call accepts named model enums only; `inherit` means omit the model and use the selected definition. Accept shipped bare inherit when its installed file can be reconstructed, run the tier switch immediately, and report failure truthfully. Accept custom bare inherit only when its untouched definition already contains exactly one `model: inherit` line. Reject namespaced inherit and missing bare targets; explicit Opus/Sonnet/Haiku custom and namespaced pins remain runtime-only and never rewrite their definitions.
 - **Stale `repo_path`.** If `cmd_show` reports `bundle: unknown`, the conf's `repo_path` doesn't point to a checkout with `VERSION`. Tell the user to re-run `install.sh` from the source repo so `repo_path` refreshes, then retry.
 - **Conf file has hand-written comments.** `write_conf_atomic` only strips lines matching `^<key>=` for the keys being written. Unrelated lines (including `#` comments) are preserved.

@@ -72,7 +72,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Discover the active session via the shared helper in common.sh.
 # Invoked manually mid-session — no hook JSON to read SESSION_ID from.
-SESSION_ID="$(discover_latest_session)"
+SESSION_ID="${SESSION_ID:-$(discover_current_project_session)}"
 if [[ -z "${SESSION_ID}" ]]; then
   printf 'record-finding-list: no active session found under %s\n' "${STATE_ROOT}" >&2
   exit 1

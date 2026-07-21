@@ -988,6 +988,8 @@ record_classifier_telemetry() {
   # Opt-out: users who don't want prompt previews written to disk can set
   # classifier_telemetry=off in oh-my-claude.conf (or OMC_CLASSIFIER_TELEMETRY=off).
   [[ "${OMC_CLASSIFIER_TELEMETRY}" == "on" ]] || return 0
+  _omc_canonical_uint_in_range \
+    "${blocks_before}" 0 999999999999999999 || return 1
   local file
   file="$(session_file "classifier_telemetry.jsonl")"
   # v1.36.x W2 F-010: schema_version (_v:1) for future migrations.
@@ -1008,27 +1010,55 @@ record_classifier_telemetry() {
       prompt_preview: $prompt_preview,
       pretool_blocks_observed: $blocks
     }')"
-  printf '%s\n' "${record}" >> "${file}"
+  # Append and cap in the same session transaction. Besides preventing the
+  # historical append-vs-rotation loss, this gives the stale-session TTL
+  # claimer one authoritative mutation fence: a row lands wholly before the
+  # claim, or the writer observes the claimed/revived generation afterwards.
+  with_state_lock _append_classifier_telemetry_locked "${file}" "${record}"
+}
 
-  # Cap at 100 rows per session to keep the file small under heavy use.
-  # Wrap the rotation in with_state_lock (v1.29.0 metis F-4 fix). The
-  # prior unlocked tail+mv could drop concurrent appends from a parallel
-  # hook fire (rare but possible when prompts arrive in close succession
-  # or detect_classifier_misfire reads while record_classifier_telemetry
-  # is rotating). Locked rotation eliminates the data loss without
-  # measurable perf cost (cap fires only once every 100 prompts).
-  local line_count
-  line_count="$(wc -l < "${file}" 2>/dev/null || echo 0)"
-  line_count="${line_count##* }"
-  if [[ "${line_count}" -gt 100 ]]; then
-    with_state_lock _cap_classifier_telemetry "${file}"
+# shellcheck disable=SC2329 # invoked indirectly via with_state_lock
+_append_classifier_telemetry_locked() {
+  local file="$1" record="$2" line_count="" file_size="" record_size=""
+  [[ ! -L "${file}" ]] \
+    && { [[ ! -e "${file}" ]] || [[ -f "${file}" ]]; } || return 1
+  if [[ -e "${file}" ]]; then
+    file_size="$(_classifier_telemetry_file_size "${file}")" || return 1
+  else
+    file_size=0
+  fi
+  record_size="$(printf '%s\n' "${record}" | wc -c \
+    | tr -d '[:space:]')"
+  [[ "${file_size}" =~ ^[0-9]+$ && "${record_size}" =~ ^[1-9][0-9]*$ ]] \
+    || return 1
+  # Keep every hot-path read and rotation bounded even when a stale or
+  # hand-edited telemetry leaf contains a tiny number of enormous rows.
+  (( file_size <= 8388608 && record_size <= 8192 \
+      && file_size <= 8388608 - record_size )) || return 1
+  printf '%s\n' "${record}" >>"${file}" || return 1
+  line_count="$(wc -l <"${file}" 2>/dev/null | tr -d '[:space:]')"
+  [[ "${line_count}" =~ ^[0-9]+$ ]] || return 1
+  if (( line_count > 100 )); then
+    _cap_classifier_telemetry "${file}"
   fi
 }
 
+_classifier_telemetry_file_size() {
+  local path="${1:-}" value=""
+  [[ -f "${path}" && ! -L "${path}" ]] || return 1
+  value="$(stat -f '%z' "${path}" 2>/dev/null || true)"
+  if [[ "${value}" =~ ^[0-9]+$ ]]; then
+    printf '%s' "${value}"
+    return 0
+  fi
+  value="$(stat -c '%s' "${path}" 2>/dev/null || true)"
+  [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "${value}"
+}
+
 # Helper: rotate classifier_telemetry.jsonl under with_state_lock. The
-# call site checks line_count > 100 outside the lock (cheap), then
-# invokes this under the lock so the tail+mv window is serialized
-# against concurrent appends.
+# caller already owns the state lock, so tail+rename is serialized against
+# both peer appends and the stale-session claimer.
 # shellcheck disable=SC2329 # invoked indirectly via with_state_lock
 _cap_classifier_telemetry() {
   local file="$1"
@@ -1069,6 +1099,11 @@ _cap_classifier_telemetry() {
 # telemetry file stays append-only — easier to diff, easier to audit, no
 # write-race with concurrent hooks.
 detect_classifier_misfire() {
+  with_state_lock _detect_classifier_misfire_locked "$@"
+}
+
+# shellcheck disable=SC2329 # invoked indirectly via with_state_lock
+_detect_classifier_misfire_locked() {
   local current_prompt="$1"
   local current_blocks="$2"
 
@@ -1080,6 +1115,11 @@ detect_classifier_misfire() {
   local file
   file="$(session_file "classifier_telemetry.jsonl")"
   [[ -f "${file}" ]] || return 0
+  local telemetry_size=""
+  telemetry_size="$(_classifier_telemetry_file_size "${file}")" || return 1
+  (( telemetry_size <= 8388608 )) || return 1
+  _omc_canonical_uint_in_range \
+    "${current_blocks}" 0 999999999999999999 || return 1
 
   # Read the most recent non-misfire row.
   local prior_row
@@ -1090,6 +1130,8 @@ detect_classifier_misfire() {
   prior_intent="$(jq -r '.intent // empty' <<<"${prior_row}" 2>/dev/null || true)"
   prior_blocks="$(jq -r '.pretool_blocks_observed // 0' <<<"${prior_row}" 2>/dev/null || echo 0)"
   prior_ts="$(jq -r '.ts // empty' <<<"${prior_row}" 2>/dev/null || true)"
+  _omc_canonical_uint_in_range \
+    "${prior_blocks}" 0 999999999999999999 || return 1
 
   # Skip if prior was already execution/continuation — nothing to correct.
   case "${prior_intent}" in
@@ -1103,8 +1145,17 @@ detect_classifier_misfire() {
   # and is no longer the "prior attempt" the current prompt is responding
   # to. 900 seconds mirrors the post-compact-bias decay window used by
   # prompt-intent-router so the two staleness signals stay in sync.
-  if [[ -n "${prior_ts}" ]] && [[ "${prior_ts}" =~ ^[0-9]+$ ]]; then
-    local age_seconds=$(( $(now_epoch) - prior_ts ))
+  if [[ -n "${prior_ts}" ]]; then
+    _omc_canonical_uint_in_range \
+      "${prior_ts}" 1 999999999999999999 || return 1
+    local current_epoch="" age_seconds=0
+    current_epoch="$(now_epoch)"
+    _omc_canonical_uint_in_range \
+      "${current_epoch}" 1 999999999999999999 || return 1
+    age_seconds=$(( current_epoch - prior_ts ))
+    # A materially future-dated row is not authoritative evidence for the
+    # current prompt window. Small positive clock skew remains tolerated.
+    (( age_seconds >= -300 )) || return 1
     if [[ "${age_seconds}" -ge 900 ]]; then
       log_hook "classifier-telemetry" "suppressing misfire: prior row is ${age_seconds}s old (>900s)"
       return 0
@@ -1162,7 +1213,7 @@ detect_classifier_misfire() {
       reason: $reason,
       pretool_blocks_in_window: $blocks
     }')"
-  printf '%s\n' "${record}" >> "${file}"
+  _append_classifier_telemetry_locked "${file}" "${record}"
   log_hook "classifier-telemetry" "misfire detected: prior=${prior_intent} reason=${reason}"
 }
 

@@ -43,10 +43,12 @@ The object must contain:
 - `axes` with exactly the five non-empty keys `deliberate`, `distinctive`,
   `coherent`, `visionary`, and `complete`;
 - `standards` with the current prompt, applicable repo/domain standards, and
-  every blocking Quality Constitution ID named by the router. Each object uses
-  `kind`, `reference`, `rationale`, and optional `profile_entry_id`. For a
-  `profile` standard, `reference` must be the claim's exact compiled statement;
-  the harness seals and rechecks the Constitution generation/digest;
+  every blocking Quality Constitution ID named by the router. Include at least
+  one `user` standard for the current user direction. Each object uses `kind`,
+  `reference`, and `rationale`. `profile_entry_id` is required for every
+  `profile` row and forbidden for every other kind. For a `profile` standard,
+  `reference` must be the claim's exact compiled statement; the harness seals
+  and rechecks the Constitution generation/digest;
 - one or more concrete `anti_goals` so “visionary” cannot become scope creep;
 - 5–10 `criteria` on the first freeze; an additive revision may retain the
   immutable floor and grow to at most 20. Never consume revision headroom early
@@ -69,27 +71,83 @@ The object must contain:
   tests alone cannot prove vision. Use only hook-mintable combinations: `Bash`
   can mint test/benchmark/comparison/render/inspection receipts but no artifact target;
   `Read` mints source; `Grep` mints inspection; recognized non-mutating MCP
-  observations mint render/inspection. `Bash` may also mint an executable
-  render receipt when its output carries an authoritative result; silent render
-  commands remain below the default confidence floor. Unknown tools and
+  observations mint render/inspection. A successful Bash benchmark, comparison,
+  or render must emit a kind-specific positive observation (for example measured
+  timing/throughput, comparison counts or delta, or a produced render path/count/
+  digest). Silence or generic PASS prose is recorded as failed specialized
+  evidence even when the process exits zero. Unknown tools and
   mutating browser calls
   such as `browser_evaluate`/`browser_run_code` cannot be proof tools. Bash
-  anchors must describe one executing argv vector: no help/dry-run flag or
-  compound shell grammar, and no anchor may force a different stamped kind
-  (for example a `benchmark` token inside a `test` criterion). Keep the full
+  anchors must describe one executing argv vector: no help/discovery/list/skip/
+  dry-run/zero-test mode, shell expansion, or compound shell grammar. Do not
+  plan interpreter-module execution such as `python -m pytest`: module
+  provenance cannot be resolved without executing ambient import machinery.
+  The concrete launcher and any interpreter subject must resolve, and every
+  lexical path component must be non-symlinked; otherwise the runtime cannot
+  mint provenance-bound proof. Proof
+  independence follows the harness-observable semantic target, not arbitrary
+  suffix argv, timing, or an evidence-kind word: expose genuinely distinct
+  custom checks as separate named scripts/targets, or use real framework path
+  selectors. Bash witness selection ranks a structured runner+selector above an
+  explicitly pathed custom verifier, and that above a bare custom command; two
+  different feasible targets at the same rank are ambiguous and invalid. Prefer
+  one ordered runner-selector anchor when practical. No anchor may force a
+  different stamped kind (for example a `benchmark` token inside a `test`
+  criterion). The harness freezes the current verification threshold into the
+  first contract and additive revisions inherit it; do not rely on a later
+  threshold change to rescue an infeasible proof. Keep the full
   concrete command proof within the 500-character receipt command and the
   artifact target within its recorder bound; splitting one bar into many long
-  substring anchors is invalid. Source proof must include canonical project-root
-  overhead and fit portable 255-byte path components. Every MCP observation must
-  have a non-generic target anchor in `artifact_contains`, with all target tokens
-  fitting one 240-character descriptor value; a tool name or `target=` alone is
-  not proof.
+  substring anchors is invalid. A `Read`/`Grep` proof has exactly one
+  `artifact_contains` entry: an existing, non-symlinked path inside the canonical
+  project root (`Read` and `Grep` each require a regular file). `Read` command anchors must occur
+  in `Read:<canonical-target>`. A `Read` proof is whole-file only and is feasible
+  only when the file has at most 2,000 logical lines and no line longer than
+  2,000 characters; do not plan `offset`, `limit`, or any other observation-
+  shaping input. `Grep` proof likewise uses only exact `path` and `pattern`
+  inputs—no glob/type/head/case/context/output shaping. `Grep` appends command anchors absent from the
+  target as one space-joined, valid regex of at most 120 characters. Duplicate
+  same-tool canonical source targets are not independent. For MCP proof, every
+  `command_contains` anchor must be a case-insensitive substring of the concrete
+  persisted MCP tool identity; target/route language belongs in
+  `artifact_contains`, not `command_contains`. Current Playwright snapshot and
+  screenshot proof both require `target=<specific selector or element ref>` in
+  `artifact_contains`. `observed_url` is snapshot-only: when route identity
+  matters, a snapshot criterion may add
+  `observed_url=https://host/path?view=state#section` as the only optional second
+  entry, but a `browser_take_screenshot` criterion must not. Values are
+  case-sensitive and at most 240 characters. A frozen URL
+  must already be canonical: lowercase scheme/host, no default port, and no
+  `.`/`..` path segment. Query and fragment text remain part of exact route
+  identity. Declare each `artifact_contains` value as its raw JSON scalar; the
+  harness turns that raw declaration into authority by escaping `%` as `%25`
+  before escaping `;` as `%3B`. Thus literal `%3B` and literal `;` remain
+  distinct and descriptor-looking text cannot inject a second field. Do not
+  pre-encode the declaration; control bytes such as LF/CR are rejected rather
+  than stripped. Do not use synthetic `route=`/`url=` keys, a tool name, or
+  `target=` alone as proof. Screenshot proof must return an embedded, CRC-valid
+  and decodable PNG content block or a connector-reported regular non-symlink
+  PNG file that remains locally readable for decoding and byte hashing.
+  Path/status-only output without that readable valid PNG, a missing/header-
+  only/corrupt PNG, JPEG/WebP output, or a connector mode that omits both
+  embedded bytes and a readable PNG file cannot mint Definition render proof.
+  If the host lacks the bounded PNG decoder, this method is infeasible; plan a
+  valid PNG response on a supported host or choose another proof method.
+  Passive Playwright DOM snapshot scores 25 and Playwright screenshot scores
+  20, both below the default verification threshold of 40. Either Playwright
+  criterion can freeze only when the user's sealed configuration deliberately
+  lowers the threshold to at most its intrinsic score and every target/content
+  constraint above is feasible. A computer-use screenshot scores 15 for
+  ordinary verification but has no Definition target-witness schema, so it can
+  never be a frozen criterion regardless of threshold. At the default threshold,
+  use an authoritative Bash render verifier that reports a produced artifact/
+  count/digest instead.
 - Give every mandatory criterion a distinct, task-specific claim, failure
   signal, surface, and proof anchor. Bare `*`, generic anchors such as `test`
   or `artifact`, and five axis labels wrapped around one reusable check are
   invalid. A receipt matching more than one criterion proves neither.
-  Browser/render criteria must bind the intended route, path,
-  selector, or target in `artifact_contains`.
+  Browser/render criteria must use the exact supported target and optional route
+  descriptors above; descriptive route/path prose is not a schema binding.
 
 The visionary axis is first-class. Name the strongest credible step-change in
 the user's outcome, why it would matter, how it remains coherent with the

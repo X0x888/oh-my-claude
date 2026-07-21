@@ -106,7 +106,19 @@ session_row="$(jq -nc \
     reason: $reason,
     prompt_preview: $prompt_preview
   }')"
-append_state "classifier_telemetry.jsonl" "${session_row}"
+if ! with_state_lock append_state "classifier_telemetry.jsonl" \
+    "${session_row}"; then
+  log_anomaly "ulw-correct-record" \
+    "per-session correction telemetry append failed"
+fi
+
+_ulw_correct_append_cross_row_locked() {
+  local destination="${1:-}" row="${2:-}"
+  [[ -n "${destination}" && -n "${row}" \
+      && ! -L "${destination}" ]] || return 1
+  [[ ! -e "${destination}" || -f "${destination}" ]] || return 1
+  (umask 077; printf '%s\n' "${row}" >> "${destination}")
+}
 
 # Cross-session ledger — same row schema, plus session_id for traceability.
 cross_file="${HOME}/.claude/quality-pack/classifier_misfires.jsonl"
@@ -133,7 +145,13 @@ cross_row="$(jq -nc \
     reason: $reason,
     prompt_preview: $prompt_preview
   }')"
-printf '%s\n' "${cross_row}" >> "${cross_file}" 2>/dev/null || true
+if ! with_cross_session_log_lock "${cross_file}" \
+    _ulw_correct_append_cross_row_locked "${cross_file}" "${cross_row}"; then
+  # The per-session row remains durable and the TTL sweep can aggregate it on a
+  # later pass, so a busy/unsafe cross-session destination is recoverable.
+  log_anomaly "ulw-correct-record" \
+    "cross-session correction telemetry append deferred to TTL sweep"
+fi
 
 # v1.43 data-lens F-002: auto-write a classifier-fixture candidate when
 # the correction is parseable AND the prompt is non-empty. The candidate
@@ -187,7 +205,12 @@ if [[ -n "${prompt_safe}" ]] \
       }' 2>/dev/null || true)"
     if [[ -n "${fixture_row}" ]]; then
       mkdir -p "$(dirname "${fixture_candidates_file}")" 2>/dev/null || true
-      printf '%s\n' "${fixture_row}" >> "${fixture_candidates_file}" 2>/dev/null || true
+      if ! with_cross_session_log_lock "${fixture_candidates_file}" \
+          _ulw_correct_append_cross_row_locked \
+            "${fixture_candidates_file}" "${fixture_row}"; then
+        log_anomaly "ulw-correct-record" \
+          "classifier fixture candidate append failed"
+      fi
     fi
   fi
 fi
@@ -248,7 +271,10 @@ if [[ -n "${corrected_intent}" ]] \
         "last_user_prompt_ts=${_last_user_prompt_ts}" || true
       _correct_force_count="$(read_state "ulw_correct_force_count" 2>/dev/null || true)"
       _correct_force_count="${_correct_force_count:-0}"
-      [[ "${_correct_force_count}" =~ ^[0-9]+$ ]] || _correct_force_count=0
+      if ! _omc_canonical_uint_in_range \
+          "${_correct_force_count}" 0 999999999999999998; then
+        _correct_force_count=0
+      fi
       write_state "ulw_correct_force_count" "$((_correct_force_count + 1))" 2>/dev/null || true
     fi
   fi

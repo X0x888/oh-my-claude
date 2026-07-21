@@ -15,6 +15,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HELPER="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/omc-config.sh"
+COMMON="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
 
 if [[ ! -f "${HELPER}" ]]; then
   printf 'FAIL: helper not found at %s\n' "${HELPER}" >&2
@@ -102,6 +103,12 @@ install_real_model_switch_fixture() {
   chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
 }
 
+install_minimal_parent_model_fixture() {
+  mkdir -p "${TEST_HOME}/.claude/agents"
+  cp "${REPO_ROOT}/bundle/dot-claude/agents/librarian.md" \
+    "${TEST_HOME}/.claude/agents/librarian.md"
+}
+
 count_installed_model() {
   local model="$1"
   { grep -hE "^model: ${model}$" "${TEST_HOME}/.claude/agents/"*.md 2>/dev/null || true; } \
@@ -111,6 +118,45 @@ count_installed_model() {
 installed_agent_model() {
   local agent="$1"
   sed -n 's/^model: //p' "${TEST_HOME}/.claude/agents/${agent}.md" | head -1
+}
+
+file_mode() {
+  local path="$1"
+  stat -f '%Lp' "${path}" 2>/dev/null \
+    || stat -c '%a' "${path}" 2>/dev/null
+}
+
+agent_tree_digest() {
+  find "${TEST_HOME}/.claude/agents" -type f -name '*.md' -print \
+    | sort \
+    | while IFS= read -r agent_file; do
+        printf '%s  %s\n' "$(cksum < "${agent_file}")" \
+          "${agent_file#"${TEST_HOME}/.claude/agents/"}"
+      done \
+    | cksum
+}
+
+wait_for_file() {
+  local path="$1" attempt=0
+  while [[ ! -e "${path}" ]]; do
+    attempt=$((attempt + 1))
+    [[ "${attempt}" -le 1000 ]] || return 1
+    sleep 0.01
+  done
+}
+
+remove_killed_owner_lock() {
+  local expected_pid="$1" lock="${TEST_HOME}/.claude/.install.lock"
+  [[ -d "${lock}" && ! -L "${lock}" \
+      && "$(cat "${lock}/pid" 2>/dev/null || true)" == "${expected_pid}" ]] \
+    || return 1
+  local participant=""
+  for participant in "${lock}"/participant.*; do
+    [[ -e "${participant}" || -L "${participant}" ]] || continue
+    return 1
+  done
+  rm -f -- "${lock}/pid" "${lock}/token" || return 1
+  rmdir "${lock}"
 }
 
 # --- Test 1: detect-mode handles missing conf ---
@@ -283,6 +329,7 @@ teardown
 # tool execution substrate; goal_gate for the /goal relentless driver) ---
 printf 'Test 13: apply-preset maximum writes 41 keys\n'
 setup
+install_real_model_switch_fixture
 out="$(bash "${HELPER}" apply-preset user maximum 2>&1)"
 assert_contains "apply-preset reports 41 keys" "41 keys" "${out}"
 assert_file_has_line "maximum: gate_level=full" "${USER_CONF_PATH}" "^gate_level=full\$"
@@ -333,6 +380,7 @@ teardown
 # --- Test 14: apply-preset balanced writes balanced values ---
 printf 'Test 14: apply-preset balanced writes balanced defaults\n'
 setup
+install_real_model_switch_fixture
 bash "${HELPER}" apply-preset user balanced > /dev/null
 assert_file_has_line "balanced: guard_exhaustion_mode=scorecard" "${USER_CONF_PATH}" "^guard_exhaustion_mode=scorecard\$"
 assert_file_has_line "balanced: quality_policy=balanced" "${USER_CONF_PATH}" "^quality_policy=balanced\$"
@@ -360,6 +408,7 @@ teardown
 # --- Test 15: apply-preset minimal writes minimal values ---
 printf 'Test 15: apply-preset minimal writes minimal defaults\n'
 setup
+install_real_model_switch_fixture
 bash "${HELPER}" apply-preset user minimal > /dev/null
 assert_file_has_line "minimal: gate_level=basic" "${USER_CONF_PATH}" "^gate_level=basic\$"
 assert_file_has_line "minimal: workflow_substrate=off" "${USER_CONF_PATH}" "^workflow_substrate=off\$"
@@ -396,6 +445,7 @@ teardown
 # --- Test 17: apply-preset preserves metadata keys (repo_path, installed_version) ---
 printf 'Test 17: apply-preset preserves install metadata\n'
 setup
+install_real_model_switch_fixture
 {
   printf 'repo_path=/Users/me/oh-my-claude\n'
   printf 'installed_version=1.22.0\n'
@@ -672,6 +722,7 @@ teardown
 # --- Test 37 (P1-4): apply-preset auto-fires apply-tier when tier changes ---
 printf 'Test 37: apply-preset invokes switch-tier.sh on tier change\n'
 setup
+install_minimal_parent_model_fixture
 # Mock switch-tier.sh so we can detect invocation.
 mkdir -p "${TEST_HOME}/.claude"
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
@@ -698,9 +749,10 @@ else
 fi
 teardown
 
-# --- Test 38 (P1-4): apply-preset does NOT fire apply-tier when tier unchanged ---
-printf 'Test 38: apply-preset skips switch-tier when tier unchanged\n'
+# --- Test 38 (P1-4): an explicit preset repairs materialized tier drift ---
+printf 'Test 38: apply-preset re-materializes an unchanged tier\n'
 setup
+install_minimal_parent_model_fixture
 mkdir -p "${TEST_HOME}/.claude"
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
@@ -714,13 +766,10 @@ chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
 } > "${USER_CONF_PATH}"
 out="$(bash "${HELPER}" apply-preset user balanced 2>&1)"
 assert_not_contains "P1-4: no tier-change message when same" "model_tier changed" "${out}"
-# Mock script must NOT have been invoked.
-if [[ ! -f "${TEST_HOME}/.claude/.switch-tier.invocations" ]]; then
-  pass=$((pass + 1))
-else
-  printf '  FAIL: P1-4: switch-tier.sh invoked when tier did not change\n' >&2
-  fail=$((fail + 1))
-fi
+assert_contains "P1-4: unchanged preset announces repair" \
+  "model_tier unchanged at balanced; re-materializing" "${out}"
+assert_file_has_line "P1-4: unchanged preset invokes switch-tier for repair" \
+  "${TEST_HOME}/.claude/.switch-tier.invocations" '^INVOKED: balanced$'
 teardown
 
 # --- Test 39 (P2-7): detect-mode rejects malformed VERSION (treats as unknown) ---
@@ -810,6 +859,7 @@ teardown
 # --- Test 44 (P3 #7): cmd_set auto-fires apply-tier on tier change ---
 printf 'Test 44: cmd_set auto-fires switch-tier.sh on model_tier change\n'
 setup
+install_minimal_parent_model_fixture
 mkdir -p "${TEST_HOME}/.claude"
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
@@ -831,9 +881,10 @@ else
 fi
 teardown
 
-# --- Test 45 (P3 #7): cmd_set skips switch-tier when tier unchanged ---
-printf 'Test 45: cmd_set skips switch-tier.sh when tier unchanged\n'
+# --- Test 45 (P3 #7): explicit set repairs materialized tier drift ---
+printf 'Test 45: cmd_set re-materializes an unchanged tier\n'
 setup
+install_minimal_parent_model_fixture
 mkdir -p "${TEST_HOME}/.claude"
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
@@ -846,12 +897,10 @@ chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
 } > "${USER_CONF_PATH}"
 out=$(bash "${HELPER}" set user model_tier=balanced 2>&1)
 assert_not_contains "P3 #7: no tier-change message when same" "model_tier changed" "${out}"
-if [[ ! -f "${TEST_HOME}/.claude/.set-switch-tier-skip.invocations" ]]; then
-  pass=$((pass + 1))
-else
-  printf '  FAIL: P3 #7: switch-tier.sh invoked when tier did not change in cmd_set\n' >&2
-  fail=$((fail + 1))
-fi
+assert_contains "P3 #7: unchanged set announces repair" \
+  "model_tier unchanged at balanced; re-materializing" "${out}"
+assert_file_has_line "P3 #7: unchanged set invokes switch-tier for repair" \
+  "${TEST_HOME}/.claude/.set-switch-tier-skip.invocations" '^INVOKED$'
 teardown
 
 # --- Test 46 (P3 #7): cmd_set without model_tier in batch does NOT trigger ---
@@ -879,6 +928,7 @@ setup
 mkdir -p "${TEST_HOME}/.claude"
 # Seed settings.json with the alternative bundled style.
 printf '{"outputStyle":"executive-brief","other":"keep"}\n' > "${TEST_HOME}/.claude/settings.json"
+printf 'output_style=opencode\n' > "${USER_CONF_PATH}"
 bash "${HELPER}" set user output_style=opencode >/dev/null 2>&1
 synced="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
 assert_eq "Test 47: settings.json outputStyle synced to oh-my-claude" "oh-my-claude" "${synced}"
@@ -904,15 +954,25 @@ preserved_custom="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>
 assert_eq "Test 49: user-custom outputStyle preserved" "my-custom-style" "${preserved_custom}"
 teardown
 
-printf 'Test 50: user-set custom outputStyle is NOT auto-synced even on bundled-style change\n'
+printf 'Test 50: explicit bundled-style choice replaces a current custom outputStyle\n'
 setup
 mkdir -p "${TEST_HOME}/.claude"
-# User has a custom style (not in the bundled set). Switching the conf
-# flag must NOT silently rewrite the user's choice.
+# `/omc-config set user` is direct user authority. `preserve` above is the
+# no-touch choice; selecting opencode explicitly must activate it now.
 printf '{"outputStyle":"my-very-custom-style"}\n' > "${TEST_HOME}/.claude/settings.json"
 bash "${HELPER}" set user output_style=opencode >/dev/null 2>&1
-preserved_custom="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
-assert_eq "Test 50: user-custom outputStyle preserved across opencode set" "my-very-custom-style" "${preserved_custom}"
+synced_custom="$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
+assert_eq "Test 50: explicit opencode replaces custom outputStyle" \
+  "oh-my-claude" "${synced_custom}"
+teardown
+
+printf 'Test 50b: explicit bundled-style choice creates missing settings.json\n'
+setup
+rm -f "${TEST_HOME}/.claude/settings.json"
+bash "${HELPER}" set user output_style=executive >/dev/null 2>&1
+assert_eq "Test 50b: missing settings.json is materialized" \
+  "executive-brief" \
+  "$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json" 2>/dev/null)"
 teardown
 
 # --- v1.32.16 (4-attacker security review, A2-LOW-5): claude_bin
@@ -980,15 +1040,26 @@ set -e
 assert_eq "Test 56: set claude_bin=/dev/shm/... exit 2" "2" "${rc}"
 teardown
 
+printf 'Test 56b: set claude_bin to an executable directory rejected\n'
+setup
+set +e
+out="$(bash "${HELPER}" set user claude_bin=/bin 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 56b: set claude_bin=/bin exit 2" "2" "${rc}"
+assert_contains "Test 56b: error requires executable file" \
+  "existing executable file" "${out}"
+teardown
+
 printf 'Test 57: set claude_bin to legitimate path accepted\n'
 setup
-out="$(bash "${HELPER}" set user claude_bin=/usr/local/bin/claude 2>&1)"
+out="$(bash "${HELPER}" set user claude_bin=/bin/sh 2>&1)"
 rc=$?
-assert_eq "Test 57: set claude_bin=/usr/local/bin/claude exit 0" "0" "${rc}"
+assert_eq "Test 57: set claude_bin=/bin/sh exit 0" "0" "${rc}"
 # Verify it landed in the conf file.
 written="$(grep '^claude_bin=' "${TEST_HOME}/.claude/oh-my-claude.conf" 2>/dev/null \
   | head -1 | cut -d= -f2-)"
-assert_eq "Test 57: legit claude_bin written to conf" "/usr/local/bin/claude" "${written}"
+assert_eq "Test 57: legit claude_bin written to conf" "/bin/sh" "${written}"
 teardown
 
 # --- User-only authority + model materialization ---------------------------
@@ -1090,6 +1161,8 @@ assert_contains "Test 59: override rejection names user-only authority" \
   "model_overrides is user-only" "${out}"
 assert_file_lacks_line "Test 59: rejected override is absent" \
   "${project_dir}/.claude/oh-my-claude.conf" '^model_overrides='
+printf '{"outputStyle":"oh-my-claude"}\n' \
+  > "${TEST_HOME}/.claude/settings.json"
 
 denied_pairs=(
   'pretool_intent_guard=false'
@@ -1103,8 +1176,21 @@ denied_pairs=(
   'quality_constitution_max_context_chars=512'
   'model_tier=economy'
   'model_overrides=quality-reviewer:haiku'
+  'council_deep_default=on'
+  'workflow_substrate=on'
   'repo_lessons=on'
   'auto_tune=on'
+  'output_style=executive'
+  'resume_watchdog=on'
+  'resume_watchdog_cooldown_secs=5'
+  'resume_session_ttl_secs=9'
+  'resume_request_ttl_days=1'
+  'resume_scan_max_sessions=1'
+  'claude_bin=/bin/sh'
+  'state_ttl_days=1'
+  'time_tracking_xs_retain_days=1'
+  'custom_verify_mcp_tools=*'
+  'custom_verify_patterns=.*'
 )
 for denied_pair in "${denied_pairs[@]}"; do
   denied_key="${denied_pair%%=*}"
@@ -1118,6 +1204,9 @@ for denied_pair in "${denied_pairs[@]}"; do
   assert_file_lacks_line "Test 59: ${denied_key} is never written" \
     "${project_dir}/.claude/oh-my-claude.conf" "^${denied_key}="
 done
+assert_eq "Test 59: rejected project output_style leaves global settings unchanged" \
+  "oh-my-claude" \
+  "$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json")"
 teardown
 
 printf 'Test 60: project presets omit model keys and never invoke switch-tier\n'
@@ -1164,6 +1253,8 @@ assert_file_lacks_line "Test 60: project preset omits Constitution context cap" 
   "${project_conf}" '^quality_constitution_max_context_chars='
 assert_file_lacks_line "Test 60: project preset omits no_defer_mode" \
   "${project_conf}" '^no_defer_mode='
+assert_file_lacks_line "Test 60: project preset omits machine-wide watchdog switch" \
+  "${project_conf}" '^resume_watchdog='
 assert_file_has_line "Test 60: user tier remains unchanged" \
   "${USER_CONF_PATH}" '^model_tier=quality$'
 assert_file_has_line "Test 60: user override remains unchanged" \
@@ -1368,6 +1459,7 @@ teardown
 
 printf 'Test 64: changed quality override forces one canonical reconstruction\n'
 setup
+install_minimal_parent_model_fixture
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${HOME}/.claude/.override-switch.invocations"
@@ -1384,6 +1476,7 @@ teardown
 
 printf 'Test 65: clearing a quality override also forces reconstruction\n'
 setup
+install_minimal_parent_model_fixture
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${HOME}/.claude/.override-clear.invocations"
@@ -1398,6 +1491,7 @@ teardown
 
 printf 'Test 66: economy override refresh stays source-independent\n'
 setup
+install_minimal_parent_model_fixture
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${HOME}/.claude/.override-economy.invocations"
@@ -1411,6 +1505,7 @@ teardown
 
 printf 'Test 67: tier plus override batch invokes quality reconstruction once\n'
 setup
+install_minimal_parent_model_fixture
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${HOME}/.claude/.override-batch.invocations"
@@ -1465,6 +1560,7 @@ teardown
 
 printf 'Test 70: persistent model writes materialize saved values despite environment shadows\n'
 setup
+install_minimal_parent_model_fixture
 cat > "${TEST_HOME}/.claude/switch-tier.sh" <<'MOCK'
 #!/usr/bin/env bash
 printf 'args=%s|tier=%s|overrides=%s\n' "$*" \
@@ -1484,6 +1580,12 @@ assert_eq "Test 70: saved override is Opus" \
   "oracle:opus" "$(awk -F= '$1 == "model_overrides" { print $2 }' "${USER_CONF_PATH}")"
 assert_contains "Test 70: live environment precedence is explained" \
   "remove the environment override and start a new session" "${out}"
+out="$(OMC_MODEL_TIER=economy OMC_MODEL_OVERRIDES=oracle:haiku \
+  bash "${HELPER}" set user model_tier=quality model_overrides=oracle:opus 2>&1)"
+assert_contains "Test 70: unchanged explicit model write still explains env shadow" \
+  "remove the environment override and start a new session" "${out}"
+assert_contains "Test 70: unchanged explicit model write repairs materialization" \
+  "model_tier unchanged at quality; re-materializing" "${out}"
 teardown
 
 printf 'Test 71: failed inherit materialization never claims live activation\n'
@@ -1497,11 +1599,17 @@ exit 1
 MOCK
 chmod +x "${TEST_HOME}/.claude/switch-tier.sh"
 printf 'model_tier=balanced\nmodel_overrides=\n' > "${USER_CONF_PATH}"
+set +e
 out="$(bash "${HELPER}" set user model_overrides=librarian:inherit 2>&1)"
-assert_file_has_line "Test 71: materializable pin remains saved for repair" \
+rc=$?
+set -e
+assert_eq "Test 71: failed materialization rejects the batch" "1" "${rc}"
+assert_file_has_line "Test 71: prior empty override is restored" \
+  "${USER_CONF_PATH}" '^model_overrides=$'
+assert_file_lacks_line "Test 71: failed pin is never saved" \
   "${USER_CONF_PATH}" '^model_overrides=librarian:inherit$'
-assert_contains "Test 71: failure warning says inherit remains inactive" \
-  "inherit pin is active only when its bare definition already says inherit" "${out}"
+assert_contains "Test 71: failure reports whole-batch rollback" \
+  "rolling back the whole config/materialization batch" "${out}"
 assert_eq "Test 71: failed switch leaves fixed definition unchanged" \
   "sonnet" "$(installed_agent_model librarian)"
 teardown
@@ -1593,8 +1701,8 @@ teardown
 
 printf 'Test 75: fine-tune skill exposes every user-owned Definition control\n'
 config_skill="${REPO_ROOT}/bundle/dot-claude/skills/omc-config/SKILL.md"
-assert_contains "Test 75: fine-tune documents six user clusters" \
-  "six at user scope, four at project scope" "$(cat "${config_skill}")"
+assert_contains "Test 75: fine-tune documents six user and three project clusters" \
+  "six at user scope, three at project scope" "$(cat "${config_skill}")"
 for definition_flag in \
   definition_of_excellent \
   quality_constitution \
@@ -1609,6 +1717,1386 @@ for definition_flag in \
     "\`${definition_flag}\`" \
     "$(sed -n '/User-only flags at project scope/,$p' "${config_skill}")"
 done
+
+printf 'Test 76: Constitution context cap uses canonical bounded decimals\n'
+setup
+printf 'quality_constitution_max_context_chars=2400\n' > "${USER_CONF_PATH}"
+for rejected_cap in 511 12001 18446744073709551616 0512 08; do
+  set +e
+  out="$(bash "${HELPER}" set user \
+    "quality_constitution_max_context_chars=${rejected_cap}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 76: rejected cap ${rejected_cap} exits 2" "2" "${rc}"
+  assert_file_has_line "Test 76: rejected cap ${rejected_cap} preserves saved value" \
+    "${USER_CONF_PATH}" '^quality_constitution_max_context_chars=2400$'
+done
+for accepted_cap in 512 12000; do
+  out="$(bash "${HELPER}" set user \
+    "quality_constitution_max_context_chars=${accepted_cap}" 2>&1)"
+  assert_file_has_line "Test 76: boundary cap ${accepted_cap} is saved" \
+    "${USER_CONF_PATH}" "^quality_constitution_max_context_chars=${accepted_cap}$"
+done
+printf 'quality_constitution_max_context_chars=2400\n' > "${USER_CONF_PATH}"
+for rejected_env_cap in 511 12001 18446744073709551616 0512 08; do
+  out="$(cd "${TEST_HOME}" \
+    && OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS="${rejected_env_cap}" \
+    bash "${HELPER}" show 2>&1)"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E '^[[:space:]*]+quality_constitution_max_context_chars[[:space:]]' || true)"
+  assert_eq "Test 76: invalid env cap ${rejected_env_cap} falls back" \
+    "2400" "$(awk '{print $3}' <<<"${row}")"
+  assert_not_contains "Test 76: invalid env cap ${rejected_env_cap} has no env provenance" \
+    "[E]" "${row}"
+done
+teardown
+
+printf 'Test 77: user quality writes warn precisely when environment wins\n'
+setup
+install_real_model_switch_fixture
+out="$(OMC_DEFINITION_OF_EXCELLENT=off \
+  OMC_QUALITY_CONSTITUTION=off \
+  OMC_TASTE_LEARNING=adaptive \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=7777 \
+  bash "${HELPER}" set user \
+    definition_of_excellent=always \
+    quality_constitution=on \
+    taste_learning=review \
+    quality_constitution_max_context_chars=2400 2>&1)"
+for env_name in \
+  OMC_DEFINITION_OF_EXCELLENT \
+  OMC_QUALITY_CONSTITUTION \
+  OMC_TASTE_LEARNING \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS; do
+  assert_contains "Test 77: set warns for ${env_name}" \
+    "active ${env_name}=" "${out}"
+done
+out="$(OMC_DEFINITION_OF_EXCELLENT=off \
+  OMC_QUALITY_CONSTITUTION=off \
+  OMC_TASTE_LEARNING=adaptive \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=7777 \
+  bash "${HELPER}" apply-preset user balanced 2>&1)"
+for env_name in \
+  OMC_DEFINITION_OF_EXCELLENT \
+  OMC_QUALITY_CONSTITUTION \
+  OMC_TASTE_LEARNING \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS; do
+  assert_contains "Test 77: preset warns for ${env_name}" \
+    "active ${env_name}=" "${out}"
+done
+out="$(OMC_DEFINITION_OF_EXCELLENT=adaptive \
+  OMC_QUALITY_CONSTITUTION=on \
+  OMC_TASTE_LEARNING=review \
+  OMC_QUALITY_CONSTITUTION_MAX_CONTEXT_CHARS=2400 \
+  bash "${HELPER}" set user \
+    definition_of_excellent=adaptive \
+    quality_constitution=on \
+    taste_learning=review \
+    quality_constitution_max_context_chars=2400 2>&1)"
+assert_not_contains "Test 77: matching env values do not warn" \
+  "overrides saved" "${out}"
+teardown
+
+printf 'Test 78: malformed saved quality controls are diagnosed and ignored\n'
+setup
+{
+  printf 'definition_of_excellent=bogus\n'
+  printf 'quality_constitution=wat\n'
+  printf 'taste_learning=x\n'
+  printf 'quality_constitution_max_context_chars=99999\n'
+} > "${USER_CONF_PATH}"
+out="$(bash "${HELPER}" show 2>&1)"
+for invalid_saved in \
+  'definition_of_excellent=bogus' \
+  'quality_constitution=wat' \
+  'taste_learning=x' \
+  'quality_constitution_max_context_chars=99999'; do
+  assert_contains "Test 78: show diagnoses ${invalid_saved}" \
+    "saved ${invalid_saved} is invalid and ignored" "${out}"
+done
+for expected in \
+  'definition_of_excellent adaptive' \
+  'quality_constitution on' \
+  'taste_learning review' \
+  'quality_constitution_max_context_chars 2400'; do
+  key="${expected%% *}"
+  value="${expected#* }"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 78: ${key} falls back to default" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_not_contains "Test 78: ${key} does not claim user provenance" \
+    "[U]" "${row}"
+done
+flags_json="$(bash "${HELPER}" list-flags --json)"
+for expected in \
+  'definition_of_excellent=adaptive' \
+  'quality_constitution=on' \
+  'taste_learning=review' \
+  'quality_constitution_max_context_chars=2400'; do
+  key="${expected%%=*}"
+  value="${expected#*=}"
+  assert_eq "Test 78: list-flags defaults invalid ${key}" \
+    "${value}" "$(jq -r --arg key "${key}" '.[] | select(.name == $key) | .current' \
+      <<<"${flags_json}")"
+done
+teardown
+
+printf 'Test 79: unrelated or invalid project rows preserve user provenance\n'
+setup
+project_dir="${TEST_HOME}/project"
+mkdir -p "${project_dir}/.claude"
+printf 'gate_level=basic\n' > "${USER_CONF_PATH}"
+printf 'stall_threshold=invalid\n' \
+  > "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" && bash "${HELPER}" show 2>&1)"
+row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+gate_level[[:space:]]' || true)"
+assert_eq "Test 79: unrelated project conf preserves user value" \
+  "basic" "$(awk '{print $3}' <<<"${row}")"
+assert_contains "Test 79: unrelated project conf preserves user provenance" \
+  "[U]" "${row}"
+row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+stall_threshold[[:space:]]' || true)"
+assert_eq "Test 79: invalid project row falls back to default" \
+  "12" "$(awk '{print $3}' <<<"${row}")"
+assert_not_contains "Test 79: invalid project row does not claim project provenance" \
+  "[P]" "${row}"
+teardown
+
+printf 'Test 80: show resolves every valid documented environment authority\n'
+setup
+{
+  printf 'gate_level=full\n'
+  printf 'transcript_archive=off\n'
+  printf 'time_card_min_seconds=5\n'
+  printf 'agent_first_gate=off\n'
+  printf 'guard_exhaustion_mode=block\n'
+} > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" \
+  && OMC_GATE_LEVEL=basic \
+  OMC_TRANSCRIPT_ARCHIVE=on \
+  OMC_TIME_CARD_MIN_SECONDS=17 \
+  OMC_AGENT_FIRST_GATE=ON \
+  OMC_GUARD_EXHAUSTION_MODE=warn \
+  bash "${HELPER}" show 2>&1)"
+for expected in \
+  'gate_level=basic' \
+  'transcript_archive=on' \
+  'time_card_min_seconds=17' \
+  'agent_first_gate=on' \
+  'guard_exhaustion_mode=scorecard'; do
+  key="${expected%%=*}"
+  value="${expected#*=}"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 80: ${key} environment value is effective" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 80: ${key} carries environment provenance" \
+    "[E]" "${row}"
+done
+assert_contains "Test 80: generic environment legend is rendered" \
+  "[E]=environment override" "${out}"
+
+out="$(cd "${TEST_HOME}" \
+  && OMC_GATE_LEVEL=bogus \
+  OMC_TRANSCRIPT_ARCHIVE=maybe \
+  OMC_TIME_CARD_MIN_SECONDS=-1 \
+  bash "${HELPER}" show 2>&1)"
+for expected in \
+  'gate_level=full' \
+  'transcript_archive=off' \
+  'time_card_min_seconds=5'; do
+  key="${expected%%=*}"
+  value="${expected#*=}"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 80: invalid ${key} environment value is ignored" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_not_contains "Test 80: invalid ${key} has no environment provenance" \
+    "[E]" "${row}"
+done
+
+out="$(OMC_GATE_LEVEL=basic bash "${HELPER}" set user \
+  gate_level=standard 2>&1)"
+assert_contains "Test 80: generic write warns about environment shadow" \
+  "active OMC_GATE_LEVEL=basic overrides saved user gate_level=standard" \
+  "${out}"
+teardown
+
+printf 'Test 81: public numeric domains reject zero, leading zero, overflow, and out-of-range values\n'
+setup
+printf 'gate_level=basic\n' > "${USER_CONF_PATH}"
+for rejected_numeric in \
+  'verify_confidence_threshold=101' \
+  'stall_threshold=0' \
+  'excellence_file_count=08' \
+  'dimension_gate_file_count=12abc' \
+  'state_ttl_days=18446744073709551616' \
+  'advisory_no_findings_threshold=0' \
+  'resume_request_ttl_days=0' \
+  'resume_watchdog_cooldown_secs=0' \
+  'resume_session_ttl_secs=0'; do
+  set +e
+  out="$(bash "${HELPER}" set user "${rejected_numeric}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 81: ${rejected_numeric} exits 2" "2" "${rc}"
+  assert_file_has_line "Test 81: ${rejected_numeric} preserves conf" \
+    "${USER_CONF_PATH}" '^gate_level=basic$'
+  assert_file_lacks_line "Test 81: ${rejected_numeric} is not written" \
+    "${USER_CONF_PATH}" "^${rejected_numeric%%=*}="
+done
+for accepted_numeric in \
+  'stall_threshold=1' \
+  'excellence_file_count=5' \
+  'state_ttl_days=9'; do
+  out="$(bash "${HELPER}" set user "${accepted_numeric}" 2>&1)"
+  assert_file_has_line "Test 81: ${accepted_numeric} is accepted" \
+    "${USER_CONF_PATH}" "^${accepted_numeric}$"
+done
+flags_json="$(bash "${HELPER}" list-flags --json)"
+for positive_flag in \
+  stall_threshold \
+  excellence_file_count \
+  dimension_gate_file_count \
+  traceability_file_count \
+  state_ttl_days \
+  advisory_no_findings_threshold \
+  resume_request_ttl_days \
+  resume_watchdog_cooldown_secs \
+  resume_session_ttl_secs; do
+  assert_eq "Test 81: ${positive_flag} advertises positive integer domain" \
+    "pint" "$(jq -r --arg key "${positive_flag}" \
+      '.[] | select(.name == $key) | .type' <<<"${flags_json}")"
+done
+teardown
+
+printf 'Test 82: readers trim values, canonicalize aliases, and retain the last valid duplicate\n'
+setup
+{
+  printf 'gate_level=basic\n'
+  printf 'agent_first_gate=ON \r\n'
+  printf 'guard_exhaustion_mode=warn\n'
+  printf 'stall_threshold=17\n'
+  printf 'stall_threshold=08\n'
+  printf 'claude_bin=/bin/sh\n'
+  printf 'claude_bin=/definitely/missing/claude\n'
+} > "${USER_CONF_PATH}"
+project_dir="${TEST_HOME}/duplicates-project"
+mkdir -p "${project_dir}/.claude"
+{
+  printf 'gate_level=standard \r\n'
+  printf 'gate_level=not-a-level\n'
+  printf 'transcript_archive=on \r\n'
+} > "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" && bash "${HELPER}" show 2>&1)"
+for expected in \
+  'gate_level=standard=[P]' \
+  'agent_first_gate=on=[U]' \
+  'guard_exhaustion_mode=scorecard=[U]' \
+  'stall_threshold=17=[U]' \
+  'claude_bin=/bin/sh=[U]'; do
+  key="${expected%%=*}"
+  remainder="${expected#*=}"
+  value="${remainder%%=*}"
+  provenance="${remainder#*=}"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 82: ${key} resolves canonical last-valid value" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 82: ${key} reports correct provenance" \
+    "${provenance}" "${row}"
+done
+transcript_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+transcript_archive[[:space:]]' || true)"
+assert_eq "Test 82: project cannot promote default-off transcript capture" \
+  "off" "$(awk '{print $3}' <<<"${transcript_row}")"
+assert_not_contains "Test 82: ignored transcript promotion has no project provenance" \
+  "[P]" "${transcript_row}"
+assert_contains "Test 82: ignored transcript promotion is diagnosed" \
+  "project transcript_archive=on is a privacy/retention promotion and is ignored" \
+  "${out}"
+assert_contains "Test 82: malformed later project duplicate is diagnosed" \
+  "project gate_level=not-a-level is invalid and ignored" "${out}"
+assert_contains "Test 82: malformed later saved numeric is diagnosed" \
+  "saved stall_threshold=08 is invalid and ignored" "${out}"
+assert_contains "Test 82: missing saved claude executable is diagnosed" \
+  "saved claude_bin=/definitely/missing/claude is invalid and ignored" "${out}"
+teardown
+
+printf 'Test 83: malformed generic environment values fall through in config UX and common runtime\n'
+setup
+{
+  printf 'gate_level=full\n'
+  printf 'transcript_archive=off\n'
+  printf 'time_card_min_seconds=5\n'
+  printf 'agent_first_gate=off\n'
+  printf 'guard_exhaustion_mode=block\n'
+  printf 'claude_bin=/bin/sh\n'
+} > "${USER_CONF_PATH}"
+out="$(cd "${TEST_HOME}" \
+  && OMC_GATE_LEVEL=bogus \
+  OMC_TRANSCRIPT_ARCHIVE=maybe \
+  OMC_TIME_CARD_MIN_SECONDS=-1 \
+  OMC_CLAUDE_BIN=/definitely/missing/claude \
+  bash "${HELPER}" show 2>&1)"
+for invalid_env_name in \
+  OMC_GATE_LEVEL OMC_TRANSCRIPT_ARCHIVE OMC_TIME_CARD_MIN_SECONDS OMC_CLAUDE_BIN; do
+  assert_contains "Test 83: ${invalid_env_name} is diagnosed" \
+    "invalid ${invalid_env_name}=" "${out}"
+done
+runtime_values="$(
+  cd "${TEST_HOME}"
+  BASH_ENV=/dev/null \
+    OMC_GATE_LEVEL=bogus \
+    OMC_TRANSCRIPT_ARCHIVE=maybe \
+    OMC_TIME_CARD_MIN_SECONDS=-1 \
+    OMC_CLAUDE_BIN=/definitely/missing/claude \
+    OMC_AGENT_FIRST_GATE=ON \
+    OMC_GUARD_EXHAUSTION_MODE=warn \
+    /bin/bash -c '. "$1" 2>/dev/null; printf "%s|%s|%s|%s|%s|%s" \
+      "$OMC_GATE_LEVEL" "$OMC_TRANSCRIPT_ARCHIVE" \
+      "$OMC_TIME_CARD_MIN_SECONDS" "$OMC_CLAUDE_BIN" \
+      "$OMC_AGENT_FIRST_GATE" "$OMC_GUARD_EXHAUSTION_MODE"' \
+      _ "${COMMON}"
+)"
+assert_eq "Test 83: common runtime uses valid lower sources and canonical aliases" \
+  'full|off|5|/bin/sh|on|scorecard' "${runtime_values}"
+teardown
+
+printf 'Test 84: statusline controls are user-only and share compatibility grammar\n'
+setup
+{
+  printf 'installation_drift_check=off\n'
+  printf 'statusline_retention=NO\n'
+  printf 'statusline_width=false\n'
+} > "${USER_CONF_PATH}"
+project_dir="${TEST_HOME}/statusline-project"
+mkdir -p "${project_dir}/.claude"
+{
+  printf 'installation_drift_check=true\n'
+  printf 'statusline_retention=on\n'
+  printf 'statusline_width=on\n'
+} > "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" && bash "${HELPER}" show 2>&1)"
+for expected in \
+  'installation_drift_check=false' \
+  'statusline_retention=off' \
+  'statusline_width=off'; do
+  key="${expected%%=*}"
+  value="${expected#*=}"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 84: ${key} ignores project row" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 84: ${key} retains user provenance" "[U]" "${row}"
+  project_value="on"
+  [[ "${key}" == "installation_drift_check" ]] && project_value="true"
+  set +e
+  rejected="$(cd "${project_dir}" \
+    && bash "${HELPER}" set project "${key}=${project_value}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 84: project write rejects ${key}" "2" "${rc}"
+  assert_contains "Test 84: ${key} rejection names user-only authority" \
+    "${key} is user-only" "${rejected}"
+done
+assert_contains "Test 84: show calls out ignored display rows" \
+  "installation_drift_check,statusline_retention,statusline_width" "${out}"
+assert_contains "Test 84: complete provenance legend includes user" \
+  "[U]=user setting" "${out}"
+
+out="$(cd "${project_dir}" \
+  && OMC_INSTALLATION_DRIFT_CHECK=YES \
+  OMC_STATUSLINE_RETENTION=1 \
+  OMC_STATUSLINE_WIDTH=TRUE \
+  bash "${HELPER}" show 2>&1)"
+for expected in \
+  'installation_drift_check=true' \
+  'statusline_retention=on' \
+  'statusline_width=on'; do
+  key="${expected%%=*}"
+  value="${expected#*=}"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 84: ${key} accepts compatibility env alias" \
+    "${value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 84: ${key} env alias has environment provenance" \
+    "[E]" "${row}"
+done
+
+out="$(cd "${project_dir}" \
+  && OMC_INSTALLATION_DRIFT_CHECK=invalid \
+  OMC_STATUSLINE_RETENTION=invalid \
+  OMC_STATUSLINE_WIDTH=invalid \
+  bash "${HELPER}" show 2>&1)"
+for key in installation_drift_check statusline_retention statusline_width; do
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_contains "Test 84: invalid ${key} env falls through to user" "[U]" "${row}"
+  assert_not_contains "Test 84: invalid ${key} env is not authoritative" "[E]" "${row}"
+done
+teardown
+
+printf 'Test 85: list-flags current uses environment, project, user, default precedence\n'
+setup
+{
+  printf 'gate_level=basic\n'
+  printf 'output_style=executive\n'
+} > "${USER_CONF_PATH}"
+project_dir="${TEST_HOME}/list-flags-project"
+mkdir -p "${project_dir}/.claude"
+{
+  printf 'gate_level=full\n'
+  printf 'output_style=opencode\n'
+} > "${project_dir}/.claude/oh-my-claude.conf"
+flags_json="$(cd "${project_dir}" \
+  && OMC_GATE_LEVEL=standard bash "${HELPER}" list-flags --json)"
+assert_eq "Test 85: valid environment is current" "standard" \
+  "$(jq -r '.[] | select(.name == "gate_level") | .current' \
+    <<<"${flags_json}")"
+flags_json="$(cd "${project_dir}" \
+  && OMC_GATE_LEVEL=invalid bash "${HELPER}" list-flags --json)"
+assert_eq "Test 85: invalid environment falls through to allowed project" "full" \
+  "$(jq -r '.[] | select(.name == "gate_level") | .current' \
+    <<<"${flags_json}")"
+assert_eq "Test 85: denied project output style falls through to user" \
+  "executive" \
+  "$(jq -r '.[] | select(.name == "output_style") | .current' \
+    <<<"${flags_json}")"
+teardown
+
+printf 'Test 86: saved output style materializes despite a conflicting environment\n'
+setup
+printf 'output_style=opencode\n' > "${USER_CONF_PATH}"
+printf '{"outputStyle":"oh-my-claude"}\n' \
+  > "${TEST_HOME}/.claude/settings.json"
+out="$(OMC_OUTPUT_STYLE=opencode bash "${HELPER}" set user \
+  output_style=executive 2>&1)"
+assert_eq "Test 86: explicit saved choice is materialized immediately" \
+  "executive-brief" \
+  "$(jq -r '.outputStyle' "${TEST_HOME}/.claude/settings.json")"
+assert_contains "Test 86: next-install environment conflict is explicit" \
+  "active OMC_OUTPUT_STYLE=opencode will override it on the next install" \
+  "${out}"
+teardown
+
+printf 'Test 87: project privacy overlays can reduce capture but cannot promote persistence or retention\n'
+privacy_flags=(
+  classifier_telemetry
+  auto_memory
+  prompt_persist
+  stop_failure_capture
+  transcript_archive
+  time_tracking
+  token_tracking
+  model_drift_canary
+  blindspot_inventory
+)
+setup
+project_dir="${TEST_HOME}/privacy-project"
+mkdir -p "${project_dir}/.claude"
+for key in "${privacy_flags[@]}"; do
+  printf '%s=off\n' "${key}" >> "${USER_CONF_PATH}"
+  printf '%s=on\n' "${key}" >> "${project_dir}/.claude/oh-my-claude.conf"
+done
+printf 'resume_request_per_cwd_cap=3\n' >> "${USER_CONF_PATH}"
+printf 'resume_request_ttl_days=7\nresume_scan_max_sessions=30\nwave_override_ttl_seconds=7200\n' \
+  >> "${USER_CONF_PATH}"
+printf 'self_audit_nudge=off\nwhats_new_session_hint=false\n' \
+  >> "${USER_CONF_PATH}"
+printf 'resume_request_per_cwd_cap=2\nresume_request_per_cwd_cap=4\nresume_request_ttl_days=1\nresume_scan_max_sessions=1\nwave_override_ttl_seconds=600\nwave_override_ttl_seconds=9000\n' \
+  >> "${project_dir}/.claude/oh-my-claude.conf"
+printf 'self_audit_nudge=on\nwhats_new_session_hint=true\n' \
+  >> "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" && bash "${HELPER}" show 2>&1)"
+for key in "${privacy_flags[@]}"; do
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 87: project cannot promote ${key}" \
+    "off" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 87: ${key} retains user provenance" "[U]" "${row}"
+  set +e
+  rejected="$(cd "${project_dir}" \
+    && bash "${HELPER}" set project "${key}=on" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 87: direct project ${key}=on is rejected" "2" "${rc}"
+  assert_contains "Test 87: ${key} rejection explains sensitive persistence" \
+    "cannot re-enable sensitive persistence" "${rejected}"
+done
+cap_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+resume_request_per_cwd_cap[[:space:]]' || true)"
+assert_eq "Test 87: rejected later cap does not erase prior allowed reduction" \
+  "2" "$(awk '{print $3}' <<<"${cap_row}")"
+assert_contains "Test 87: allowed cap reduction has project provenance" \
+  "[P]" "${cap_row}"
+set +e
+rejected="$(cd "${project_dir}" && bash "${HELPER}" set project \
+  resume_request_per_cwd_cap=4 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 87: project cannot raise resume artifact cap" "2" "${rc}"
+assert_contains "Test 87: cap rejection explains retention authority" \
+  "cannot increase prompt-bearing resume artifact retention" "${rejected}"
+for user_only_resume in resume_request_ttl_days resume_scan_max_sessions; do
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${user_only_resume}[[:space:]]" || true)"
+  expected_resume_value=7
+  [[ "${user_only_resume}" == "resume_scan_max_sessions" ]] \
+    && expected_resume_value=30
+  assert_eq "Test 87: project cannot split ${user_only_resume} authority" \
+    "${expected_resume_value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 87: ${user_only_resume} retains user provenance" \
+    "[U]" "${row}"
+  set +e
+  rejected="$(cd "${project_dir}" && bash "${HELPER}" set project \
+    "${user_only_resume}=1" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 87: direct project ${user_only_resume} is rejected" \
+    "2" "${rc}"
+  assert_contains "Test 87: ${user_only_resume} names user-only authority" \
+    "user-only" "${rejected}"
+done
+wave_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+wave_override_ttl_seconds[[:space:]]' || true)"
+assert_eq "Test 87: rejected wave widening preserves allowed reduction" \
+  "600" "$(awk '{print $3}' <<<"${wave_row}")"
+assert_contains "Test 87: wave reduction has project provenance" \
+  "[P]" "${wave_row}"
+set +e
+rejected="$(cd "${project_dir}" && bash "${HELPER}" set project \
+  wave_override_ttl_seconds=9000 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 87: project cannot widen wave authorization" "2" "${rc}"
+assert_contains "Test 87: wave rejection names authorization ceiling" \
+  "cannot increase the user/default authorization ceiling" "${rejected}"
+for notice_pair in self_audit_nudge=on whats_new_session_hint=true; do
+  notice_key="${notice_pair%%=*}"
+  expected_notice=off
+  [[ "${notice_key}" == "whats_new_session_hint" ]] && expected_notice=false
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${notice_key}[[:space:]]" || true)"
+  assert_eq "Test 87: project cannot re-enable ${notice_key}" \
+    "${expected_notice}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 87: ${notice_key} retains user provenance" \
+    "[U]" "${row}"
+  set +e
+  rejected="$(cd "${project_dir}" \
+    && bash "${HELPER}" set project "${notice_pair}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 87: direct project ${notice_key} promotion is rejected" \
+    "2" "${rc}"
+  assert_contains "Test 87: ${notice_key} rejection names notice authority" \
+    "cannot re-enable a user-disabled machine-wide session notice" \
+    "${rejected}"
+done
+
+# Presets omit unsafe `on` promotions but retain privacy-reducing `off` rows.
+rm -f "${project_dir}/.claude/oh-my-claude.conf"
+preset_out="$(cd "${project_dir}" \
+  && bash "${HELPER}" apply-preset project maximum 2>&1)"
+assert_contains "Test 87: project preset reports omitted promotions" \
+  "omitted capture/retention/authorization promotion(s):" "${preset_out}"
+for key in classifier_telemetry auto_memory prompt_persist \
+    stop_failure_capture time_tracking token_tracking model_drift_canary \
+    blindspot_inventory; do
+  assert_file_lacks_line "Test 87: preset omits unsafe ${key}=on" \
+    "${project_dir}/.claude/oh-my-claude.conf" "^${key}=on$"
+done
+assert_file_has_line "Test 87: preset retains safe transcript_archive=off" \
+  "${project_dir}/.claude/oh-my-claude.conf" '^transcript_archive=off$'
+teardown
+
+setup
+project_dir="${TEST_HOME}/privacy-reduction-project"
+mkdir -p "${project_dir}/.claude"
+for key in "${privacy_flags[@]}"; do
+  printf '%s=on\n' "${key}" >> "${USER_CONF_PATH}"
+  printf '%s=off\n' "${key}" >> "${project_dir}/.claude/oh-my-claude.conf"
+done
+printf 'resume_request_per_cwd_cap=3\n' >> "${USER_CONF_PATH}"
+printf 'wave_override_ttl_seconds=7200\n' >> "${USER_CONF_PATH}"
+printf 'self_audit_nudge=on\nwhats_new_session_hint=true\n' \
+  >> "${USER_CONF_PATH}"
+printf 'resume_request_per_cwd_cap=2\nwave_override_ttl_seconds=600\nself_audit_nudge=off\nwhats_new_session_hint=false\n' \
+  >> "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" && bash "${HELPER}" show 2>&1)"
+for key in "${privacy_flags[@]}"; do
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${key}[[:space:]]" || true)"
+  assert_eq "Test 87: project may reduce ${key}" \
+    "off" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 87: ${key} reduction has project provenance" \
+    "[P]" "${row}"
+done
+wave_row="$(printf '%s\n' "${out}" \
+  | grep -E '^[[:space:]*]+wave_override_ttl_seconds[[:space:]]' || true)"
+assert_eq "Test 87: project may shorten wave authorization" \
+  "600" "$(awk '{print $3}' <<<"${wave_row}")"
+assert_contains "Test 87: shortened wave has project provenance" \
+  "[P]" "${wave_row}"
+for notice_pair in self_audit_nudge=off whats_new_session_hint=false; do
+  notice_key="${notice_pair%%=*}"
+  notice_value="${notice_pair#*=}"
+  row="$(printf '%s\n' "${out}" \
+    | grep -E "^[[:space:]*]+${notice_key}[[:space:]]" || true)"
+  assert_eq "Test 87: project may suppress ${notice_key}" \
+    "${notice_value}" "$(awk '{print $3}' <<<"${row}")"
+  assert_contains "Test 87: ${notice_key} suppression has project provenance" \
+    "[P]" "${row}"
+done
+teardown
+
+printf 'Test 88: custom verification matchers are validated user authority\n'
+setup
+bash "${HELPER}" set user \
+  'custom_verify_mcp_tools=mcp__trusted__*' \
+  'custom_verify_patterns=trusted-wrapper' >/dev/null
+set +e
+out="$(bash "${HELPER}" set user 'custom_verify_patterns=[' 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 88: invalid ERE write exits 2" "2" "${rc}"
+assert_contains "Test 88: invalid ERE diagnostic is explicit" \
+  "must be a valid extended regular expression" "${out}"
+assert_file_has_line "Test 88: invalid ERE preserves prior matcher" \
+  "${USER_CONF_PATH}" '^custom_verify_patterns=trusted-wrapper$'
+for control_pair in \
+    "custom_verify_patterns=trusted"$'\033'"wrapper" \
+    "custom_verify_mcp_tools=mcp__trusted__*"$'\t'"mcp__other__*"; do
+  set +e
+  out="$(bash "${HELPER}" set user "${control_pair}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 88: control-character write exits 2" "2" "${rc}"
+  assert_contains "Test 88: control-character diagnostic is explicit" \
+    "cannot contain control characters" "${out}"
+done
+assert_file_has_line "Test 88: control rejection preserves MCP matcher" \
+  "${USER_CONF_PATH}" '^custom_verify_mcp_tools=mcp__trusted__\*$'
+assert_file_has_line "Test 88: control rejection preserves Bash matcher" \
+  "${USER_CONF_PATH}" '^custom_verify_patterns=trusted-wrapper$'
+project_dir="${TEST_HOME}/custom-verification-project"
+mkdir -p "${project_dir}/.claude"
+for denied_pair in 'custom_verify_mcp_tools=*' 'custom_verify_patterns=.*'; do
+  set +e
+  out="$(cd "${project_dir}" \
+    && bash "${HELPER}" set project "${denied_pair}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 88: project ${denied_pair%%=*} is rejected" "2" "${rc}"
+  assert_contains "Test 88: project matcher rejection names user authority" \
+    "user-only" "${out}"
+done
+{
+  printf 'custom_verify_patterns=trusted-wrapper\n'
+  printf 'custom_verify_patterns=[\n'
+} > "${USER_CONF_PATH}"
+flags_json="$(OMC_CUSTOM_VERIFY_PATTERNS='[' \
+  bash "${HELPER}" list-flags --json)"
+assert_eq "Test 88: invalid env and later invalid row retain last valid ERE" \
+  "trusted-wrapper" \
+  "$(jq -r '.[] | select(.name == "custom_verify_patterns") | .current' \
+    <<<"${flags_json}")"
+flags_json="$(OMC_CUSTOM_VERIFY_PATTERNS='env-wrapper' \
+  bash "${HELPER}" list-flags --json)"
+assert_eq "Test 88: valid ERE environment has precedence" "env-wrapper" \
+  "$(jq -r '.[] | select(.name == "custom_verify_patterns") | .current' \
+    <<<"${flags_json}")"
+{
+  printf 'custom_verify_mcp_tools=mcp__trusted__*\n'
+  printf 'custom_verify_mcp_tools=\n'
+  printf 'custom_verify_patterns=trusted-wrapper\n'
+  printf 'custom_verify_patterns=\n'
+} > "${USER_CONF_PATH}"
+flags_json="$(bash "${HELPER}" list-flags --json)"
+assert_eq "Test 88: explicit empty MCP row revokes earlier authority" "" \
+  "$(jq -r '.[] | select(.name == "custom_verify_mcp_tools") | .current' \
+    <<<"${flags_json}")"
+assert_eq "Test 88: explicit empty Bash row revokes earlier authority" "" \
+  "$(jq -r '.[] | select(.name == "custom_verify_patterns") | .current' \
+    <<<"${flags_json}")"
+teardown
+
+printf 'Test 89: metadata readers trim edges and use the last exact-key row\n'
+setup
+metadata_repo="${TEST_HOME}/source  repo's checkout"
+metadata_padding="  "
+mkdir -p "${metadata_repo}"
+printf '9.9.9\n' > "${metadata_repo}/VERSION"
+{
+  printf 'installed_version=1.22.0\n'
+  printf 'repo_path=/obsolete/checkout\n'
+  printf 'repo_path=%s%s%s\n' \
+    "${metadata_padding}" "${metadata_repo}" "${metadata_padding}"
+} > "${USER_CONF_PATH}"
+assert_eq "Test 89: padded duplicate repo_path resolves bundle update" \
+  "update" "$(bash "${HELPER}" detect-mode)"
+out="$(bash "${HELPER}" show 2>&1)"
+assert_contains "Test 89: show resolves bundle through exact last repo_path" \
+  "bundle:       9.9.9" "${out}"
+teardown
+
+printf 'Test 90: invalid config diagnostics escape terminal controls\n'
+setup
+project_dir="${TEST_HOME}/diagnostic"$'\033'"[35m-project"
+mkdir -p "${project_dir}/.claude"
+printf 'model_tier=bad%s[31m-tier\n' $'\033' > "${USER_CONF_PATH}"
+printf 'gate_level=bad%s[32m-project\n' $'\033' \
+  > "${project_dir}/.claude/oh-my-claude.conf"
+out="$(cd "${project_dir}" \
+  && OMC_STALL_THRESHOLD="bad"$'\033'"[33m-env" \
+     bash "${HELPER}" show 2>&1)"
+assert_not_contains "Test 90: terminal ESC bytes never reach diagnostics" \
+  $'\033' "${out}"
+assert_contains "Test 90: escaped invalid project value remains diagnosable" \
+  "project gate_level=" "${out}"
+assert_contains "Test 90: escaped invalid environment remains diagnosable" \
+  "invalid OMC_STALL_THRESHOLD=" "${out}"
+assert_contains "Test 90: escaped invalid saved tier remains diagnosable" \
+  "saved model_tier=" "${out}"
+set +e
+direct_out="$(bash "${HELPER}" set user \
+  "gate_level=bad"$'\033'"[31m-direct" 2>&1)"
+direct_rc=$?
+set -e
+assert_eq "Test 90: direct invalid write exits 2" "2" "${direct_rc}"
+assert_not_contains "Test 90: direct-set diagnostic escapes terminal ESC" \
+  $'\033' "${direct_out}"
+assert_contains "Test 90: escaped direct-set value remains diagnosable" \
+  "gate_level" "${direct_out}"
+teardown
+
+printf 'Test 91: mutation writers preserve identity boundaries, modes, and the shared lock\n'
+setup
+conf_target="${TEST_HOME}/conf-target"
+printf 'gate_level=full\n' > "${conf_target}"
+ln -s "${conf_target}" "${USER_CONF_PATH}"
+set +e
+out="$(bash "${HELPER}" set user gate_level=basic 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 91: symlinked user conf is rejected" "1" "${rc}"
+assert_eq "Test 91: user conf symlink is not severed" "yes" \
+  "$([[ -L "${USER_CONF_PATH}" ]] && printf yes || printf no)"
+assert_file_has_line "Test 91: symlink target remains untouched" \
+  "${conf_target}" '^gate_level=full$'
+teardown
+
+setup
+mkdir "${USER_CONF_PATH}"
+set +e
+out="$(bash "${HELPER}" set user gate_level=basic 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 91: directory config leaf is rejected" "1" "${rc}"
+assert_eq "Test 91: directory config leaf remains a directory" "yes" \
+  "$([[ -d "${USER_CONF_PATH}" ]] && printf yes || printf no)"
+teardown
+
+setup
+printf 'gate_level=full\n' > "${USER_CONF_PATH}"
+chmod 640 "${USER_CONF_PATH}"
+settings_target="${TEST_HOME}/settings-target.json"
+printf '{"outputStyle":"custom-style"}\n' > "${settings_target}"
+ln -s "${settings_target}" "${TEST_HOME}/.claude/settings.json"
+set +e
+out="$(bash "${HELPER}" set user gate_level=basic \
+  output_style=executive 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 91: settings alias rejects the atomic batch" "1" "${rc}"
+assert_eq "Test 91: rolled-back config mode is preserved" "640" \
+  "$(file_mode "${USER_CONF_PATH}")"
+assert_file_has_line "Test 91: settings alias failure restores config bytes" \
+  "${USER_CONF_PATH}" '^gate_level=full$'
+assert_file_lacks_line "Test 91: failed style is never saved" \
+  "${USER_CONF_PATH}" '^output_style='
+assert_eq "Test 91: settings symlink is not severed" "yes" \
+  "$([[ -L "${TEST_HOME}/.claude/settings.json" ]] \
+    && printf yes || printf no)"
+assert_eq "Test 91: settings symlink target remains untouched" \
+  "custom-style" "$(jq -r '.outputStyle' "${settings_target}")"
+assert_contains "Test 91: settings alias failure is surfaced" \
+  "nothing changed" "${out}"
+teardown
+
+setup
+umask 022
+bash "${HELPER}" set user gate_level=basic >/dev/null
+assert_eq "Test 91: new user conf is private" "600" \
+  "$(file_mode "${USER_CONF_PATH}")"
+project_dir="${TEST_HOME}/parent-alias-project"
+mkdir -p "${project_dir}"
+ln -s "${TEST_HOME}/.claude" "${project_dir}/.claude"
+set +e
+out="$(cd "${project_dir}" \
+  && bash "${HELPER}" set project gate_level=full 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 91: symlinked project .claude parent is rejected" "1" "${rc}"
+assert_file_has_line "Test 91: parent alias cannot rewrite user conf" \
+  "${USER_CONF_PATH}" '^gate_level=basic$'
+teardown
+
+setup
+mkdir "${TEST_HOME}/.claude/.install.lock"
+printf '424242\n' > "${TEST_HOME}/.claude/.install.lock/pid"
+printf 'foreign-token\n' > "${TEST_HOME}/.claude/.install.lock/token"
+set +e
+out="$(OMC_TEST_CONFIG_LOCK_ATTEMPTS=1 bash "${HELPER}" set user \
+  gate_level=basic 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 91: contended shared operation lock fails closed" "1" "${rc}"
+assert_contains "Test 91: lock contention names exact lock" \
+  ".install.lock" "${out}"
+assert_eq "Test 91: foreign lock token is not removed" "foreign-token" \
+  "$(cat "${TEST_HOME}/.claude/.install.lock/token")"
+assert_eq "Test 91: contended mutation does not create conf" "no" \
+  "$([[ -e "${USER_CONF_PATH}" ]] && printf yes || printf no)"
+teardown
+
+setup
+mkdir "${TEST_HOME}/.claude/.install.lock"
+printf '424242\n' > "${TEST_HOME}/.claude/.install.lock/pid"
+printf '424242.1.2\0\n' > "${TEST_HOME}/.claude/.install.lock/token"
+nul_lock_token_before="$(cksum \
+  < "${TEST_HOME}/.claude/.install.lock/token")"
+set +e
+OMC_TEST_CONFIG_LOCK_ATTEMPTS=1 \
+  OMC_PARENT_OPERATION_LOCK_PID=424242 \
+  OMC_PARENT_OPERATION_LOCK_TOKEN=424242.1.2 \
+  bash "${HELPER}" recover-only >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "Test 91: NUL-normalized borrowed lock is rejected" "1" "${rc}"
+assert_eq "Test 91: malformed borrowed lock remains retained" "yes" \
+  "$([[ -d "${TEST_HOME}/.claude/.install.lock" ]] \
+    && printf yes || printf no)"
+assert_eq "Test 91: malformed borrowed token bytes remain exact" \
+  "${nul_lock_token_before}" \
+  "$(cksum < "${TEST_HOME}/.claude/.install.lock/token")"
+teardown
+
+setup
+lock="${TEST_HOME}/.claude/.install.lock"
+mkdir "${lock}"
+printf '424242\n' > "${lock}/pid"
+printf '424242.1.2\n' > "${lock}/token"
+lock_id="$(stat -f '%d:%i' "${lock}" 2>/dev/null \
+  || stat -c '%d:%i' "${lock}" 2>/dev/null)"
+printf 'v1\t%s\t424242\t424242.1.2\0\n' "${lock_id}" \
+  > "${lock}/owner-released"
+chmod 600 "${lock}/owner-released"
+nul_release_marker_before="$(cksum < "${lock}/owner-released")"
+set +e
+OMC_TEST_CONFIG_LOCK_ATTEMPTS=1 bash "${HELPER}" recover-only \
+  >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "Test 91: NUL-normalized release marker is rejected" "1" "${rc}"
+assert_eq "Test 91: malformed released generation is not reaped" "yes" \
+  "$([[ -f "${lock}/owner-released" && -f "${lock}/pid" \
+      && -f "${lock}/token" ]] && printf yes || printf no)"
+assert_eq "Test 91: malformed release-marker bytes remain exact" \
+  "${nul_release_marker_before}" "$(cksum < "${lock}/owner-released")"
+teardown
+
+printf 'Test 92: config/materialization transactions recover every crash boundary\n'
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\ngate_level=full\ncustom_row=keep\n' \
+  > "${USER_CONF_PATH}"
+printf '{"outputStyle":"custom-style","keep":true}\n' \
+  > "${TEST_HOME}/.claude/settings.json"
+chmod 640 "${USER_CONF_PATH}" "${TEST_HOME}/.claude/settings.json"
+agents_before="$(agent_tree_digest)"
+conf_before="$(cksum < "${USER_CONF_PATH}")"
+settings_before="$(cksum < "${TEST_HOME}/.claude/settings.json")"
+set +e
+out="$(OMC_TEST_CONFIG_FAIL_AFTER_SETTINGS=1 bash "${HELPER}" set user \
+  model_tier=quality gate_level=basic output_style=executive 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 92: injected post-settings failure exits nonzero" "1" "${rc}"
+assert_contains "Test 92: injected failure reports rollback" \
+  "rolling back the whole batch" "${out}"
+assert_eq "Test 92: graceful rollback restores all agents" \
+  "${agents_before}" "$(agent_tree_digest)"
+assert_eq "Test 92: graceful rollback restores config bytes" \
+  "${conf_before}" "$(cksum < "${USER_CONF_PATH}")"
+assert_eq "Test 92: graceful rollback restores settings bytes" \
+  "${settings_before}" "$(cksum < "${TEST_HOME}/.claude/settings.json")"
+assert_eq "Test 92: graceful rollback preserves config mode" "640" \
+  "$(file_mode "${USER_CONF_PATH}")"
+assert_eq "Test 92: graceful rollback preserves settings mode" "640" \
+  "$(file_mode "${TEST_HOME}/.claude/settings.json")"
+assert_eq "Test 92: graceful rollback retires parent WAL" "no" \
+  "$([[ -e "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+    && printf yes || printf no)"
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\ngate_level=full\n' > "${USER_CONF_PATH}"
+printf '{"outputStyle":"custom-style"}\n' \
+  > "${TEST_HOME}/.claude/settings.json"
+agents_before="$(agent_tree_digest)"
+conf_before="$(cksum < "${USER_CONF_PATH}")"
+settings_before="$(cksum < "${TEST_HOME}/.claude/settings.json")"
+ready="${TEST_HOME}/post-model.ready"
+release="${TEST_HOME}/post-model.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_POST_MODEL_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_POST_MODEL_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality output_style=executive \
+    >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e
+  wait "${txn_pid}" 2>/dev/null
+  set -e
+  if remove_killed_owner_lock "${txn_pid}" \
+      && OMC_SWITCH_SKIP_CONF_PERSIST=1 \
+        OMC_SWITCH_PARENT_TX_CAPABILITY=poisoned \
+        bash "${HELPER}" recover-only >/dev/null 2>&1; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: Test 92: killed parent transaction could not be recovered\n' >&2
+    fail=$((fail + 1))
+  fi
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: post-model SIGKILL barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+assert_eq "Test 92: SIGKILL rollback restores agents" \
+  "${agents_before}" "$(agent_tree_digest)"
+assert_eq "Test 92: SIGKILL rollback restores config" \
+  "${conf_before}" "$(cksum < "${USER_CONF_PATH}")"
+assert_eq "Test 92: SIGKILL rollback leaves settings untouched" \
+  "${settings_before}" "$(cksum < "${TEST_HOME}/.claude/settings.json")"
+assert_eq "Test 92: recover-only retires parent WAL" "no" \
+  "$([[ -e "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+    && printf yes || printf no)"
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+agents_before="$(agent_tree_digest)"
+conf_before="$(cksum < "${USER_CONF_PATH}")"
+ready="${TEST_HOME}/parent-stage.ready"
+release="${TEST_HOME}/parent-stage.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_WAL_STAGE_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_WAL_STAGE_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  remove_killed_owner_lock "${txn_pid}" || true
+  if bash "${HELPER}" recover-only >/dev/null 2>&1; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: Test 92: orphan parent stage blocked recover-only\n' >&2
+    fail=$((fail + 1))
+  fi
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: parent stage barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+assert_eq "Test 92: unpublished parent stage never changes agents" \
+  "${agents_before}" "$(agent_tree_digest)"
+assert_eq "Test 92: unpublished parent stage never changes config" \
+  "${conf_before}" "$(cksum < "${USER_CONF_PATH}")"
+assert_eq "Test 92: orphan parent stages are swept" "" \
+  "$(find "${TEST_HOME}/.claude" -maxdepth 1 \
+    -name '.omc-config-transaction.stage.*' -print -quit)"
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/parent-commit.ready"
+release="${TEST_HOME}/parent-commit.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_COMMIT_LINK_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_COMMIT_LINK_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  remove_killed_owner_lock "${txn_pid}" || true
+  if bash "${HELPER}" recover-only >/dev/null 2>&1; then
+    pass=$((pass + 1))
+  else
+    printf '  FAIL: Test 92: committed parent metadata could not retire\n' >&2
+    fail=$((fail + 1))
+  fi
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: parent commit-link barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+assert_file_has_line "Test 92: committed parent crash keeps final tier" \
+  "${USER_CONF_PATH}" '^model_tier=quality$'
+assert_eq "Test 92: committed parent crash keeps final agents" "opus" \
+  "$(installed_agent_model librarian)"
+assert_eq "Test 92: committed parent metadata is removed" "no" \
+  "$([[ -e "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+    && printf yes || printf no)"
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/parent-retired.ready"
+release="${TEST_HOME}/parent-retired.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_RETIRE_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_RETIRE_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  remove_killed_owner_lock "${txn_pid}" || true
+  bash "${HELPER}" recover-only >/dev/null 2>&1 || true
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+fi
+assert_file_has_line "Test 92: authorized retired crash keeps final config" \
+  "${USER_CONF_PATH}" '^model_tier=quality$'
+assert_eq "Test 92: authorized retired parent is swept" "" \
+  "$(find "${TEST_HOME}/.claude" -maxdepth 1 \
+    -name '.omc-config-retired.*' -print -quit)"
+mkdir -m 700 "${TEST_HOME}/.claude/.omc-config-retired.EMPTY01"
+bash "${HELPER}" recover-only >/dev/null 2>&1
+assert_eq "Test 92: empty retired parent crash window is swept" "no" \
+  "$([[ -e "${TEST_HOME}/.claude/.omc-config-retired.EMPTY01" ]] \
+    && printf yes || printf no)"
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/corrupt-parent.ready"
+release="${TEST_HOME}/corrupt-parent.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_POST_MODEL_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_POST_MODEL_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  remove_killed_owner_lock "${txn_pid}" || true
+  agents_current="$(agent_tree_digest)"
+  conf_current="$(cksum < "${USER_CONF_PATH}")"
+  cp -p "${TEST_HOME}/.claude/.omc-config-transaction/version" \
+    "${TEST_HOME}/config-version.saved"
+  printf '1\0\n' > "${TEST_HOME}/.claude/.omc-config-transaction/version"
+  set +e
+  bash "${HELPER}" recover-only >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "Test 92: raw-NUL parent WAL authority fails closed" "1" "${rc}"
+  assert_eq "Test 92: raw-NUL parent WAL does not change agents" \
+    "${agents_current}" "$(agent_tree_digest)"
+  assert_eq "Test 92: raw-NUL parent WAL does not change config" \
+    "${conf_current}" "$(cksum < "${USER_CONF_PATH}")"
+  assert_eq "Test 92: raw-NUL parent WAL remains retained" "yes" \
+    "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+      && printf yes || printf no)"
+  cp -p "${TEST_HOME}/config-version.saved" \
+    "${TEST_HOME}/.claude/.omc-config-transaction/version"
+  printf '1\\u0000\n' > "${TEST_HOME}/.claude/.omc-config-transaction/version"
+  set +e
+  bash "${HELPER}" recover-only >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "Test 92: escaped-NUL parent WAL authority fails closed" "1" "${rc}"
+  assert_eq "Test 92: escaped-NUL parent WAL remains retained" "yes" \
+    "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+      && printf yes || printf no)"
+  cp -p "${TEST_HOME}/config-version.saved" \
+    "${TEST_HOME}/.claude/.omc-config-transaction/version"
+  printf '1\n\n' > "${TEST_HOME}/.claude/.omc-config-transaction/version"
+  set +e
+  bash "${HELPER}" recover-only >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "Test 92: extra parent WAL version record fails closed" "1" "${rc}"
+  assert_eq "Test 92: extra parent WAL version record remains retained" "yes" \
+    "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+      && printf yes || printf no)"
+  cp -p "${TEST_HOME}/config-version.saved" \
+    "${TEST_HOME}/.claude/.omc-config-transaction/version"
+  cp -p "${TEST_HOME}/.claude/.omc-config-transaction/agents.tsv" \
+    "${TEST_HOME}/config-agents.saved"
+  printf '\n' >> "${TEST_HOME}/.claude/.omc-config-transaction/agents.tsv"
+  set +e
+  bash "${HELPER}" recover-only >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "Test 92: trailing blank parent TSV record fails closed" "1" "${rc}"
+  assert_eq "Test 92: trailing blank parent TSV does not change agents" \
+    "${agents_current}" "$(agent_tree_digest)"
+  assert_eq "Test 92: trailing blank parent TSV does not change config" \
+    "${conf_current}" "$(cksum < "${USER_CONF_PATH}")"
+  assert_eq "Test 92: trailing blank parent TSV remains retained" "yes" \
+    "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+      && printf yes || printf no)"
+  cp -p "${TEST_HOME}/config-agents.saved" \
+    "${TEST_HOME}/.claude/.omc-config-transaction/agents.tsv"
+  printf 'truncated-row' \
+    >> "${TEST_HOME}/.claude/.omc-config-transaction/agent-intents.tsv"
+  set +e
+  out="$(bash "${HELPER}" recover-only 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "Test 92: truncated parent WAL fails closed" "1" "${rc}"
+  assert_eq "Test 92: malformed WAL does not change agents" \
+    "${agents_current}" "$(agent_tree_digest)"
+  assert_eq "Test 92: malformed WAL does not change config" \
+    "${conf_current}" "$(cksum < "${USER_CONF_PATH}")"
+  assert_eq "Test 92: malformed WAL is retained for inspection" "yes" \
+    "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+      && printf yes || printf no)"
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: corrupt-parent setup barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/parent-final-race.ready"
+release="${TEST_HOME}/parent-final-race.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_POST_MODEL_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_POST_MODEL_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  printf '\n# foreign parent-generation edit\n' \
+    >> "${TEST_HOME}/.claude/agents/librarian.md"
+  : > "${release}"
+  set +e
+  wait "${txn_pid}" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "Test 92: parent final-generation race rejects commit" "1" "${rc}"
+  assert_file_has_line "Test 92: foreign final generation is not erased" \
+    "${TEST_HOME}/.claude/agents/librarian.md" \
+    '^# foreign parent-generation edit$'
+  assert_eq "Test 92: parent WAL remains after foreign-generation conflict" \
+    "yes" \
+    "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+      && printf yes || printf no)"
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: parent final-generation barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+setup
+install_real_model_switch_fixture
+mkdir -m 700 \
+  "${TEST_HOME}/.claude/.switch-tier-transaction.stage.MANUAL1"
+bash "${HELPER}" recover-only >/dev/null 2>&1
+assert_eq "Test 92: parent recover-only sweeps child orphan metadata" "no" \
+  "$([[ -e "${TEST_HOME}/.claude/.switch-tier-transaction.stage.MANUAL1" ]] \
+    && printf yes || printf no)"
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/parent-recovery-race-crash.ready"
+release="${TEST_HOME}/parent-recovery-race-crash.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_POST_MODEL_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_POST_MODEL_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  remove_killed_owner_lock "${txn_pid}" || true
+  recover_ready="${TEST_HOME}/parent-recovery-race.ready"
+  recover_release="${TEST_HOME}/parent-recovery-race.release"
+  OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+    OMC_TEST_CONFIG_RECOVERY_READY_FILE="${recover_ready}" \
+    OMC_TEST_CONFIG_RECOVERY_RELEASE_FILE="${recover_release}" \
+    bash "${HELPER}" recover-only >/dev/null 2>&1 &
+  recover_pid=$!
+  if wait_for_file "${recover_ready}"; then
+    printf '\n# foreign parent recovery edit\n' \
+      >> "${TEST_HOME}/.claude/agents/librarian.md"
+    : > "${recover_release}"
+    set +e
+    wait "${recover_pid}" 2>/dev/null
+    rc=$?
+    set -e
+    assert_eq "Test 92: parent recovery race rejects WAL retirement" "1" \
+      "${rc}"
+    assert_file_has_line "Test 92: parent recovery preserves foreign bytes" \
+      "${TEST_HOME}/.claude/agents/librarian.md" \
+      '^# foreign parent recovery edit$'
+    assert_eq "Test 92: parent recovery race retains WAL" "yes" \
+      "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+        && printf yes || printf no)"
+  else
+    kill -9 "${recover_pid}" 2>/dev/null || true
+    set +e; wait "${recover_pid}" 2>/dev/null; set -e
+    printf '  FAIL: Test 92: parent recovery final barrier was never reached\n' >&2
+    fail=$((fail + 1))
+  fi
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: parent recovery-race setup barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/parent-dir-race-crash.ready"
+release="${TEST_HOME}/parent-dir-race-crash.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_POST_MODEL_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_POST_MODEL_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  remove_killed_owner_lock "${txn_pid}" || true
+  recover_ready="${TEST_HOME}/parent-dir-race.ready"
+  recover_release="${TEST_HOME}/parent-dir-race.release"
+  OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+    OMC_TEST_CONFIG_RECOVERY_READY_FILE="${recover_ready}" \
+    OMC_TEST_CONFIG_RECOVERY_RELEASE_FILE="${recover_release}" \
+    bash "${HELPER}" recover-only >/dev/null 2>&1 &
+  recover_pid=$!
+  if wait_for_file "${recover_ready}"; then
+    mv "${TEST_HOME}/.claude/agents" \
+      "${TEST_HOME}/agents-original-generation"
+    cp -R "${TEST_HOME}/agents-original-generation" \
+      "${TEST_HOME}/.claude/agents"
+    : > "${recover_release}"
+    set +e
+    wait "${recover_pid}" 2>/dev/null
+    rc=$?
+    set -e
+    assert_eq "Test 92: parent rejects agents-directory replacement" "1" \
+      "${rc}"
+    assert_eq "Test 92: directory replacement retains parent WAL" "yes" \
+      "$([[ -d "${TEST_HOME}/.claude/.omc-config-transaction" ]] \
+        && printf yes || printf no)"
+  else
+    kill -9 "${recover_pid}" 2>/dev/null || true
+    set +e; wait "${recover_pid}" 2>/dev/null; set -e
+    printf '  FAIL: Test 92: parent directory-race barrier was never reached\n' >&2
+    fail=$((fail + 1))
+  fi
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: parent directory-race setup barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+setup
+install_real_model_switch_fixture
+printf 'model_tier=balanced\n' > "${USER_CONF_PATH}"
+ready="${TEST_HOME}/parent-retirement-replacement.ready"
+release="${TEST_HOME}/parent-retirement-replacement.release"
+OMC_TEST_CONFIG_BARRIER_ENABLE=1 \
+  OMC_TEST_CONFIG_RETIRE_READY_FILE="${ready}" \
+  OMC_TEST_CONFIG_RETIRE_RELEASE_FILE="${release}" \
+  bash "${HELPER}" set user model_tier=quality >/dev/null 2>&1 &
+txn_pid=$!
+if wait_for_file "${ready}"; then
+  retired_parent="$(cat "${ready}")"
+  mv "${retired_parent}/transaction" \
+    "${retired_parent}/original-transaction"
+  mkdir -m 700 "${retired_parent}/transaction"
+  printf 'do-not-delete\n' > "${retired_parent}/transaction/sentinel"
+  : > "${release}"
+  set +e
+  wait "${txn_pid}" 2>/dev/null
+  rc=$?
+  set -e
+  assert_eq "Test 92: parent retirement replacement exits nonzero" "1" \
+    "${rc}"
+  assert_file_has_line \
+    "Test 92: parent retirement does not delete replacement tree" \
+    "${retired_parent}/transaction/sentinel" '^do-not-delete$'
+  assert_eq "Test 92: original retired parent WAL remains recoverable" "yes" \
+    "$([[ -d "${retired_parent}/original-transaction" ]] \
+      && printf yes || printf no)"
+else
+  kill -9 "${txn_pid}" 2>/dev/null || true
+  set +e; wait "${txn_pid}" 2>/dev/null; set -e
+  printf '  FAIL: Test 92: parent retirement replacement barrier was never reached\n' >&2
+  fail=$((fail + 1))
+fi
+teardown
+
+setup
+install_real_model_switch_fixture
+mv "${TEST_HOME}/.claude/agents" "${TEST_HOME}/outside-agents"
+ln -s "${TEST_HOME}/outside-agents" "${TEST_HOME}/.claude/agents"
+outside_before="$(cksum < "${TEST_HOME}/outside-agents/librarian.md")"
+set +e
+out="$(bash "${HELPER}" set user model_tier=quality 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 92: parent rejects symlinked agents directory" "1" "${rc}"
+assert_eq "Test 92: symlinked agents referent is unchanged" \
+  "${outside_before}" "$(cksum < "${TEST_HOME}/outside-agents/librarian.md")"
+assert_eq "Test 92: rejected parent does not save model tier" "no" \
+  "$([[ -e "${USER_CONF_PATH}" ]] && printf yes || printf no)"
+teardown
+
+setup
+outside_wal="${TEST_HOME}/outside-wal"
+mkdir "${outside_wal}"
+printf 'keep\n' > "${outside_wal}/sentinel"
+ln -s "${outside_wal}" "${TEST_HOME}/.claude/.omc-config-transaction"
+set +e
+out="$(bash "${HELPER}" recover-only 2>&1)"
+rc=$?
+set -e
+assert_eq "Test 92: symlinked parent WAL fails closed" "1" "${rc}"
+assert_file_has_line "Test 92: symlinked WAL referent is untouched" \
+  "${outside_wal}/sentinel" '^keep$'
+teardown
 
 # --- Summary ---
 printf '\n=== test-omc-config: %d passed, %d failed ===\n' "${pass}" "${fail}"

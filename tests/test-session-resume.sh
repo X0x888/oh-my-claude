@@ -96,6 +96,14 @@ run_resume() {
     > "${_resume_output_file}" 2>/dev/null || _resume_exit=$?
 }
 
+# Lifecycle identity is path authority. A decoded NUL must be rejected while
+# the value is still JSON rather than stripped into a valid target ID by Bash.
+nul_hook_target="nul-hook-target-099"
+run_resume "$(jq -nc --arg sid "${nul_hook_target}" \
+  '{session_id:($sid + "\u0000"),source:"resume",transcript_path:"/transcripts/source.jsonl"}')"
+assert_eq "input authority: NUL-bearing session id is ignored" "0" \
+  "$([[ -e "${TEST_STATE_ROOT}/${nul_hook_target}" ]] && printf 1 || printf 0)"
+
 resume_output() {
   cat "${_resume_output_file}" 2>/dev/null || true
 }
@@ -354,6 +362,34 @@ context="$(jq -r '.hookSpecificOutput.additionalContext // empty' <<<"${output}"
 assert_contains "context has writing domain" "Preserved task domain: writing" "${context}"
 assert_contains "context has writing advice" "editor-critic" "${context}"
 
+# Legacy text files are parsed as persisted authority before Bash can discard
+# NUL bytes. A poisoned enum must leave the source byte-exact and unfenced.
+legacy_nul_source="legacy-nul-source-401"
+legacy_nul_target="legacy-nul-target-402"
+setup_legacy_source_session "${legacy_nul_source}"
+printf 'ultrawork\0' \
+  > "${TEST_STATE_ROOT}/${legacy_nul_source}/workflow_mode"
+legacy_nul_before="$(od -An -tx1 \
+  "${TEST_STATE_ROOT}/${legacy_nul_source}/workflow_mode" \
+  | tr -d '[:space:]')"
+run_resume "{\"session_id\":\"${legacy_nul_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${legacy_nul_source}.jsonl\"}"
+legacy_nul_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"$(resume_output)")"
+assert_eq "legacy NUL source: hook fails closed without crashing" "0" \
+  "${_resume_exit}"
+assert_contains "legacy NUL source: rejection is explicit" \
+  "Resume source state is invalid" "${legacy_nul_context}"
+assert_eq "legacy NUL source: poisoned bytes remain exact" \
+  "${legacy_nul_before}" \
+  "$(od -An -tx1 "${TEST_STATE_ROOT}/${legacy_nul_source}/workflow_mode" \
+    | tr -d '[:space:]')"
+assert_eq "legacy NUL source: no ownership fence is published" "0" \
+  "$([[ -e "${TEST_STATE_ROOT}/${legacy_nul_source}/session_state.json" ]] \
+    && printf 1 || printf 0)"
+assert_eq "legacy NUL source: target inherits no normalized mode" "" \
+  "$(jq -r '.workflow_mode // empty' \
+    "${TEST_STATE_ROOT}/${legacy_nul_target}/session_state.json")"
+
 # ------------------------------------------------------------------
 # Test 5: Resume with missing source directory — no state copied
 # ------------------------------------------------------------------
@@ -417,6 +453,65 @@ for malformed_key in timing.jsonl findings.json gate_events.jsonl; do
     "${malformed_source_dir}/${malformed_key}"
 done
 
+# A syntactically valid consolidated object may still contain decoded NUL.
+# It must not become the target's sole authority while the source is fenced.
+nul_state_source="nul-state-source-550"
+nul_state_target="nul-state-target-551"
+nul_state_source_dir="${TEST_STATE_ROOT}/${nul_state_source}"
+nul_state_target_dir="${TEST_STATE_ROOT}/${nul_state_target}"
+mkdir -p "${nul_state_source_dir}"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork\u0000","current_objective":"must remain at source"}' \
+  > "${nul_state_source_dir}/session_state.json"
+printf '%s\n' '{"kind":"token_checkpoint","ts":1,"main_out":99}' \
+  > "${nul_state_source_dir}/timing.jsonl"
+run_resume "{\"session_id\":\"${nul_state_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${nul_state_source}.jsonl\"}"
+nul_state_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"$(resume_output)")"
+assert_eq "decoded-NUL state: hook fails closed without crashing" "0" \
+  "${_resume_exit}"
+assert_contains "decoded-NUL state: rejection is explicit" \
+  "Resume source state is invalid" "${nul_state_context}"
+assert_eq "decoded-NUL state: source remains unfenced" "false" \
+  "$(jq -r 'has("resume_transferred_to")' \
+    "${nul_state_source_dir}/session_state.json")"
+assert_eq "decoded-NUL state: target inherits no objective" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${nul_state_target_dir}/session_state.json")"
+assert_eq "decoded-NUL state: cumulative sidecar is not copied" "0" \
+  "$([[ -e "${nul_state_target_dir}/timing.jsonl" ]] && printf 1 || printf 0)"
+
+# jq also accepts a literal NUL adjacent to some scalar tokens. The source
+# envelope must be judged byte-for-byte before such a value can be copied or
+# used by the ownership transaction.
+raw_nul_state_source="raw-nul-state-source-550a"
+raw_nul_state_target="raw-nul-state-target-551a"
+raw_nul_state_source_dir="${TEST_STATE_ROOT}/${raw_nul_state_source}"
+raw_nul_state_target_dir="${TEST_STATE_ROOT}/${raw_nul_state_target}"
+mkdir -p "${raw_nul_state_source_dir}"
+printf '{"workflow_mode":"ultrawork","review_cycle_id":1\000,"current_objective":"must remain at source"}\n' \
+  >"${raw_nul_state_source_dir}/session_state.json"
+printf '%s\n' '{"kind":"token_checkpoint","ts":1,"main_out":101}' \
+  >"${raw_nul_state_source_dir}/timing.jsonl"
+raw_nul_state_before="$(shasum -a 256 \
+  "${raw_nul_state_source_dir}/session_state.json" | awk '{print $1}')"
+run_resume "{\"session_id\":\"${raw_nul_state_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${raw_nul_state_source}.jsonl\"}"
+raw_nul_state_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"$(resume_output)")"
+assert_eq "raw-NUL state: hook fails closed without crashing" "0" \
+  "${_resume_exit}"
+assert_contains "raw-NUL state: rejection is explicit" \
+  "Resume source state is invalid" "${raw_nul_state_context}"
+assert_eq "raw-NUL state: source bytes remain unfenced" \
+  "${raw_nul_state_before}" \
+  "$(shasum -a 256 "${raw_nul_state_source_dir}/session_state.json" \
+    | awk '{print $1}')"
+assert_eq "raw-NUL state: target inherits no objective" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${raw_nul_state_target_dir}/session_state.json")"
+assert_eq "raw-NUL state: cumulative sidecar is not copied" "0" \
+  "$([[ -e "${raw_nul_state_target_dir}/timing.jsonl" ]] && printf 1 || printf 0)"
+
 # ------------------------------------------------------------------
 # Test 5c: source symlinks cannot be laundered into regular target authority.
 # Reject both the consolidated state itself and any separately copied causal
@@ -476,11 +571,153 @@ assert_eq "symlinked sidecar: target inherits no objective" "" \
 assert_eq "symlinked sidecar: target has no laundered contract" "0" \
   "$([[ -e "${symlink_sidecar_target_dir}/quality_contract.json" ]] && printf 1 || printf 0)"
 
+printf '\nResume rejects a source with interrupted Agent admission:\n'
+dispatch_source="dispatch-source-556a"
+dispatch_target="dispatch-target-557a"
+dispatch_source_dir="${TEST_STATE_ROOT}/${dispatch_source}"
+dispatch_target_dir="${TEST_STATE_ROOT}/${dispatch_target}"
+mkdir -p "${dispatch_source_dir}/.dispatch-txn.interrupted"
+touch "${dispatch_source_dir}/.dispatch-txn.interrupted/.ready"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"partial Agent admission must not transfer","review_cycle_id":"4"}' \
+  >"${dispatch_source_dir}/session_state.json"
+printf '%s\n' '{"agent_type":"quality-reviewer","partial":true}' \
+  >"${dispatch_source_dir}/pending_agents.jsonl"
+printf '%s\n' 'partial dispatch summary must not transfer' \
+  >"${dispatch_source_dir}/subagent_summaries.jsonl"
+dispatch_source_state_before="$(<"${dispatch_source_dir}/session_state.json")"
+
+run_resume "{\"session_id\":\"${dispatch_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${dispatch_source}.jsonl\"}"
+dispatch_source_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // empty' <<<"$(resume_output)")"
+assert_eq "interrupted dispatch source: hook recovers cleanly" \
+  "0" "${_resume_exit}"
+assert_contains "interrupted dispatch source: ownership conflict is explicit" \
+  "Resume source Agent admission is interrupted" \
+  "${dispatch_source_context}"
+assert_eq "interrupted dispatch source: target inherits no objective" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${dispatch_target_dir}/session_state.json")"
+assert_eq "interrupted dispatch source: target copies no summary" "0" \
+  "$([[ -e "${dispatch_target_dir}/subagent_summaries.jsonl" ]] \
+    && printf 1 || printf 0)"
+assert_eq "interrupted dispatch source: source state remains byte-stable" \
+  "${dispatch_source_state_before}" \
+  "$(<"${dispatch_source_dir}/session_state.json")"
+assert_eq "interrupted dispatch source: armed journal remains" "1" \
+  "$([[ -e "${dispatch_source_dir}/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+
+printf '\nResume rechecks a source dispatch journal at the ownership commit:\n'
+dispatch_race_source="dispatch-race-source-554"
+dispatch_race_target="dispatch-race-target-555"
+dispatch_race_source_dir="${TEST_STATE_ROOT}/${dispatch_race_source}"
+dispatch_race_target_dir="${TEST_STATE_ROOT}/${dispatch_race_target}"
+setup_source_session "${dispatch_race_source}"
+dispatch_race_source_before="$(<"${dispatch_race_source_dir}/session_state.json")"
+dispatch_race_ready="${TEST_TMP}/dispatch-race.ready"
+dispatch_race_release="${TEST_TMP}/dispatch-race.release"
+dispatch_race_output="${TEST_TMP}/dispatch-race.output"
+printf '%s' "{\"session_id\":\"${dispatch_race_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${dispatch_race_source}.jsonl\"}" \
+  | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+      OMC_TEST_RESUME_TRANSFER_READY_FILE="${dispatch_race_ready}" \
+      OMC_TEST_RESUME_TRANSFER_RELEASE_FILE="${dispatch_race_release}" \
+      bash "${RESUME_SCRIPT}" >"${dispatch_race_output}" 2>/dev/null &
+dispatch_race_pid=$!
+for _dispatch_race_wait in $(seq 1 500); do
+  [[ -f "${dispatch_race_ready}" ]] && break
+  sleep 0.02
+done
+assert_eq "dispatch journal race: copy reaches final source fence" "1" \
+  "$([[ -f "${dispatch_race_ready}" ]] && printf 1 || printf 0)"
+mkdir "${dispatch_race_source_dir}/.dispatch-txn.interrupted"
+touch "${dispatch_race_source_dir}/.dispatch-txn.interrupted/.ready"
+touch "${dispatch_race_release}"
+dispatch_race_rc=0
+wait "${dispatch_race_pid}" || dispatch_race_rc=$?
+dispatch_race_context="$(jq -r \
+  '.hookSpecificOutput.additionalContext // empty' \
+  <"${dispatch_race_output}")"
+assert_eq "dispatch journal race: hook fails closed without crashing" \
+  "0" "${dispatch_race_rc}"
+assert_contains "dispatch journal race: ownership failure is explicit" \
+  "source session remains authoritative" "${dispatch_race_context}"
+assert_eq "dispatch journal race: speculative target objective is erased" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${dispatch_race_target_dir}/session_state.json")"
+assert_eq "dispatch journal race: speculative target summary is erased" "0" \
+  "$([[ -e "${dispatch_race_target_dir}/subagent_summaries.jsonl" ]] \
+    && printf 1 || printf 0)"
+assert_eq "dispatch journal race: source state remains byte-stable" \
+  "${dispatch_race_source_before}" \
+  "$(<"${dispatch_race_source_dir}/session_state.json")"
+assert_eq "dispatch journal race: armed source journal remains" "1" \
+  "$([[ -e "${dispatch_race_source_dir}/.dispatch-txn.interrupted/.ready" ]] \
+    && printf 1 || printf 0)"
+
+printf '\nResume rejects a source with an active planner WAL:\n'
+active_plan_source="active-plan-source-556"
+active_plan_target="active-plan-target-557"
+active_plan_source_dir="${TEST_STATE_ROOT}/${active_plan_source}"
+active_plan_target_dir="${TEST_STATE_ROOT}/${active_plan_target}"
+mkdir -p "${active_plan_source_dir}/.plan-txn.active"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"provisional mixed plan must not transfer","plan_revision":"9"}' \
+  >"${active_plan_source_dir}/session_state.json"
+printf '%s\n' '# provisional generation' \
+  >"${active_plan_source_dir}/current_plan.md"
+printf '%s\n' '{"schema_version":1,"status":"prepared"}' \
+  >"${active_plan_source_dir}/.plan-txn.active/.ready"
+
+run_resume "{\"session_id\":\"${active_plan_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${active_plan_source}.jsonl\"}"
+active_plan_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"$(resume_output)")"
+assert_eq "active planner WAL: hook recovers cleanly" "0" "${_resume_exit}"
+assert_contains "active planner WAL: recovery is explicit" \
+  "Resume source publication is not fully settled" "${active_plan_context}"
+assert_eq "active planner WAL: target inherits no mixed objective" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${active_plan_target_dir}/session_state.json")"
+assert_eq "active planner WAL: target copies no provisional plan" "0" \
+  "$([[ -e "${active_plan_target_dir}/current_plan.md" ]] && printf 1 || printf 0)"
+assert_eq "active planner WAL: source journal remains recoverable" "1" \
+  "$([[ -d "${active_plan_source_dir}/.plan-txn.active" ]] && printf 1 || printf 0)"
+
+printf '\nResume rejects a source with an active reviewer WAL:\n'
+active_reviewer_source="active-reviewer-source-558"
+active_reviewer_target="active-reviewer-target-559"
+active_reviewer_source_dir="${TEST_STATE_ROOT}/${active_reviewer_source}"
+active_reviewer_target_dir="${TEST_STATE_ROOT}/${active_reviewer_target}"
+mkdir -p "${active_reviewer_source_dir}/.reviewer-transaction.wal"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"provisional reviewer generation must not transfer","dim_code_quality_verdict":"CLEAN"}' \
+  >"${active_reviewer_source_dir}/session_state.json"
+printf '%s\n' '{"criterion_id":"Q-001","result":"passed"}' \
+  >"${active_reviewer_source_dir}/quality_evidence.jsonl"
+printf '%s\n' '{"_v":1,"status":"prepared"}' \
+  >"${active_reviewer_source_dir}/.reviewer-transaction.wal/manifest.json"
+
+run_resume "{\"session_id\":\"${active_reviewer_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${active_reviewer_source}.jsonl\"}"
+active_reviewer_context="$(jq -r '.hookSpecificOutput.additionalContext // empty' \
+  <<<"$(resume_output)")"
+assert_eq "active reviewer WAL: hook recovers cleanly" "0" "${_resume_exit}"
+assert_contains "active reviewer WAL: recovery is explicit" \
+  "Resume source publication is not fully settled" "${active_reviewer_context}"
+assert_eq "active reviewer WAL: target inherits no mixed objective" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${active_reviewer_target_dir}/session_state.json")"
+assert_eq "active reviewer WAL: target copies no provisional evidence" "0" \
+  "$([[ -e "${active_reviewer_target_dir}/quality_evidence.jsonl" ]] \
+    && printf 1 || printf 0)"
+assert_eq "active reviewer WAL: source journal remains recoverable" "1" \
+  "$([[ -d "${active_reviewer_source_dir}/.reviewer-transaction.wal" ]] \
+    && printf 1 || printf 0)"
+
 # ------------------------------------------------------------------
 # Test 5d: a deterministic mid-copy failure rolls back every speculative
-# target surface before the nonzero hook exit.  PATH injects a cp wrapper that
-# fails only on timing.jsonl, after consolidated state and an earlier ledger
-# have already copied.
+# target surface before the nonzero hook exit. A narrow test-only fault fails
+# only on timing.jsonl, after consolidated state and an earlier ledger have
+# already copied; hook observer PATH remains pinned and cannot be shimmed.
 # ------------------------------------------------------------------
 printf '\nResume mid-copy transaction rollback:\n'
 
@@ -500,20 +737,10 @@ printf '{"agent_type":"quality-reviewer","message":"copied before failure"}\n' \
   > "${midcopy_source_dir}/subagent_summaries.jsonl"
 printf '{"kind":"token_checkpoint","ts":1,"prompt_seq":1,"main_out":56}\n' \
   > "${midcopy_source_dir}/timing.jsonl"
-midcopy_fakebin="${TEST_TMP}/midcopy-fakebin"
-mkdir -p "${midcopy_fakebin}"
-cat > "${midcopy_fakebin}/cp" <<'SH'
-#!/usr/bin/env sh
-case "${1:-}" in
-  */timing.jsonl) exit 73 ;;
-esac
-exec "${OMC_TEST_REAL_CP:?}" "$@"
-SH
-chmod +x "${midcopy_fakebin}/cp"
 midcopy_rc=0
 printf '%s' "{\"session_id\":\"${midcopy_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${midcopy_source}.jsonl\"}" \
   | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
-      OMC_TEST_REAL_CP="$(command -v cp)" PATH="${midcopy_fakebin}:${PATH}" \
+      OMC_TEST_RESUME_COPY_FAIL_KEY="timing.jsonl" \
       bash "${RESUME_SCRIPT}" >/dev/null 2>&1 || midcopy_rc=$?
 assert_eq "mid-copy failure: hook exits nonzero" "1" \
   "$(( midcopy_rc != 0 ? 1 : 0 ))"
@@ -648,6 +875,24 @@ assert_eq "Wave3: first handoff persists durable accounting ancestry" \
 assert_eq "Wave3: durable accounting ancestry is versioned" "1" \
   "$(jq -r '.resume_ancestry_version // 0' "${target_state}")"
 
+# Ancestry is later reused as session/path authority. NUL normalization must
+# not turn a malformed artifact origin into a trusted predecessor identity.
+nul_chain_source="chain-nul-source-803"
+nul_chain_target="chain-nul-target-804"
+nul_chain_source_dir="${TEST_STATE_ROOT}/${nul_chain_source}"
+mkdir -p "${nul_chain_source_dir}"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"invalid ancestry"}' \
+  >"${nul_chain_source_dir}/session_state.json"
+jq -nc --arg source "${nul_chain_source}" '
+  {schema_version:1,session_id:$source,rate_limited:true,
+   origin_session_id:("forged-origin" + "\u0000"),origin_chain_depth:1}
+' >"${nul_chain_source_dir}/resume_request.json"
+run_resume "{\"session_id\":\"${nul_chain_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${nul_chain_source}.jsonl\"}"
+assert_eq "Wave3: NUL-bearing ancestry is not imported" "" \
+  "$(jq -r '.origin_session_id // empty' \
+    "${TEST_STATE_ROOT}/${nul_chain_target}/session_state.json")"
+
 # A second real handoff carries the prior ancestry forward and appends its
 # immediate source. This is the evidence timing dedupe retains after A's
 # dormant state directory expires.
@@ -757,6 +1002,359 @@ assert_eq "economics: rejected fork does not copy cumulative timing" "0" \
 assert_eq "economics: original ownership fence remains stable" "${econ_target}" \
   "$(jq -r '.resume_transferred_to // empty' "${econ_source_dir}/session_state.json")"
 
+# Internal resume entry is an authorization path, not a stale-lock liveness
+# check. A same-PID canonical token must therefore be rejected when it is
+# legacy/PID-only or when its recorded birth cannot be observed. The probe
+# shell constructs its own token before `exec`, so the script sees the exact
+# same PID; reaching the body seam would demonstrate the permissive fallback.
+_run_internal_birth_probe() {
+  local label="$1" source_id="$2" target_id="$3" birth="$4"
+  local birth_mode="$5"
+  local probe_lock="${TEST_STATE_ROOT}.resume-init-locks/${target_id}.lock"
+  local probe_claim="${probe_lock}.owner.claim.${label}"
+  local probe_ready="${TEST_TMP}/${label}.ready"
+  local probe_release="${TEST_TMP}/${label}.release"
+  local probe_continued="${TEST_TMP}/${label}.continued"
+  local probe_seam="${TEST_TMP}/${label}.birth.tsv"
+  local probe_err="${TEST_TMP}/${label}.err"
+  local probe_json
+  probe_json="{\"session_id\":\"${target_id}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${source_id}.jsonl\"}"
+  : >"${probe_release}"
+  _internal_birth_probe_rc=0
+  HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+      OMC_PROBE_LOCK="${probe_lock}" \
+      OMC_PROBE_CLAIM="${probe_claim}" \
+      OMC_PROBE_BIRTH="${birth}" \
+      OMC_PROBE_BIRTH_MODE="${birth_mode}" \
+      OMC_PROBE_SEAM="${probe_seam}" \
+      OMC_PROBE_RESUME_SCRIPT="${RESUME_SCRIPT}" \
+      OMC_PROBE_JSON="${probe_json}" \
+      OMC_TEST_RESUME_INIT_BODY_READY_FILE="${probe_ready}" \
+      OMC_TEST_RESUME_INIT_BODY_RELEASE_FILE="${probe_release}" \
+      OMC_TEST_RESUME_INIT_BODY_CONTINUED_FILE="${probe_continued}" \
+      bash -c '
+        set -euo pipefail
+        mkdir -p "${OMC_PROBE_LOCK%/*}" "${OMC_PROBE_LOCK}"
+        token="$$:${OMC_PROBE_CLAIM##*/}:11:${OMC_PROBE_BIRTH}"
+        printf "%s\n" "${token}" >"${OMC_PROBE_CLAIM}"
+        ln "${OMC_PROBE_CLAIM}" "${OMC_PROBE_LOCK}.owner"
+        printf "%s\n" "$$" >"${OMC_PROBE_LOCK}/holder.pid"
+        if [[ "${OMC_PROBE_BIRTH_MODE}" != "legacy" ]]; then
+          if [[ "${OMC_PROBE_BIRTH_MODE}" == "unavailable" ]]; then
+            printf "%s\tunavailable\n" "$$" >"${OMC_PROBE_SEAM}"
+          else
+            printf "%s\t%s\n" "$$" "${OMC_PROBE_BIRTH}" \
+              >"${OMC_PROBE_SEAM}"
+          fi
+          export OMC_TEST_PROCESS_BIRTH_IDENTITY_FILE="${OMC_PROBE_SEAM}"
+        fi
+        case "${OMC_PROBE_BIRTH_MODE}" in
+          owner-nul) printf "\0" >>"${OMC_PROBE_LOCK}.owner" ;;
+          owner-blank) printf "\n" >>"${OMC_PROBE_LOCK}.owner" ;;
+        esac
+        export _OMC_RESUME_INIT_LOCK_HELD_INTERNAL=1
+        export _OMC_RESUME_INIT_OWNER_TOKEN="${token}"
+        exec bash "${OMC_PROBE_RESUME_SCRIPT}" <<<"${OMC_PROBE_JSON}"
+      ' >/dev/null 2>"${probe_err}" || _internal_birth_probe_rc=$?
+  _internal_birth_probe_entered="$([[ -e "${probe_ready}" ]] \
+    && printf yes || printf no)"
+  _internal_birth_probe_target_created="$([[ -e "${TEST_STATE_ROOT}/${target_id}" ]] \
+    && printf yes || printf no)"
+  rm -f "${probe_lock}.owner" "${probe_claim}" \
+    "${probe_lock}/holder.pid" "${probe_ready}" "${probe_release}" \
+    "${probe_continued}" "${probe_seam}" "${probe_err}"
+  rmdir "${probe_lock}" 2>/dev/null || true
+  rm -rf "${TEST_STATE_ROOT:?}/${target_id:?}" 2>/dev/null || true
+}
+
+legacy_birth_source="legacy-birth-source-907"
+legacy_birth_target="legacy-birth-target-908"
+setup_source_session "${legacy_birth_source}"
+_run_internal_birth_probe "legacy-birth" "${legacy_birth_source}" \
+  "${legacy_birth_target}" "legacy" "legacy"
+assert_eq "resume-init strict birth: legacy internal token is rejected" "1" \
+  "${_internal_birth_probe_rc}"
+assert_eq "resume-init strict birth: legacy token never enters body" "no" \
+  "${_internal_birth_probe_entered}"
+assert_eq "resume-init strict birth: legacy token leaves target untouched" "no" \
+  "${_internal_birth_probe_target_created}"
+
+unobservable_birth_source="unobservable-birth-source-912"
+unobservable_birth_target="unobservable-birth-target-913"
+setup_source_session "${unobservable_birth_source}"
+_run_internal_birth_probe "unobservable-birth" \
+  "${unobservable_birth_source}" "${unobservable_birth_target}" \
+  "recorded.birth" "unavailable"
+assert_eq "resume-init strict birth: unobservable current birth is rejected" \
+  "1" "${_internal_birth_probe_rc}"
+assert_eq "resume-init strict birth: unobservable token never enters body" \
+  "no" "${_internal_birth_probe_entered}"
+assert_eq "resume-init strict birth: unobservable token leaves target untouched" \
+  "no" "${_internal_birth_probe_target_created}"
+
+nul_owner_source="nul-owner-source-914"
+nul_owner_target="nul-owner-target-915"
+setup_source_session "${nul_owner_source}"
+_run_internal_birth_probe "nul-owner" "${nul_owner_source}" \
+  "${nul_owner_target}" "recorded.birth" "owner-nul"
+assert_eq "resume-init exact owner: raw NUL is rejected" "1" \
+  "${_internal_birth_probe_rc}"
+assert_eq "resume-init exact owner: NUL token never enters body" "no" \
+  "${_internal_birth_probe_entered}"
+assert_eq "resume-init exact owner: NUL token leaves target untouched" "no" \
+  "${_internal_birth_probe_target_created}"
+
+blank_owner_source="blank-owner-source-916"
+blank_owner_target="blank-owner-target-917"
+setup_source_session "${blank_owner_source}"
+_run_internal_birth_probe "blank-owner" "${blank_owner_source}" \
+  "${blank_owner_target}" "recorded.birth" "owner-blank"
+assert_eq "resume-init exact owner: extra blank record is rejected" "1" \
+  "${_internal_birth_probe_rc}"
+assert_eq "resume-init exact owner: extra record never enters body" "no" \
+  "${_internal_birth_probe_entered}"
+assert_eq "resume-init exact owner: extra record leaves target untouched" "no" \
+  "${_internal_birth_probe_target_created}"
+
+# Resume initialization uses the shared atomic sentinel before creating its
+# compatibility directory. Pause exactly in that scheduler gap: a contender
+# must observe the live sentinel, fail without entering the body, and leave the
+# target untouched until the original owner continues.
+init_gap_source="init-gap-source-910"
+init_gap_target="init-gap-target-911"
+init_gap_source_dir="${TEST_STATE_ROOT}/${init_gap_source}"
+init_gap_target_dir="${TEST_STATE_ROOT}/${init_gap_target}"
+mkdir -p "${init_gap_source_dir}"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"Atomic init owner","token_totals":"{\"main_out\":910}","resume_transferred_to":""}' \
+  >"${init_gap_source_dir}/session_state.json"
+init_gap_lock="${TEST_STATE_ROOT}.resume-init-locks/${init_gap_target}.lock"
+init_gap_ready="${TEST_TMP}/init-gap.ready"
+init_gap_release="${TEST_TMP}/init-gap.release"
+init_gap_out_a="${TEST_TMP}/init-gap-a.out"
+init_gap_err_a="${TEST_TMP}/init-gap-a.err"
+init_gap_out_b="${TEST_TMP}/init-gap-b.out"
+init_gap_err_b="${TEST_TMP}/init-gap-b.err"
+(
+  printf '%s' "{\"session_id\":\"${init_gap_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${init_gap_source}.jsonl\"}" \
+    | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_LOCK_SENTINEL_PAUSE_LOCKDIR="${init_gap_lock}" \
+        OMC_TEST_LOCK_SENTINEL_READY_FILE="${init_gap_ready}" \
+        OMC_TEST_LOCK_SENTINEL_RELEASE_FILE="${init_gap_release}" \
+        bash "${RESUME_SCRIPT}" >"${init_gap_out_a}" 2>"${init_gap_err_a}"
+) &
+init_gap_pid_a=$!
+for _init_gap_wait in $(seq 1 500); do
+  [[ -e "${init_gap_ready}" ]] && break
+  kill -0 "${init_gap_pid_a}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "resume-init sentinel gap: first contender publishes owner" "yes" \
+  "$([[ -e "${init_gap_ready}" \
+      && -f "${init_gap_lock}.owner" ]] && printf yes || printf no)"
+assert_eq "resume-init sentinel gap: compatibility directory not yet created" \
+  "no" "$([[ -d "${init_gap_lock}" ]] && printf yes || printf no)"
+assert_eq "resume-init sentinel gap: target body has not started" "no" \
+  "$([[ -e "${init_gap_target_dir}" ]] && printf yes || printf no)"
+
+# Replaying the live owner's complete birth-bound token into another process is
+# not internal-entry authority. The child must prove its own current PID is the
+# token PID before it can skip acquisition, even while the original owner is
+# genuinely live and the canonical owner file still matches byte-for-byte.
+init_gap_replayed_token="$(<"${init_gap_lock}.owner")"
+init_gap_replay_rc=0
+printf '%s' "{\"session_id\":\"${init_gap_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${init_gap_source}.jsonl\"}" \
+  | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+      _OMC_RESUME_INIT_LOCK_HELD_INTERNAL=1 \
+      _OMC_RESUME_INIT_OWNER_TOKEN="${init_gap_replayed_token}" \
+      bash "${RESUME_SCRIPT}" >/dev/null 2>"${TEST_TMP}/init-gap-replay.err" \
+  || init_gap_replay_rc=$?
+assert_eq "resume-init sentinel gap: inherited live token cannot reenter" "1" \
+  "${init_gap_replay_rc}"
+assert_eq "resume-init sentinel gap: replayed token leaves target untouched" \
+  "no" "$([[ -e "${init_gap_target_dir}" ]] && printf yes || printf no)"
+
+init_gap_rc_b=0
+printf '%s' "{\"session_id\":\"${init_gap_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${init_gap_source}.jsonl\"}" \
+  | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+      OMC_STATE_LOCK_MAX_ATTEMPTS=2 bash "${RESUME_SCRIPT}" \
+      >"${init_gap_out_b}" 2>"${init_gap_err_b}" \
+  || init_gap_rc_b=$?
+assert_eq "resume-init sentinel gap: contender cannot enter" "1" \
+  "${init_gap_rc_b}"
+assert_eq "resume-init sentinel gap: rejected contender leaves target untouched" \
+  "no" "$([[ -e "${init_gap_target_dir}" ]] && printf yes || printf no)"
+: >"${init_gap_release}"
+init_gap_rc_a=0
+wait "${init_gap_pid_a}" || init_gap_rc_a=$?
+if [[ "${init_gap_rc_a}" -ne 0 ]]; then
+  printf '  resume-init sentinel owner stderr: %s\n' \
+    "$(cat "${init_gap_err_a}")" >&2
+fi
+assert_eq "resume-init sentinel gap: original owner completes" "0" \
+  "${init_gap_rc_a}"
+assert_eq "resume-init sentinel gap: original owner initializes target" \
+  "Atomic init owner" \
+  "$(jq -r '.current_objective // empty' "${init_gap_target_dir}/session_state.json")"
+assert_eq "resume-init sentinel gap: source fence commits to target" \
+  "${init_gap_target}" \
+  "$(jq -r '.resume_transferred_to // empty' "${init_gap_source_dir}/session_state.json")"
+assert_eq "resume-init sentinel gap: lock artifacts are released" "0" \
+  "$([[ -e "${init_gap_lock}" || -e "${init_gap_lock}.owner" ]] \
+    && printf 1 || printf 0)"
+
+# The process executing the critical body must be the PID recorded in the
+# canonical owner token. Kill that owner after body entry: no delegated child
+# may observe the release or write afterward. One successor then reclaims the
+# dead token, while a second contender remains excluded until initialization
+# finishes.
+owner_kill_source="owner-kill-source-915"
+owner_kill_target="owner-kill-target-916"
+owner_kill_source_dir="${TEST_STATE_ROOT}/${owner_kill_source}"
+owner_kill_target_dir="${TEST_STATE_ROOT}/${owner_kill_target}"
+mkdir -p "${owner_kill_source_dir}"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"Single surviving initializer","token_totals":"{\"main_out\":915}","resume_transferred_to":""}' \
+  >"${owner_kill_source_dir}/session_state.json"
+owner_kill_lock="${TEST_STATE_ROOT}.resume-init-locks/${owner_kill_target}.lock"
+owner_kill_ready="${TEST_TMP}/owner-kill.ready"
+owner_kill_release="${TEST_TMP}/owner-kill.release"
+owner_kill_continued="${TEST_TMP}/owner-kill.continued"
+owner_kill_out="${TEST_TMP}/owner-kill.out"
+owner_kill_err="${TEST_TMP}/owner-kill.err"
+(
+  printf '%s' "{\"session_id\":\"${owner_kill_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${owner_kill_source}.jsonl\"}" \
+    | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_RESUME_INIT_BODY_READY_FILE="${owner_kill_ready}" \
+        OMC_TEST_RESUME_INIT_BODY_RELEASE_FILE="${owner_kill_release}" \
+        OMC_TEST_RESUME_INIT_BODY_CONTINUED_FILE="${owner_kill_continued}" \
+        OMC_TEST_RESUME_INIT_BODY_SELF_SIGKILL=1 \
+        bash "${RESUME_SCRIPT}" >"${owner_kill_out}" 2>"${owner_kill_err}"
+) &
+owner_kill_launcher_pid=$!
+for _owner_kill_wait in $(seq 1 500); do
+  [[ -e "${owner_kill_ready}" ]] && break
+  kill -0 "${owner_kill_launcher_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "resume-init owner death: body enters under canonical owner" "yes" \
+  "$([[ -e "${owner_kill_ready}" \
+      && -f "${owner_kill_lock}.owner" \
+      && -f "${owner_kill_lock}/holder.pid" ]] \
+    && printf yes || printf no)"
+# The coordinator signals only the body seam. The body validates its canonical
+# token and sends SIGKILL to that exact current owner itself, so this regression
+# can never kill a recycled external PID read from a stale file.
+: >"${owner_kill_release}"
+wait "${owner_kill_launcher_pid}" 2>/dev/null || true
+for _owner_kill_wait in $(seq 1 100); do
+  [[ -e "${owner_kill_continued}" ]] && break
+  sleep 0.01
+done
+assert_eq "resume-init owner death: no delegated body writes after kill" \
+  "no" \
+  "$([[ -e "${owner_kill_continued}" ]] && printf yes || printf no)"
+assert_eq "resume-init owner death: killed pre-copy owner leaves target fresh" \
+  "no" "$([[ -e "${owner_kill_target_dir}" ]] && printf yes || printf no)"
+
+owner_win_ready="${TEST_TMP}/owner-win.ready"
+owner_win_release="${TEST_TMP}/owner-win.release"
+owner_win_continued="${TEST_TMP}/owner-win.continued"
+owner_win_out="${TEST_TMP}/owner-win.out"
+owner_win_err="${TEST_TMP}/owner-win.err"
+(
+  printf '%s' "{\"session_id\":\"${owner_kill_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${owner_kill_source}.jsonl\"}" \
+    | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_RESUME_INIT_BODY_READY_FILE="${owner_win_ready}" \
+        OMC_TEST_RESUME_INIT_BODY_RELEASE_FILE="${owner_win_release}" \
+        OMC_TEST_RESUME_INIT_BODY_CONTINUED_FILE="${owner_win_continued}" \
+        bash "${RESUME_SCRIPT}" >"${owner_win_out}" 2>"${owner_win_err}"
+) &
+owner_win_launcher_pid=$!
+for _owner_win_wait in $(seq 1 500); do
+  [[ -e "${owner_win_ready}" ]] && break
+  kill -0 "${owner_win_launcher_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "resume-init owner death: one successor enters recovered lock" \
+  "yes" "$([[ -e "${owner_win_ready}" ]] && printf yes || printf no)"
+owner_lose_rc=0
+printf '%s' "{\"session_id\":\"${owner_kill_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${owner_kill_source}.jsonl\"}" \
+  | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+      OMC_STATE_LOCK_MAX_ATTEMPTS=2 bash "${RESUME_SCRIPT}" \
+      >/dev/null 2>"${TEST_TMP}/owner-lose.err" \
+  || owner_lose_rc=$?
+assert_eq "resume-init owner death: second live contender is excluded" \
+  "1" "${owner_lose_rc}"
+assert_eq "resume-init owner death: excluded contender cannot copy target" \
+  "no" "$([[ -e "${owner_kill_target_dir}" ]] && printf yes || printf no)"
+: >"${owner_win_release}"
+owner_win_rc=0
+wait "${owner_win_launcher_pid}" || owner_win_rc=$?
+if [[ "${owner_win_rc}" -ne 0 ]]; then
+  printf '  resume-init recovered owner stderr: %s\n' \
+    "$(cat "${owner_win_err}")" >&2
+fi
+assert_eq "resume-init owner death: sole successor completes" "0" \
+  "${owner_win_rc}"
+assert_file_exists "resume-init owner death: sole successor crossed body seam" \
+  "${owner_win_continued}"
+assert_eq "resume-init owner death: sole successor initializes exact target" \
+  "Single surviving initializer" \
+  "$(jq -r '.current_objective // empty' "${owner_kill_target_dir}/session_state.json")"
+assert_eq "resume-init owner death: source commits exactly one owner" \
+  "${owner_kill_target}" \
+  "$(jq -r '.resume_transferred_to // empty' "${owner_kill_source_dir}/session_state.json")"
+assert_eq "resume-init owner death: recovered lock releases all authority" "0" \
+  "$([[ -e "${owner_kill_lock}" || -e "${owner_kill_lock}.owner" ]] \
+    && printf 1 || printf 0)"
+
+# A process death after S's source marker commits but before T retires its
+# initialization generation must roll forward on exact same-owner replay.
+commit_crash_source="commit-crash-source-917"
+commit_crash_target="commit-crash-target-918"
+commit_crash_source_dir="${TEST_STATE_ROOT}/${commit_crash_source}"
+commit_crash_target_dir="${TEST_STATE_ROOT}/${commit_crash_target}"
+mkdir -p "${commit_crash_source_dir}"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"Committed generation survives finalize crash","resume_transferred_to":""}' \
+  >"${commit_crash_source_dir}/session_state.json"
+commit_crash_out="${TEST_TMP}/commit-crash.out"
+commit_crash_err="${TEST_TMP}/commit-crash.err"
+(
+  printf '%s' "{\"session_id\":\"${commit_crash_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${commit_crash_source}.jsonl\"}" \
+    | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+        OMC_TEST_RESUME_SELF_KILL_AFTER_SOURCE_COMMIT=1 \
+        bash "${RESUME_SCRIPT}" >"${commit_crash_out}" \
+          2>"${commit_crash_err}"
+) &
+commit_crash_pid=$!
+wait "${commit_crash_pid}" 2>/dev/null || true
+assert_eq "post-commit crash: source fence is durable" \
+  "${commit_crash_target}" \
+  "$(jq -r '.resume_transferred_to // empty' \
+    "${commit_crash_source_dir}/session_state.json")"
+assert_eq "post-commit crash: target retains recoverable init generation" \
+  "yes" \
+  "$([[ "$(jq -r '.resume_initialization_txn_id // empty' \
+      "${commit_crash_target_dir}/session_state.json")" == resume-init-* ]] \
+    && printf yes || printf no)"
+run_resume "{\"session_id\":\"${commit_crash_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${commit_crash_source}.jsonl\"}"
+assert_eq "post-commit crash: exact replay rolls forward cleanly" "0" \
+  "${_resume_exit}"
+assert_eq "post-commit crash: committed objective remains live" \
+  "Committed generation survives finalize crash" \
+  "$(jq -r '.current_objective // empty' \
+    "${commit_crash_target_dir}/session_state.json")"
+assert_eq "post-commit crash: replay retires transaction marker" "0" \
+  "$(jq '[.resume_initialization_txn_id,
+          .resume_initialization_source_id]
+        | map(select(. != null and . != "")) | length' \
+    "${commit_crash_target_dir}/session_state.json")"
+
 # Same-target recovery is serialized separately from state I/O.  A valid JSON
 # object with the wrong resume provenance is not proof of a committed target:
 # the first contender reopens/rebuilds it while the second waits, then the
@@ -837,6 +1435,30 @@ assert_eq "same-target race: source fence commits once to target" \
 assert_eq "same-target race: init mutex released" "0" \
   "$([[ -d "${same_init_lock}" ]] && printf 1 || printf 0)"
 
+# An embedded NUL is not transfer authority. Bash command substitution drops
+# NUL bytes, so this specifically proves the JSON string is validated before
+# raw output rather than normalized into the valid phantom owner.
+nul_owner_source="nul-owner-source-925"
+nul_owner_target="nul-owner-target-926"
+setup_source_session "${nul_owner_source}"
+jq '.resume_transferred_to=("phantom-owner-927" + "\u0000")' \
+  "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json" \
+  >"${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json.tmp"
+mv "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json.tmp" \
+  "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json"
+run_resume \
+  "{\"session_id\":\"${nul_owner_target}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${nul_owner_source}.jsonl\"}"
+assert_eq "NUL owner: invalid marker does not block the legitimate handoff" \
+  "0" "${_resume_exit}"
+assert_eq "NUL owner: target receives the source objective" \
+  "Implement the auth refactor" \
+  "$(jq -r '.current_objective // empty' \
+    "${TEST_STATE_ROOT}/${nul_owner_target}/session_state.json")"
+assert_eq "NUL owner: source is fenced only by the new valid target" \
+  "${nul_owner_target}" \
+  "$(jq -r '.resume_transferred_to // empty' \
+    "${TEST_STATE_ROOT}/${nul_owner_source}/session_state.json")"
+
 # Replaying S into T after T already transferred onward to U must never reopen
 # S or resurrect T.  The hook emits only a dormant-owner conflict and leaves
 # every state/timing artifact byte-stable.
@@ -893,6 +1515,107 @@ assert_eq "downstream replay: T timing remains byte-stable" \
   "${down_middle_timing_before}" "$(cat "${down_middle_dir}/timing.jsonl")"
 assert_eq "downstream replay: U timing remains byte-stable" \
   "${down_final_timing_before}" "$(cat "${down_final_dir}/timing.jsonl")"
+
+# Adjacent transfers must linearize even when T→U has already copied T and
+# pauses immediately before its source fence while S→T begins rebuilding T.
+# S's target-init authority makes T→U's final source digest fail; U is stripped
+# and only the complete S→T generation may commit.
+printf '\nConcurrent adjacent S-to-T / T-to-U transfer race:\n'
+adj_source="adjacent-source-940"
+adj_middle="adjacent-middle-941"
+adj_final="adjacent-final-942"
+adj_source_dir="${TEST_STATE_ROOT}/${adj_source}"
+adj_middle_dir="${TEST_STATE_ROOT}/${adj_middle}"
+adj_final_dir="${TEST_STATE_ROOT}/${adj_final}"
+mkdir -p "${adj_source_dir}" "${adj_middle_dir}"
+printf '%s\n' \
+  '{"workflow_mode":"ultrawork","current_objective":"S generation must win","token_totals":"{\"main_out\":940}","resume_transferred_to":""}' \
+  >"${adj_source_dir}/session_state.json"
+printf '%s\n' \
+  "{\"workflow_mode\":\"ultrawork\",\"current_objective\":\"old T generation must not reach U\",\"token_totals\":\"{\\\"main_out\\\":41}\",\"resume_source_session_id\":\"${adj_source}\",\"resume_transferred_to\":\"\"}" \
+  >"${adj_middle_dir}/session_state.json"
+printf '%s\n' '{"kind":"token_checkpoint","ts":1,"main_out":940}' \
+  >"${adj_source_dir}/timing.jsonl"
+printf '%s\n' '{"kind":"token_checkpoint","ts":2,"main_out":41}' \
+  >"${adj_middle_dir}/timing.jsonl"
+adj_tu_ready="${TEST_TMP}/adj-tu.ready"
+adj_tu_release="${TEST_TMP}/adj-tu.release"
+adj_tu_out="${TEST_TMP}/adj-tu.out"
+adj_tu_err="${TEST_TMP}/adj-tu.err"
+(
+  printf '%s' "{\"session_id\":\"${adj_final}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${adj_middle}.jsonl\"}" \
+    | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_RESUME_TRANSFER_READY_FILE="${adj_tu_ready}" \
+        OMC_TEST_RESUME_TRANSFER_RELEASE_FILE="${adj_tu_release}" \
+        bash "${RESUME_SCRIPT}" >"${adj_tu_out}" 2>"${adj_tu_err}"
+) &
+adj_tu_pid=$!
+for _adj_wait in $(seq 1 500); do
+  [[ -e "${adj_tu_ready}" ]] && break
+  kill -0 "${adj_tu_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "adjacent race: T-to-U reaches speculative pre-fence pause" "yes" \
+  "$([[ -e "${adj_tu_ready}" ]] && printf yes || printf no)"
+
+adj_st_ready="${TEST_TMP}/adj-st.ready"
+adj_st_release="${TEST_TMP}/adj-st.release"
+adj_st_out="${TEST_TMP}/adj-st.out"
+adj_st_err="${TEST_TMP}/adj-st.err"
+(
+  printf '%s' "{\"session_id\":\"${adj_middle}\",\"source\":\"resume\",\"transcript_path\":\"/transcripts/${adj_source}.jsonl\"}" \
+    | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" \
+        OMC_STATE_LOCK_MAX_ATTEMPTS=200 \
+        OMC_TEST_RESUME_TRANSFER_READY_FILE="${adj_st_ready}" \
+        OMC_TEST_RESUME_TRANSFER_RELEASE_FILE="${adj_st_release}" \
+        bash "${RESUME_SCRIPT}" >"${adj_st_out}" 2>"${adj_st_err}"
+) &
+adj_st_pid=$!
+for _adj_wait in $(seq 1 500); do
+  [[ -e "${adj_st_ready}" ]] && break
+  kill -0 "${adj_st_pid}" 2>/dev/null || break
+  sleep 0.01
+done
+assert_eq "adjacent race: S-to-T owns target generation before writes settle" \
+  "yes" "$([[ -e "${adj_st_ready}" ]] && printf yes || printf no)"
+
+: >"${adj_tu_release}"
+adj_tu_rc=0
+wait "${adj_tu_pid}" || adj_tu_rc=$?
+if [[ "${adj_tu_rc}" -ne 0 ]]; then
+  printf '  adjacent T-to-U stderr: %s\n' "$(cat "${adj_tu_err}")" >&2
+fi
+: >"${adj_st_release}"
+adj_st_rc=0
+wait "${adj_st_pid}" || adj_st_rc=$?
+if [[ "${adj_st_rc}" -ne 0 ]]; then
+  printf '  adjacent S-to-T stderr: %s\n' "$(cat "${adj_st_err}")" >&2
+fi
+assert_eq "adjacent race: losing T-to-U fails closed without crashing" \
+  "0" "${adj_tu_rc}"
+assert_eq "adjacent race: winning S-to-T completes" "0" "${adj_st_rc}"
+assert_eq "adjacent race: S commits exactly to T" "${adj_middle}" \
+  "$(jq -r '.resume_transferred_to // empty' \
+    "${adj_source_dir}/session_state.json")"
+assert_eq "adjacent race: T preserves complete S generation" \
+  "S generation must win" \
+  "$(jq -r '.current_objective // empty' \
+    "${adj_middle_dir}/session_state.json")"
+assert_eq "adjacent race: T has no overwritten downstream marker" "" \
+  "$(jq -r '.resume_transferred_to // empty' \
+    "${adj_middle_dir}/session_state.json")"
+assert_eq "adjacent race: U loses copied objective" "" \
+  "$(jq -r '.current_objective // empty' \
+    "${adj_final_dir}/session_state.json")"
+assert_eq "adjacent race: U loses copied timing sidecar" "no" \
+  "$([[ -e "${adj_final_dir}/timing.jsonl" ]] \
+    && printf yes || printf no)"
+assert_eq "adjacent race: no target transaction marker survives" "0" \
+  "$(jq '[.resume_initialization_txn_id,
+          .resume_initialization_source_id]
+        | map(select(. != null and . != "")) | length' \
+    "${adj_middle_dir}/session_state.json")"
 
 # ------------------------------------------------------------------
 # Test 10: if the ownership fence cannot be published and no competing owner

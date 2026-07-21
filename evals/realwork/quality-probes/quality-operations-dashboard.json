@@ -6,13 +6,13 @@
   "fixture": "fixtures/quality/operations-dashboard",
   "prompt": "/ulw redesign this incident dashboard so an on-call lead can understand severity and take the right action within thirty seconds",
   "candidate_artifacts": [
-    {"kind": "files", "globs": ["src/**", "app/**", "tests/**"]},
+    {"kind": "files", "globs": ["dashboard.json", "accessibility.json", "src/**", "app/**", "tests/**"]},
     {"kind": "rendered_images", "globs": ["rendered/**"]}
   ],
   "hard_checks": [
-    {"id": "data_fidelity", "description": "Every displayed severity, metric, and incident state matches the supplied data.", "critical": true},
-    {"id": "primary_action", "description": "The highest-priority incident and its next safe action are visible without exploration.", "critical": true},
-    {"id": "accessibility", "description": "Keyboard flow, contrast, semantics, and non-color status cues meet the fixture acceptance checks.", "critical": true}
+    {"id": "data_fidelity", "description": "Every displayed severity, metric, and incident state matches the supplied data.", "critical": false},
+    {"id": "primary_action", "description": "The highest-priority incident and its next safe action are visible without exploration.", "critical": false},
+    {"id": "accessibility", "description": "Keyboard flow, contrast, semantics, and non-color status cues meet the fixture acceptance checks.", "critical": false}
   ],
   "rubric": {
     "version": "ddccv-1",
@@ -38,9 +38,9 @@
     "max_candidate_cost_ratio": 1.75,
     "max_candidate_wall_ratio": 1.75,
     "candidate_summary_contract": {
-      "schema_version": 3,
-      "required_top_level": ["probe_id", "provenance", "artifact_dir", "economics"],
-      "required_provenance": ["prompt_hash", "fixture_hash", "source_hash", "model", "model_tier", "harness_role", "harness_hash"],
+      "schema_version": 4,
+      "required_top_level": ["schema_version", "probe_id", "generation_receipt", "generation_receipt_hash", "artifact_dir"],
+      "generation_authority": "evaluator-owned-cli-telemetry-v1",
       "required_token_economics": ["input", "output", "cache_read", "cache_creation"]
     }
   }

@@ -9,7 +9,7 @@
 # function-coverage) and missed the highest-historical-frequency
 # violation surface (conf-flag 3-site lockstep).
 #
-# This broadened version enforces ten lockstep contracts from
+# This broadened version enforces eleven lockstep contracts from
 # CLAUDE.md:
 #
 #   1. Conf-flag 3-site lockstep (most-violated). Every flag that
@@ -61,6 +61,10 @@
 #  10. Test-portfolio doctrine. Core orchestration, planner/reviewer/test
 #      specialist behavior, the user-facing skill, and discovery surfaces
 #      must preserve evidence-based keep/merge/retire decisions.
+#
+#  11. Security/discovery inventories. The documented project-conf deny-list
+#      must exactly match the runtime-protected flags, and both skill discovery
+#      surfaces must advertise the complete Quality Constitution grammar.
 #
 # Pinned in CI via .github/workflows/validate.yml; runs on every push.
 
@@ -793,6 +797,51 @@ for _c10_index in \
   else
     assert_fail "C10: $(basename "${_c10_index}") missing /test-audit" \
       "user-invocable skill must stay in all three discovery surfaces"
+  fi
+done
+
+# ----------------------------------------------------------------------
+# Contract 11 — security and Quality Constitution inventory lockstep
+# ----------------------------------------------------------------------
+printf '\nContract 11: security and Quality Constitution inventory lockstep\n'
+
+C11_COMMON="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/common.sh"
+C11_CLAUDE="${REPO_ROOT}/CLAUDE.md"
+c11_runtime_deny_line="$(grep -m1 -E \
+  '^[[:space:]]*pretool_intent_guard\|.*auto_tune\)' "${C11_COMMON}" || true)"
+c11_documented_deny_line="$(grep -m1 'Current members:' "${C11_CLAUDE}" || true)"
+if [[ -n "${c11_runtime_deny_line}" && -n "${c11_documented_deny_line}" ]]; then
+  c11_runtime_flags="$(printf '%s' "${c11_runtime_deny_line}" \
+    | sed 's/^[[:space:]]*//; s/).*//' | tr '|' '\n' \
+    | sed '/^$/d' | LC_ALL=C sort -u)"
+  c11_documented_flags="$(printf '%s' "${c11_documented_deny_line}" \
+    | sed 's/.*Current members:[[:space:]]*//' \
+    | grep -oE '`[a-z0-9_]+`' | tr -d '`' | LC_ALL=C sort -u || true)"
+  if [[ "${c11_documented_flags}" == "${c11_runtime_flags}" ]]; then
+    assert_pass "C11: CLAUDE protected project-conf inventory exactly matches runtime"
+  else
+    assert_fail "C11: CLAUDE protected project-conf inventory drifted" \
+      "runtime: $(printf '%s' "${c11_runtime_flags}" | tr '\n' ' '); documented: $(printf '%s' "${c11_documented_flags}" | tr '\n' ' ')"
+  fi
+else
+  assert_fail "C11: project-conf deny-list inventory is discoverable" \
+    "expected one runtime case arm and one CLAUDE.md Current members line"
+fi
+
+c11_quality_ops='show remember must must-not avoid propose review accept reject reference anti-reference remove audit'
+c11_expected_ops="$(printf '%s\n' ${c11_quality_ops} | LC_ALL=C sort)"
+for c11_surface in \
+  "${REPO_ROOT}/bundle/dot-claude/skills/skills/SKILL.md" \
+  "${REPO_ROOT}/bundle/dot-claude/quality-pack/memory/skills.md"; do
+  c11_quality_line="$(grep -m1 '/quality-constitution \[' "${c11_surface}" || true)"
+  c11_actual_ops="$(printf '%s' "${c11_quality_line}" \
+    | sed 's|.*quality-constitution \[||; s|\].*||; s|\\| |g; s/|/ /g' \
+    | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort)"
+  if [[ "${c11_actual_ops}" == "${c11_expected_ops}" ]]; then
+    assert_pass "C11: $(basename "${c11_surface}") has the complete Quality Constitution grammar"
+  else
+    assert_fail "C11: $(basename "${c11_surface}") Quality Constitution grammar drifted" \
+      "expected: ${c11_quality_ops}; actual: $(printf '%s' "${c11_actual_ops}" | tr '\n' ' ')"
   fi
 done
 

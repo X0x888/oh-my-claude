@@ -74,9 +74,10 @@ assert_true() {
 }
 
 # --- T1 ---
-printf '\nT1: show-budgets prints all 10 hot-path hooks\n'
+printf '\nT1: show-budgets prints all 11 hot-path hooks\n'
 out="$(run_script show-budgets)"
-for hook in prompt-intent-router.sh pretool-intent-guard.sh \
+for hook in prompt-intent-router.sh dispatch-recovery-guard.sh \
+            pretool-intent-guard.sh \
             quality-constitution-authority-guard.sh pretool-timing.sh \
             posttool-timing.sh stop-guard.sh stop-time-summary.sh \
             closeout-display.sh closeout-preflight.sh stop-dispatch.sh; do
@@ -94,6 +95,7 @@ printf '\nT2: show-budgets emits documented default for each hook\n'
 out="$(run_script show-budgets)"
 expected_pairs=(
   "prompt-intent-router.sh|1500"
+  "dispatch-recovery-guard.sh|200"
   "pretool-intent-guard.sh|300"
   "quality-constitution-authority-guard.sh|300"
   "pretool-timing.sh|200"
@@ -165,7 +167,8 @@ assert_eq "${missing_count}" "0" "no hooks reported as missing (synthetic payloa
 printf '\nT7: benchmark subcommand runs all hooks\n'
 out="$(run_script benchmark --samples 1 2>&1 || true)"
 all_listed=1
-for hook in prompt-intent-router.sh pretool-intent-guard.sh \
+for hook in prompt-intent-router.sh dispatch-recovery-guard.sh \
+            pretool-intent-guard.sh \
             quality-constitution-authority-guard.sh; do
   if [[ "${out}" != *"${hook}"* ]]; then
     all_listed=0

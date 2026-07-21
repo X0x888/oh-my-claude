@@ -30,6 +30,7 @@ SKIP_REALWORK_SCORING=0
 SKIP_REALWORK_PRODUCER=0
 SKIP_REALWORK_PAIRWISE=0
 PAIRWISE_RECEIPTS=()
+PAIRWISE_CAMPAIGN_RECEIPT=""
 JSON_MODE=0
 
 ok_count=0
@@ -57,12 +58,17 @@ Default surfaces:
   6. real-work scenario schema validation
   7. real-work scorer contract
   8. real session -> result producer contract
-  9. blind pairwise quality-evaluator contract
+  9. causal-generation blind pairwise quality-evaluator contract
 
 Optional empirical claim surface:
-  --pairwise-receipt FILE      Add one sealed raw pair receipt to the
-                               preregistered claim gate. Repeat for every pair;
+  --pairwise-receipt FILE      Add one sealed schema-v7 causal-generation pair
+                               receipt to the preregistered claim gate. Repeat
+                               for every pair;
                                aggregates are deliberately not accepted.
+  --pairwise-campaign-receipt FILE
+                               Add the single sealed campaign receipt that
+                               binds the complete first-attempt roster. It is
+                               required whenever pair receipts are supplied.
 
 Options:
   --skip-classification       Skip intent-classification coverage.
@@ -232,6 +238,18 @@ while [[ $# -gt 0 ]]; do
       PAIRWISE_RECEIPTS+=("$2")
       shift 2
       ;;
+    --pairwise-campaign-receipt)
+      [[ $# -ge 2 && -n "${2:-}" ]] || {
+        printf 'verify-professional-readiness: --pairwise-campaign-receipt requires a file\n' >&2
+        exit 2
+      }
+      [[ -z "${PAIRWISE_CAMPAIGN_RECEIPT}" ]] || {
+        printf 'verify-professional-readiness: --pairwise-campaign-receipt may be supplied only once\n' >&2
+        exit 2
+      }
+      PAIRWISE_CAMPAIGN_RECEIPT="$2"
+      shift 2
+      ;;
     --pairwise-report)
       printf 'verify-professional-readiness: aggregate reports are not evidence; pass every raw receipt with --pairwise-receipt\n' >&2
       exit 2
@@ -257,6 +275,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 && -z "${PAIRWISE_CAMPAIGN_RECEIPT}" ]]; then
+  printf 'verify-professional-readiness: raw --pairwise-receipt evidence requires --pairwise-campaign-receipt\n' >&2
+  exit 2
+fi
+if [[ "${#PAIRWISE_RECEIPTS[@]}" -eq 0 && -n "${PAIRWISE_CAMPAIGN_RECEIPT}" ]]; then
+  printf 'verify-professional-readiness: --pairwise-campaign-receipt requires at least one --pairwise-receipt\n' >&2
+  exit 2
+fi
+
 if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
   for pairwise_index in "${!PAIRWISE_RECEIPTS[@]}"; do
     pairwise_receipt="${PAIRWISE_RECEIPTS[$pairwise_index]}"
@@ -266,6 +293,13 @@ if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
     }
     PAIRWISE_RECEIPTS[pairwise_index]="$(cd "$(dirname "${pairwise_receipt}")" && pwd -P)/$(basename "${pairwise_receipt}")"
   done
+  [[ -f "${PAIRWISE_CAMPAIGN_RECEIPT}" ]] || {
+    printf 'verify-professional-readiness: pairwise campaign receipt not found: %s\n' \
+      "${PAIRWISE_CAMPAIGN_RECEIPT}" >&2
+    exit 2
+  }
+  PAIRWISE_CAMPAIGN_RECEIPT="$(cd "$(dirname "${PAIRWISE_CAMPAIGN_RECEIPT}")" \
+    && pwd -P)/$(basename "${PAIRWISE_CAMPAIGN_RECEIPT}")"
 fi
 
 if [[ "${SKIP_CLASSIFICATION}" -eq 1 ]]; then
@@ -327,6 +361,7 @@ if [[ "${#PAIRWISE_RECEIPTS[@]}" -gt 0 ]]; then
   for pairwise_receipt in "${PAIRWISE_RECEIPTS[@]}"; do
     pairwise_receipt_args+=" $(printf '%q' "${pairwise_receipt}")"
   done
+  pairwise_receipt_args+=" --campaign-receipt $(printf '%q' "${PAIRWISE_CAMPAIGN_RECEIPT}")"
   run_surface "pairwise_receipt" "${PAIRWISE_RECEIPT_CHECK_CMD}${pairwise_receipt_args}"
 fi
 

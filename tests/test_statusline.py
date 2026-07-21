@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Tests for statusline.py — the Claude Code statusline widget."""
 
-import hashlib
 import importlib.util
+import fcntl
+import io
 import json
 import os
 import subprocess
@@ -45,8 +46,64 @@ def statusline_subprocess_env(**overrides):
     # the subprocess width-unknown (stdout is a pipe, so get_terminal_size
     # fails too) → full render. Narrow-mode tests opt in via overrides.
     env.pop("COLUMNS", None)
+    # Tests that provide a fake HOME expect every state consumer to resolve
+    # beneath it. A developer's inherited test-only STATE_ROOT override must
+    # not silently split that attribution; individual tests opt in explicitly.
+    env.pop("STATE_ROOT", None)
     env.update(overrides)
     return env
+
+
+class _AfterReadMutationHandle:
+    """File proxy that performs one deterministic mutation after ``read``."""
+
+    def __init__(self, handle, mutation):
+        self._handle = handle
+        self._mutation = mutation
+        self._fired = False
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._handle.__exit__(exc_type, exc_value, traceback)
+
+    def read(self, *args, **kwargs):
+        payload = self._handle.read(*args, **kwargs)
+        if not self._fired:
+            self._fired = True
+            self._mutation()
+        return payload
+
+    def __getattr__(self, name):
+        return getattr(self._handle, name)
+
+
+def _fdopen_mutating_after_read(mutation):
+    """Return ``(original, patched)`` for deterministic read-race tests."""
+    original = os.fdopen
+    wrapped = {"done": False}
+
+    def patched(fd, mode="r", *args, **kwargs):
+        handle = original(fd, mode, *args, **kwargs)
+        if "r" in mode and "b" in mode and not wrapped["done"]:
+            wrapped["done"] = True
+            return _AfterReadMutationHandle(handle, mutation)
+        return handle
+
+    return original, patched
+
+
+def _retarget_directory(path, replacement_files):
+    """Move one directory generation aside and publish a replacement."""
+    moved = path + ".moved"
+    os.rename(path, moved)
+    os.mkdir(path)
+    for leaf, payload in replacement_files.items():
+        with open(os.path.join(path, leaf), "wb") as handle:
+            handle.write(payload)
+    return moved
 
 
 class TestSafeGet(unittest.TestCase):
@@ -323,14 +380,129 @@ class TestCachePath(unittest.TestCase):
         self.assertNotEqual(path1, path2)
 
 
+class TestCompatibilityToggleConfig(unittest.TestCase):
+    def test_shared_compatibility_grammar(self):
+        for value in ("true", "TRUE", "on", "On", "1", "yes", "YES"):
+            with self.subTest(value=value):
+                self.assertEqual(sl._normalize_compat_toggle(value), "on")
+        for value in ("false", "FALSE", "off", "Off", "0", "no", "NO"):
+            with self.subTest(value=value):
+                self.assertEqual(sl._normalize_compat_toggle(value), "off")
+        for value in (None, "", " ", "enabled", "2"):
+            with self.subTest(value=value):
+                self.assertIsNone(sl._normalize_compat_toggle(value))
+
+    def test_read_conf_keeps_last_valid_toggle_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("installation_drift_check=off\n")
+                fh.write("installation_drift_check=invalid\n")
+                fh.write("statusline_retention=YES\n")
+                fh.write("statusline_retention=invalid\n")
+                fh.write("statusline_width=false\n")
+                fh.write("statusline_width=invalid\n")
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                conf = sl._read_conf()
+            finally:
+                os.path.expanduser = orig_expand
+        self.assertEqual(conf["installation_drift_check"], "false")
+        self.assertEqual(conf["statusline_retention"], "on")
+        self.assertEqual(conf["statusline_width"], "off")
+
+    def test_read_conf_rejects_whitespace_around_keys(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("installation_drift_check=on\n")
+                fh.write(" installation_drift_check = off\n")
+                fh.write("statusline_retention=on\n")
+                fh.write("statusline_retention = off\n")
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                conf = sl._read_conf()
+            finally:
+                os.path.expanduser = orig_expand
+        self.assertEqual(conf["installation_drift_check"], "true")
+        self.assertEqual(conf["statusline_retention"], "on")
+
+    def test_read_conf_invalid_utf8_fails_soft(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "wb") as fh:
+                fh.write(b"installed_version=1.0.0\n")
+                fh.write(b"#" + (b"x" * 16384) + b"\n")
+                fh.write(b"\xff")
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl._read_conf(), {})
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_read_conf_ignores_control_bearing_and_invalid_metadata_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("installed_version=1.2.3\n")
+                fh.write("installed_version=1.2.4\x1b[2J\n")
+                fh.write("installed_sha=" + ("a" * 40) + "\n")
+                fh.write("installed_sha=not-a-sha\n")
+                fh.write("repo_path=/safe/repo\n")
+                fh.write("repo_path=relative/repo\n")
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                conf = sl._read_conf()
+            finally:
+                os.path.expanduser = orig_expand
+        self.assertEqual(conf["installed_version"], "1.2.3")
+        self.assertEqual(conf["installed_sha"], "a" * 40)
+        self.assertEqual(conf["repo_path"], "/safe/repo")
+
+    def test_read_conf_ignores_oversized_semver(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("installed_version=1.2.3\n")
+                fh.write("installed_version=" + ("9" * 5000) + ".0.0\n")
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl._read_conf()["installed_version"], "1.2.3")
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_read_conf_rejects_oversized_file_before_parsing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            os.makedirs(claude_dir)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "wb") as fh:
+                fh.write(b"installed_version=1.2.3\n")
+                fh.write(b"#" + (b"x" * sl._CONF_FILE_MAX_BYTES))
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl._read_conf(), {})
+            finally:
+                os.path.expanduser = orig_expand
+
+
 class TestGatesBlockedLast7d(unittest.TestCase):
     """v1.42.x F-013 — passive retention counter.
 
-    The function reads `~/.claude/quality-pack/state/*/gate_events.jsonl`
-    so the OMC_STATUSLINE_RETENTION opt-out is the easiest assertion to
-    pin in tests (HOME isolation would require fixturing the full state
-    tree). The on-state behavior is smoke-tested via the main render
-    path which the existing TestMainIntegration cases already exercise.
+    The function merges the swept quality-pack ledger with bounded active
+    session ledgers. The OMC_STATUSLINE_RETENTION opt-out remains the easiest
+    assertion to pin without filesystem setup; focused fixtures below cover
+    ownership, overlap, and resource ceilings.
     """
 
     def test_opt_out_returns_none(self):
@@ -377,12 +549,7 @@ class TestGatesBlockedLast7d(unittest.TestCase):
             state_root = os.path.join(claude_dir, "quality-pack", "state")
             self.addCleanup(
                 _remove_file,
-                os.path.join(
-                    tempfile.gettempdir(),
-                    "claude-statusline-gates7d-"
-                    + hashlib.sha1(state_root.encode()).hexdigest()[:12]
-                    + ".json",
-                ),
+                sl._cache_path("gates7d", state_root),
             )
             orig_expand = os.path.expanduser
             env_orig = os.environ.pop("OMC_STATUSLINE_RETENTION", None)
@@ -391,17 +558,728 @@ class TestGatesBlockedLast7d(unittest.TestCase):
                 self.assertIsNone(sl.gates_blocked_last_7d())
                 os.environ["OMC_STATUSLINE_RETENTION"] = "on"
                 self.assertEqual(sl.gates_blocked_last_7d(), 1)
-                # Set-but-empty env resolves via get-with-default (the
-                # installation_drift_check convention): "" is returned,
-                # is not in the falsy set, and therefore reads as ON —
-                # it overrides conf=off rather than falling back to it.
+                # Empty or malformed environment text is not authority; the
+                # valid saved user value remains effective.
                 os.environ["OMC_STATUSLINE_RETENTION"] = ""
-                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+                self.assertIsNone(sl.gates_blocked_last_7d())
+                os.environ["OMC_STATUSLINE_RETENTION"] = "banana"
+                self.assertIsNone(sl.gates_blocked_last_7d())
             finally:
                 os.path.expanduser = orig_expand
                 os.environ.pop("OMC_STATUSLINE_RETENTION", None)
                 if env_orig is not None:
                     os.environ["OMC_STATUSLINE_RETENTION"] = env_orig
+
+    def test_counts_swept_global_ledger_without_live_state_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            os.makedirs(quality_root)
+            state_root = os.path.join(quality_root, "state")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "event": "block",
+                            "ts": time.time(),
+                            "gate": "swept-only",
+                            "session_id": "s-swept",
+                        }
+                    )
+                    + "\n"
+                )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            # Pre-merge caches did not include the swept ledger and must not
+            # mask its rows for the remainder of their five-minute TTL.
+            sl.write_cache(cache, {"count": 0})
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_resume_transfer_and_swept_copy_count_one_owned_generation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            source_dir = os.path.join(state_root, "s-source")
+            target_dir = os.path.join(state_root, "s-target")
+            os.makedirs(source_dir)
+            os.makedirs(target_dir)
+            with open(os.path.join(source_dir, "session_state.json"), "w") as fh:
+                json.dump({"resume_transferred_to": "s-target"}, fh)
+            with open(os.path.join(target_dir, "session_state.json"), "w") as fh:
+                json.dump({}, fh)
+            row = {
+                "_v": 1,
+                "event": "block",
+                "ts": time.time(),
+                "gate": "resume-copy",
+                "details": {},
+            }
+            for session_dir in (source_dir, target_dir):
+                with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                    fh.write(json.dumps(row) + "\n")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            **row,
+                            "session_id": "s-source",
+                            "project_key": "p1",
+                        }
+                    )
+                    + "\n"
+                )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_global_live_dedup_preserves_duplicate_occurrences(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-duplicate")
+            os.makedirs(session_dir)
+            row = {
+                "event": "block",
+                "ts": time.time(),
+                "gate": "same-event",
+            }
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps(row) + "\n")
+                fh.write(json.dumps(row) + "\n")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                swept = {**row, "session_id": "s-duplicate"}
+                fh.write(json.dumps(swept) + "\n")
+                fh.write(json.dumps(swept) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_swept_history_survives_live_tail_cap_eviction(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-capped-history")
+            os.makedirs(session_dir)
+            now = time.time()
+            older = {
+                "event": "block",
+                "event_id": "ge:s-capped-history:1",
+                "ts": now - 10,
+                "gate": "older-swept",
+            }
+            current = {
+                "event": "block",
+                "event_id": "ge:s-capped-history:501",
+                "ts": now,
+                "gate": "current-live",
+            }
+            # The bounded per-session ledger has already evicted `older`, while
+            # the aggregate retains it and also contains the current live copy.
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps(current) + "\n")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({**older, "session_id": "s-capped-history"}) + "\n")
+                fh.write(
+                    json.dumps({**current, "session_id": "s-capped-history"}) + "\n"
+                )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_durable_gate_ids_deduplicate_and_conflicts_are_excluded(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            os.makedirs(quality_root)
+            state_root = os.path.join(quality_root, "state")
+            now = time.time()
+            stable = {
+                "event": "block",
+                "event_id": "ge:s-identity:1",
+                "ts": now,
+                "gate": "stable",
+            }
+            conflicting_a = {
+                "event": "block",
+                "event_id": "ge:s-identity:2",
+                "ts": now,
+                "gate": "claimed-a",
+            }
+            conflicting_b = {**conflicting_a, "gate": "claimed-b"}
+            cross_type_a = {
+                "event": "block",
+                "event_id": "ge:s-identity:3",
+                "ts": now,
+                "gate": "cross-type",
+            }
+            cross_type_b = {**cross_type_a, "event": "finding-status-change"}
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps(stable) + "\n")
+                fh.write(json.dumps({**stable, "session_id": "s-copy"}) + "\n")
+                fh.write(json.dumps(conflicting_a) + "\n")
+                fh.write(json.dumps(conflicting_b) + "\n")
+                fh.write(json.dumps(cross_type_a) + "\n")
+                fh.write(json.dumps(cross_type_b) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_present_malformed_gate_id_is_not_treated_as_legacy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-invalid-identity")
+            os.makedirs(session_dir)
+            now = time.time()
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                for event_id in (
+                    "not-a-producer-id",
+                    "ge:.:1",
+                    "ge:...:1",
+                    "ge:a..b:1",
+                ):
+                    fh.write(
+                        json.dumps(
+                            {
+                                "event": "block",
+                                "event_id": event_id,
+                                "ts": now,
+                                "gate": "invalid-live",
+                            }
+                        )
+                        + "\n"
+                    )
+                fh.write(
+                    json.dumps(
+                        {"event": "block", "ts": now, "gate": "legacy-live"}
+                    )
+                    + "\n"
+                )
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "event": "block",
+                            "event_id": None,
+                            "ts": now,
+                            "gate": "invalid-global",
+                        }
+                    )
+                    + "\n"
+                )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_durable_gate_id_sequence_uses_producer_numeric_envelope(self):
+        terminal = "ge:s-sequence:999999999999999"
+        self.assertEqual(sl._durable_gate_event_id({"event_id": terminal}), terminal)
+        self.assertIsNone(
+            sl._durable_gate_event_id(
+                {"event_id": "ge:s-sequence:1000000000000000"}
+            )
+        )
+
+    def test_legacy_swept_copy_is_conservatively_deduplicated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-live")
+            os.makedirs(session_dir)
+            row = {
+                "event": "block",
+                "ts": time.time(),
+                "gate": "legacy-copy",
+            }
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps(row) + "\n")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps(row) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_malformed_resume_transfer_fails_open(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            source_dir = os.path.join(state_root, "s-source")
+            target_dir = os.path.join(state_root, "s-target")
+            os.makedirs(source_dir)
+            os.makedirs(target_dir)
+            with open(os.path.join(source_dir, "session_state.json"), "w") as fh:
+                json.dump({"resume_transferred_to": "../s-target"}, fh)
+            row = {"event": "block", "ts": time.time()}
+            for session_dir in (source_dir, target_dir):
+                with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                    fh.write(json.dumps(row) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_oversized_resume_state_fails_open_within_file_bound(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            source_dir = os.path.join(state_root, "s-source")
+            target_dir = os.path.join(state_root, "s-target")
+            os.makedirs(source_dir)
+            os.makedirs(target_dir)
+            with open(os.path.join(source_dir, "session_state.json"), "w") as fh:
+                json.dump(
+                    {
+                        "resume_transferred_to": "s-target",
+                        "padding": "x" * 256,
+                    },
+                    fh,
+                )
+            row = {"event": "block", "ts": time.time()}
+            for session_dir in (source_dir, target_dir):
+                with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                    fh.write(json.dumps(row) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_state_cap = sl._SESSION_STATE_FILE_MAX_BYTES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._SESSION_STATE_FILE_MAX_BYTES = 64
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                sl._SESSION_STATE_FILE_MAX_BYTES = orig_state_cap
+                os.path.expanduser = orig_expand
+
+    def test_swept_symlink_is_not_followed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            os.makedirs(quality_root)
+            outside = os.path.join(tmpdir, "outside-gates.jsonl")
+            with open(outside, "w") as fh:
+                fh.write(json.dumps({"event": "block", "ts": time.time()}) + "\n")
+            os.symlink(outside, os.path.join(quality_root, "gate_events.jsonl"))
+            state_root = os.path.join(quality_root, "state")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertIsNone(sl.gates_blocked_last_7d())
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_swept_line_budget_reads_newest_aggregate_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            os.makedirs(quality_root)
+            state_root = os.path.join(quality_root, "state")
+            now = time.time()
+            rows = [
+                {"event": "allow", "ts": now, "gate": "older-a"},
+                {"event": "allow", "ts": now, "gate": "older-b"},
+                {"event": "block", "ts": now, "gate": "newer-a"},
+                {"event": "block", "ts": now, "gate": "newer-b"},
+            ]
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                for row in rows:
+                    fh.write(json.dumps(row) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_line_budget = sl._GATE_EVENT_SCAN_MAX_LINES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._GATE_EVENT_SCAN_MAX_LINES = 2
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                sl._GATE_EVENT_SCAN_MAX_LINES = orig_line_budget
+                os.path.expanduser = orig_expand
+
+    def test_swept_byte_budget_seeks_to_newest_complete_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            os.makedirs(quality_root)
+            state_root = os.path.join(quality_root, "state")
+            now = time.time()
+            global_path = os.path.join(quality_root, "gate_events.jsonl")
+            with open(global_path, "w") as fh:
+                for idx in range(3):
+                    fh.write(
+                        json.dumps(
+                            {
+                                "event": "allow",
+                                "ts": now,
+                                "gate": f"older-{idx}",
+                                "padding": "x" * 256,
+                            }
+                        )
+                        + "\n"
+                    )
+                for idx in range(2):
+                    fh.write(
+                        json.dumps(
+                            {"event": "block", "ts": now, "gate": f"new-{idx}"}
+                        )
+                        + "\n"
+                    )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_byte_budget = sl._GATE_EVENT_SCAN_MAX_BYTES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            # Large enough for both final rows but much smaller than the file;
+            # the window begins inside an older row and must discard that
+            # fragment before decoding JSONL.
+            sl._GATE_EVENT_SCAN_MAX_BYTES = 180
+            try:
+                self.assertGreater(os.path.getsize(global_path), 180)
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                sl._GATE_EVENT_SCAN_MAX_BYTES = orig_byte_budget
+                os.path.expanduser = orig_expand
+
+    def test_tail_reader_opens_nonblocking_before_type_recheck(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "events.jsonl")
+            with open(path, "wb") as fh:
+                fh.write(b'{"event":"block"}\n')
+            orig_open = os.open
+            observed_flags = []
+
+            def recording_open(candidate, flags, *args):
+                observed_flags.append(flags)
+                return orig_open(candidate, flags, *args)
+
+            os.open = recording_open
+            try:
+                result = sl._read_regular_nofollow_tail_bytes_bounded(path, 64)
+            finally:
+                os.open = orig_open
+            self.assertEqual(result, (b'{"event":"block"}\n', True, True))
+            self.assertEqual(len(observed_flags), 1)
+            self.assertTrue(observed_flags[0] & os.O_NONBLOCK)
+
+    def test_tail_reader_rejects_same_size_rewrite_during_read(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "events.jsonl")
+            original = b'{"event":"block"}\n'
+            replacement = b'{"event":"allow"}\n'
+            self.assertEqual(len(original), len(replacement))
+            with open(path, "wb") as fh:
+                fh.write(original)
+
+            def rewrite_same_size():
+                with open(path, "r+b") as fh:
+                    fh.write(replacement)
+                    fh.flush()
+                current = os.stat(path)
+                os.utime(
+                    path,
+                    ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000),
+                )
+
+            original_fdopen, patched_fdopen = _fdopen_mutating_after_read(
+                rewrite_same_size
+            )
+            sl.os.fdopen = patched_fdopen
+            try:
+                self.assertIsNone(
+                    sl._read_regular_nofollow_tail_bytes_bounded(path, 64)
+                )
+            finally:
+                sl.os.fdopen = original_fdopen
+
+    def test_huge_integer_gate_timestamp_is_ignored_without_overflow(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "s-huge")
+            os.makedirs(session_dir)
+            huge = int("9" * 400)
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({"event": "block", "ts": huge}) + "\n")
+                fh.write(
+                    json.dumps({"event": "block", "ts": time.time()}) + "\n"
+                )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_cached_count_above_display_cap_is_recomputed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "s-cache-cap")
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({"event": "block", "ts": time.time()}) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            sl.write_cache(cache, {"count": sl._GATE_EVENT_DISPLAY_MAX + 1})
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_weekly_gate_count_saturates_at_display_cap(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "s-count-cap")
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                for _ in range(5):
+                    fh.write(
+                        json.dumps({"event": "block", "ts": time.time()}) + "\n"
+                    )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_cap = sl._GATE_EVENT_DISPLAY_MAX
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._GATE_EVENT_DISPLAY_MAX = 2
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 2)
+            finally:
+                sl._GATE_EVENT_DISPLAY_MAX = orig_cap
+                os.path.expanduser = orig_expand
+
+    def test_oversized_gate_ledger_is_skipped_without_reading_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "s-oversized")
+            os.makedirs(session_dir)
+            row = {
+                "event": "block",
+                "ts": time.time(),
+                "padding": "x" * 256,
+            }
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps(row) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_file_cap = sl._GATE_EVENT_FILE_MAX_BYTES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._GATE_EVENT_FILE_MAX_BYTES = 64
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 0)
+            finally:
+                sl._GATE_EVENT_FILE_MAX_BYTES = orig_file_cap
+                os.path.expanduser = orig_expand
+
+    def test_oversized_live_ledger_does_not_hide_swept_session_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-oversized-global")
+            os.makedirs(session_dir)
+            row = {
+                "event": "block",
+                "ts": time.time(),
+                "gate": "bounded-owner",
+            }
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({**row, "padding": "x" * 256}) + "\n")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({**row, "session_id": "s-oversized-global"}) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_file_cap = sl._GATE_EVENT_FILE_MAX_BYTES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._GATE_EVENT_FILE_MAX_BYTES = 64
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                sl._GATE_EVENT_FILE_MAX_BYTES = orig_file_cap
+                os.path.expanduser = orig_expand
+
+    def test_prefix_limited_live_ledger_merges_remaining_swept_occurrences(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-prefix-global")
+            os.makedirs(session_dir)
+            rows = [
+                {"event": "block", "ts": time.time(), "gate": f"g-{idx}"}
+                for idx in range(3)
+            ]
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                for row in rows:
+                    fh.write(json.dumps(row) + "\n")
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                for row in rows:
+                    fh.write(
+                        json.dumps({**row, "session_id": "s-prefix-global"})
+                        + "\n"
+                    )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_line_budget = sl._GATE_EVENT_SCAN_MAX_LINES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._GATE_EVENT_SCAN_MAX_LINES = 4
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 3)
+            finally:
+                sl._GATE_EVENT_SCAN_MAX_LINES = orig_line_budget
+                os.path.expanduser = orig_expand
+
+    def test_symlinked_live_ledger_does_not_suppress_swept_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            quality_root = os.path.join(tmpdir, ".claude", "quality-pack")
+            state_root = os.path.join(quality_root, "state")
+            session_dir = os.path.join(state_root, "s-linked-live")
+            os.makedirs(session_dir)
+            row = {"event": "block", "ts": time.time(), "gate": "linked"}
+            outside = os.path.join(tmpdir, "outside-live-gates.jsonl")
+            with open(outside, "w") as fh:
+                fh.write(json.dumps(row) + "\n")
+            os.symlink(outside, os.path.join(session_dir, "gate_events.jsonl"))
+            with open(os.path.join(quality_root, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({**row, "session_id": "s-linked-live"}) + "\n")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 1)
+            finally:
+                os.path.expanduser = orig_expand
+
+    def test_weekly_scan_stops_at_cross_session_line_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            for session_id in ("s-one", "s-two"):
+                session_dir = os.path.join(state_root, session_id)
+                os.makedirs(session_dir)
+                with open(
+                    os.path.join(session_dir, "gate_events.jsonl"), "w"
+                ) as fh:
+                    for _ in range(2):
+                        fh.write(
+                            json.dumps({"event": "block", "ts": time.time()})
+                            + "\n"
+                        )
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            orig_expand = os.path.expanduser
+            orig_line_budget = sl._GATE_EVENT_SCAN_MAX_LINES
+            os.path.expanduser = lambda p: p.replace("~", tmpdir)
+            sl._GATE_EVENT_SCAN_MAX_LINES = 3
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d(), 3)
+            finally:
+                sl._GATE_EVENT_SCAN_MAX_LINES = orig_line_budget
+                os.path.expanduser = orig_expand
+
+    def test_session_parent_retarget_cannot_supply_weekly_gate_events(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "s-retarget")
+            os.makedirs(session_dir)
+            with open(os.path.join(session_dir, "session_state.json"), "w") as fh:
+                json.dump({}, fh)
+            with open(os.path.join(session_dir, "gate_events.jsonl"), "w") as fh:
+                fh.write(json.dumps({"event": "allow", "ts": time.time()}) + "\n")
+
+            replacement_event = (
+                json.dumps({"event": "block", "ts": time.time()}) + "\n"
+            ).encode("utf-8")
+            cache = sl._cache_path("gates7d", state_root)
+            self.addCleanup(_remove_file, cache)
+            original_reader = sl._read_bounded_jsonl_objects
+            original_state_root = os.environ.get("STATE_ROOT")
+            original_retention = os.environ.get("OMC_STATUSLINE_RETENTION")
+            swapped = {"done": False}
+
+            def swapping_reader(path, max_bytes, max_lines, **kwargs):
+                if (
+                    os.path.basename(path) == "gate_events.jsonl"
+                    and not swapped["done"]
+                ):
+                    swapped["done"] = True
+                    _retarget_directory(
+                        session_dir,
+                        {
+                            "session_state.json": b"{}",
+                            "gate_events.jsonl": replacement_event,
+                        },
+                    )
+                return original_reader(path, max_bytes, max_lines, **kwargs)
+
+            os.environ["STATE_ROOT"] = state_root
+            os.environ["OMC_STATUSLINE_RETENTION"] = "on"
+            sl._read_bounded_jsonl_objects = swapping_reader
+            try:
+                self.assertEqual(sl.gates_blocked_last_7d({}), 0)
+            finally:
+                sl._read_bounded_jsonl_objects = original_reader
+                if original_state_root is None:
+                    os.environ.pop("STATE_ROOT", None)
+                else:
+                    os.environ["STATE_ROOT"] = original_state_root
+                if original_retention is None:
+                    os.environ.pop("OMC_STATUSLINE_RETENTION", None)
+                else:
+                    os.environ["OMC_STATUSLINE_RETENTION"] = original_retention
+            self.assertTrue(swapped["done"])
 
 
 class TestTermWidthBudget(unittest.TestCase):
@@ -437,6 +1315,8 @@ class TestTermWidthBudget(unittest.TestCase):
     def test_in_temp_dir(self):
         path = sl.cache_path_for("/test")
         self.assertTrue(path.startswith(tempfile.gettempdir()))
+        root = os.path.dirname(path)
+        self.assertEqual(os.stat(root).st_mode & 0o777, 0o700)
 
     def test_prefix(self):
         path = sl.cache_path_for("/test")
@@ -445,7 +1325,7 @@ class TestTermWidthBudget(unittest.TestCase):
 
 class TestReadWriteCache(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".json")
+        self.tmp = sl.cache_path_for(f"/unit-cache/{time.time_ns()}")
 
     def tearDown(self):
         if os.path.exists(self.tmp):
@@ -466,6 +1346,12 @@ class TestReadWriteCache(unittest.TestCase):
         result = sl.read_cache(self.tmp, ttl_seconds=10)
         self.assertIsNone(result)
 
+    def test_future_dated_cache_is_rejected(self):
+        sl.write_cache(self.tmp, {"branch": "stale-future", "dirty": False})
+        future = time.time() + 86_400
+        os.utime(self.tmp, (future, future))
+        self.assertIsNone(sl.read_cache(self.tmp, ttl_seconds=10))
+
     def test_missing_file(self):
         result = sl.read_cache("/nonexistent/path.json", ttl_seconds=10)
         self.assertIsNone(result)
@@ -473,8 +1359,156 @@ class TestReadWriteCache(unittest.TestCase):
     def test_invalid_json(self):
         with open(self.tmp, "w") as f:
             f.write("not json")
+        os.chmod(self.tmp, 0o600)
         result = sl.read_cache(self.tmp, ttl_seconds=10)
         self.assertIsNone(result)
+
+    def test_oversized_cache_is_rejected_before_json_parse(self):
+        with open(self.tmp, "wb") as fh:
+            fh.write(b'{"branch":"' + (b"x" * sl._CACHE_FILE_MAX_BYTES) + b'"}')
+        os.chmod(self.tmp, 0o600)
+        self.assertIsNone(sl.read_cache(self.tmp, ttl_seconds=10))
+
+    def test_symlink_cache_is_never_followed_or_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            victim = os.path.join(tmpdir, "victim")
+            with open(victim, "w") as fh:
+                fh.write("keep")
+            os.symlink(victim, self.tmp)
+            sl.write_cache(self.tmp, {"branch": "attacker"})
+            self.assertIsNone(sl.read_cache(self.tmp, ttl_seconds=10))
+            with open(victim) as fh:
+                self.assertEqual(fh.read(), "keep")
+
+    def test_read_rejects_generation_change_during_read(self):
+        sl.write_cache(self.tmp, {"branch": "main", "dirty": False})
+
+        def append_valid_json_whitespace():
+            with open(self.tmp, "ab") as fh:
+                fh.write(b" ")
+
+        original_fdopen, patched_fdopen = _fdopen_mutating_after_read(
+            append_valid_json_whitespace
+        )
+        sl.os.fdopen = patched_fdopen
+        try:
+            self.assertIsNone(sl.read_cache(self.tmp, ttl_seconds=10))
+        finally:
+            sl.os.fdopen = original_fdopen
+
+    def test_cache_parent_retarget_is_refused_for_read(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_gettempdir = sl.tempfile.gettempdir
+            sl.tempfile.gettempdir = lambda: tmpdir
+            try:
+                path = sl.cache_path_for("/retarget/read")
+                sl.write_cache(path, {"branch": "original", "dirty": False})
+                root = os.path.dirname(path)
+                moved_root = root + ".moved"
+                leaf = os.path.basename(path)
+                original_open = sl.os.open
+                swapped = {"done": False}
+
+                def swapping_open(candidate, flags, *args, **kwargs):
+                    if (
+                        candidate == leaf
+                        and kwargs.get("dir_fd") is not None
+                        and not swapped["done"]
+                    ):
+                        swapped["done"] = True
+                        os.rename(root, moved_root)
+                        os.mkdir(root, 0o700)
+                        os.chmod(root, 0o700)
+                    return original_open(candidate, flags, *args, **kwargs)
+
+                sl.os.open = swapping_open
+                try:
+                    self.assertIsNone(sl.read_cache(path, ttl_seconds=10))
+                finally:
+                    sl.os.open = original_open
+                self.assertTrue(swapped["done"])
+                self.assertFalse(os.path.exists(os.path.join(root, leaf)))
+                self.assertTrue(os.path.isfile(os.path.join(moved_root, leaf)))
+            finally:
+                sl.tempfile.gettempdir = original_gettempdir
+
+    def test_cache_parent_retarget_is_refused_for_write(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_gettempdir = sl.tempfile.gettempdir
+            sl.tempfile.gettempdir = lambda: tmpdir
+            try:
+                path = sl.cache_path_for("/retarget/write")
+                root = os.path.dirname(path)
+                moved_root = root + ".moved"
+                leaf = os.path.basename(path)
+                original_replace = sl.os.replace
+                swapped = {"done": False}
+
+                def swapping_replace(source, destination, *args, **kwargs):
+                    if destination == leaf and not swapped["done"]:
+                        swapped["done"] = True
+                        os.rename(root, moved_root)
+                        os.mkdir(root, 0o700)
+                        os.chmod(root, 0o700)
+                    return original_replace(source, destination, *args, **kwargs)
+
+                sl.os.replace = swapping_replace
+                try:
+                    sl.write_cache(path, {"branch": "stale", "dirty": True})
+                finally:
+                    sl.os.replace = original_replace
+                self.assertTrue(swapped["done"])
+                self.assertFalse(os.path.exists(os.path.join(root, leaf)))
+                self.assertFalse(os.path.exists(os.path.join(moved_root, leaf)))
+                self.assertEqual(
+                    [name for name in os.listdir(moved_root) if name.startswith(".cache.")],
+                    [],
+                )
+            finally:
+                sl.tempfile.gettempdir = original_gettempdir
+
+
+class TestBoundedRegularReadGeneration(unittest.TestCase):
+    def _read_with_mutation(self, path, mutation):
+        original_fdopen, patched_fdopen = _fdopen_mutating_after_read(mutation)
+        sl.os.fdopen = patched_fdopen
+        try:
+            return sl._read_regular_nofollow_bytes_bounded(path, 4096)
+        finally:
+            sl.os.fdopen = original_fdopen
+
+    def test_prefix_reader_rejects_append_during_read(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            with open(path, "wb") as fh:
+                fh.write(b'{"stable":true}')
+
+            def append_bytes():
+                with open(path, "ab") as fh:
+                    fh.write(b" ")
+
+            self.assertIsNone(self._read_with_mutation(path, append_bytes))
+
+    def test_prefix_reader_rejects_same_size_rewrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "state.json")
+            original = b'{"value":"old"}'
+            replacement = b'{"value":"new"}'
+            self.assertEqual(len(original), len(replacement))
+            with open(path, "wb") as fh:
+                fh.write(original)
+
+            def rewrite_same_size():
+                with open(path, "r+b") as fh:
+                    fh.write(replacement)
+                    fh.flush()
+                current = os.stat(path)
+                os.utime(
+                    path,
+                    ns=(current.st_atime_ns, current.st_mtime_ns + 1_000_000),
+                )
+
+            self.assertIsNone(self._read_with_mutation(path, rewrite_same_size))
 
 
 class TestInstalledVersion(unittest.TestCase):
@@ -515,6 +1549,25 @@ class TestInstallationDrift(unittest.TestCase):
             f.write("# header comment\n\n")
             for k, v in kv.items():
                 f.write(f"{k}={v}\n")
+
+    def test_invalid_utf8_version_fails_soft(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "repo")
+            os.makedirs(repo_dir)
+            with open(os.path.join(repo_dir, "VERSION"), "wb") as fh:
+                fh.write(b"1.5.0\xff\n")
+            conf = {"repo_path": repo_dir}
+            self.assertIsNone(sl.installation_drift("1.5.0", conf))
+
+    def test_oversized_version_file_fails_before_line_parsing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "repo")
+            os.makedirs(repo_dir)
+            with open(os.path.join(repo_dir, "VERSION"), "wb") as fh:
+                fh.write(b"9.9.9\n" + (b"x" * sl._VERSION_FILE_MAX_BYTES))
+            self.assertIsNone(
+                sl.installation_drift("1.5.0", {"repo_path": repo_dir})
+            )
 
     def _write_version(self, repo_dir, version):
         os.makedirs(repo_dir, exist_ok=True)
@@ -589,6 +1642,30 @@ class TestInstallationDrift(unittest.TestCase):
                 os.path.expanduser = orig_expand
                 del os.environ["OMC_INSTALLATION_DRIFT_CHECK"]
 
+    def test_invalid_env_falls_through_to_disabled_user_conf(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installation_drift_check="off",
+            )
+            self._write_version(repo_dir, "1.6.0")
+            orig_expand = os.path.expanduser
+            prior_env = os.environ.get("OMC_INSTALLATION_DRIFT_CHECK")
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            os.environ["OMC_INSTALLATION_DRIFT_CHECK"] = "invalid"
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig_expand
+                if prior_env is None:
+                    os.environ.pop("OMC_INSTALLATION_DRIFT_CHECK", None)
+                else:
+                    os.environ["OMC_INSTALLATION_DRIFT_CHECK"] = prior_env
+
     def test_disable_accepts_other_falsy_variants(self):
         for variant in ("0", "off", "no", "FALSE"):
             with self.subTest(variant=variant):
@@ -642,7 +1719,7 @@ class TestInstallationDrift(unittest.TestCase):
                 os.path.expanduser = orig
 
     def test_non_semver_falls_back_to_inequality(self):
-        """When versions can't be parsed numerically, plain neq still triggers."""
+        """SemVer prerelease precedence is ordered correctly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             claude_dir = os.path.join(tmpdir, ".claude")
             repo_dir = os.path.join(tmpdir, "repo")
@@ -656,6 +1733,24 @@ class TestInstallationDrift(unittest.TestCase):
                 )
             finally:
                 os.path.expanduser = orig
+
+    def test_prerelease_downgrade_is_not_reported_as_upgrade(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_version(repo_dir, "1.7.0-rc1")
+            self.assertIsNone(
+                sl.installation_drift(
+                    "2.0.0-rc1", {"repo_path": repo_dir, "installed_sha": "a" * 40}
+                )
+            )
+
+    def test_unorderable_version_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_dir = os.path.join(tmpdir, "repo")
+            self._write_version(repo_dir, "release-next")
+            self.assertIsNone(
+                sl.installation_drift("1.7.0", {"repo_path": repo_dir})
+            )
 
     def test_missing_repo_path_returns_none(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -740,29 +1835,52 @@ class TestInstallationDrift(unittest.TestCase):
 
     def test_render_backward_compat_string_drift(self):
         """A legacy string return (hypothetical older impl) still renders."""
-        orig = sl.installation_drift
-        sl.installation_drift = lambda installed: "1.9.0"
-        env = statusline_subprocess_env(HOME=tempfile.mkdtemp())
-        try:
-            # Set up minimal conf so installed_version is picked up
-            claude_dir = os.path.join(env["HOME"], ".claude")
-            os.makedirs(claude_dir, exist_ok=True)
-            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as f:
-                f.write("installed_version=1.5.0\n")
-            result = subprocess.run(
-                [sys.executable, STATUSLINE_PATH],
-                input="{}",
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=env,
-            )
-            # Subprocess loads statusline fresh, so the monkey-patch does
-            # not apply. This test only exercises the in-process branch
-            # guard that the render path treats a bare string defensively.
-            self.assertEqual(result.returncode, 0)
-        finally:
-            sl.installation_drift = orig
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            state_root = os.path.join(tmpdir, "state")
+            os.makedirs(claude_dir)
+            os.makedirs(state_root)
+            with open(os.path.join(claude_dir, "oh-my-claude.conf"), "w") as fh:
+                fh.write("installed_version=1.5.0\n")
+
+            original_drift = sl.installation_drift
+            original_git = sl.git_info
+            original_gates = sl.gates_blocked_last_7d
+            original_health = sl.harness_health
+            original_width = sl.term_width_budget
+            original_expanduser = os.path.expanduser
+            original_stdin = sys.stdin
+            original_stdout = sys.stdout
+            original_state_root = os.environ.get("STATE_ROOT")
+            original_plain = sl._PLAIN_MODE
+            output = io.StringIO()
+            sl.installation_drift = lambda installed, conf=None: "1.9.0"
+            sl.git_info = lambda cwd: {"branch": "", "dirty": False}
+            sl.gates_blocked_last_7d = lambda conf=None: None
+            sl.harness_health = lambda: None
+            sl.term_width_budget = lambda: None
+            os.path.expanduser = self._patched_expanduser(tmpdir)
+            os.environ["STATE_ROOT"] = state_root
+            sys.stdin = io.StringIO(json.dumps({"cwd": tmpdir}))
+            sys.stdout = output
+            sl._PLAIN_MODE = False
+            try:
+                sl.main()
+            finally:
+                sl.installation_drift = original_drift
+                sl.git_info = original_git
+                sl.gates_blocked_last_7d = original_gates
+                sl.harness_health = original_health
+                sl.term_width_budget = original_width
+                os.path.expanduser = original_expanduser
+                sys.stdin = original_stdin
+                sys.stdout = original_stdout
+                sl._PLAIN_MODE = original_plain
+                if original_state_root is None:
+                    os.environ.pop("STATE_ROOT", None)
+                else:
+                    os.environ["STATE_ROOT"] = original_state_root
+            self.assertIn("↑v1.9.0", output.getvalue().splitlines()[0])
 
 
 class TestInstallationDriftCommitDistance(unittest.TestCase):
@@ -939,6 +2057,47 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
             finally:
                 os.path.expanduser = orig
 
+    def test_reachable_divergent_sha_fails_closed(self):
+        """A reachable side-branch commit is not an ahead baseline."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            claude_dir = os.path.join(tmpdir, ".claude")
+            repo_dir = os.path.join(tmpdir, "repo")
+            initial_sha, installed_sha = self._init_repo_with_commits(
+                repo_dir, "1.5.0", 2
+            )
+            subprocess.run(
+                ["git", "checkout", "-qb", "rewritten", initial_sha],
+                cwd=repo_dir,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            with open(os.path.join(repo_dir, "divergent.txt"), "w") as fh:
+                fh.write("divergent generation\n")
+            subprocess.run(
+                ["git", "add", "divergent.txt"], cwd=repo_dir, check=True
+            )
+            subprocess.run(
+                ["git", "commit", "-qm", "divergent generation"],
+                cwd=repo_dir,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._write_conf(
+                claude_dir,
+                repo_path=repo_dir,
+                installed_version="1.5.0",
+                installed_sha=installed_sha,
+            )
+            self._cleanup_probe_cache(repo_dir, installed_sha)
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.installation_drift("1.5.0"))
+            finally:
+                os.path.expanduser = orig
+
     def test_render_shows_commit_count(self):
         """End-to-end: (+N) is visible on line 1 when HEAD is ahead."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -972,7 +2131,9 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
         real_run = subprocess.run
 
         def wrapper(cmd, *args, **kwargs):
-            if isinstance(cmd, list) and "rev-list" in cmd:
+            if isinstance(cmd, list) and (
+                "merge-base" in cmd or "rev-list" in cmd
+            ):
                 counter.append(cmd)
             return real_run(cmd, *args, **kwargs)
 
@@ -981,14 +2142,9 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
     def _cleanup_probe_cache(self, repo_dir, installed_sha):
         """Mirror _commits_ahead's cache-key derivation so the artifact
         the probe writes into the real tempdir is removed after the test."""
-        key = hashlib.sha1(
-            f"{repo_dir}|{installed_sha}".encode("utf-8")
-        ).hexdigest()[:12]
         self.addCleanup(
             _remove_file,
-            os.path.join(
-                tempfile.gettempdir(), f"claude-statusline-drift-{key}.json"
-            ),
+            sl._cache_path("drift", f"{repo_dir}|{installed_sha}"),
         )
 
     def test_probe_result_cached_across_calls(self):
@@ -1016,7 +2172,7 @@ class TestInstallationDriftCommitDistance(unittest.TestCase):
                 sl.subprocess.run = orig_run
             self.assertEqual(first, {"version": "1.5.0", "commits": 2})
             self.assertEqual(second, {"version": "1.5.0", "commits": 2})
-            self.assertEqual(len(calls), 1, "second call must hit the cache")
+            self.assertEqual(len(calls), 2, "second call must hit the cache")
 
     def test_probe_failure_cached_across_calls(self):
         """An unreachable installed_sha (rebase case) must not re-pay the
@@ -1094,6 +2250,24 @@ class TestHarnessHealth(unittest.TestCase):
             finally:
                 os.path.expanduser = orig
 
+    def test_symlinked_session_state_cannot_fake_fresh_health(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "session-alias")
+            os.makedirs(session_dir, exist_ok=True)
+            outside = os.path.join(tmpdir, "fresh-foreign-state.json")
+            with open(outside, "w") as fh:
+                fh.write("{}")
+            os.symlink(outside, os.path.join(session_dir, "session_state.json"))
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
+
     def test_returns_none_when_newest_session_stale(self):
         """The main bug-fix: a stale newest session must NOT light [H:ok]."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1110,6 +2284,25 @@ class TestHarnessHealth(unittest.TestCase):
             stale = _t.time() - 600
             os.utime(state_file, (stale, stale))
             os.utime(session_dir, (stale, stale))
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertIsNone(sl.harness_health())
+            finally:
+                os.path.expanduser = orig
+
+    def test_returns_none_when_state_mtime_is_far_future(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "session-future")
+            os.makedirs(session_dir, exist_ok=True)
+            state_file = os.path.join(session_dir, "session_state.json")
+            with open(state_file, "w") as f:
+                f.write("{}")
+            future = time.time() + 86_400
+            os.utime(state_file, (future, future))
             orig = os.path.expanduser
             os.path.expanduser = self._patch_expanduser(tmpdir)
             try:
@@ -1173,6 +2366,72 @@ class TestHarnessHealth(unittest.TestCase):
                 self.assertIsNone(sl.harness_health())
             finally:
                 os.path.expanduser = orig
+
+    def test_parent_retarget_cannot_supply_fresh_health_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            session_dir = os.path.join(state_root, "session-retarget")
+            os.makedirs(session_dir)
+            state_file = os.path.join(session_dir, "session_state.json")
+            with open(state_file, "w") as fh:
+                fh.write("{}")
+            stale = time.time() - 600
+            os.utime(state_file, (stale, stale))
+
+            original_open = sl._open_regular_nofollow
+            original_state_root = os.environ.get("STATE_ROOT")
+            swapped = {"done": False}
+
+            def swapping_open(path, directory_fd=None):
+                if (
+                    os.path.basename(path) == "session_state.json"
+                    and not swapped["done"]
+                ):
+                    swapped["done"] = True
+                    _retarget_directory(
+                        session_dir, {"session_state.json": b"{}"}
+                    )
+                if directory_fd is None:
+                    return original_open(path)
+                return original_open(path, directory_fd=directory_fd)
+
+            os.environ["STATE_ROOT"] = state_root
+            sl._open_regular_nofollow = swapping_open
+            try:
+                self.assertIsNone(sl.harness_health())
+            finally:
+                sl._open_regular_nofollow = original_open
+                if original_state_root is None:
+                    os.environ.pop("STATE_ROOT", None)
+                else:
+                    os.environ["STATE_ROOT"] = original_state_root
+            self.assertTrue(swapped["done"])
+
+    def test_shared_session_scan_retains_only_bounded_newest_candidates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = os.path.join(
+                tmpdir, ".claude", "quality-pack", "state"
+            )
+            os.makedirs(state_root, exist_ok=True)
+            now = time.time()
+            for index in range(5):
+                session_dir = os.path.join(state_root, f"session-{index}")
+                os.makedirs(session_dir)
+                os.utime(session_dir, (now + index, now + index))
+            orig_scan_cap = sl._STATE_ROOT_SCAN_MAX_ENTRIES
+            orig_session_cap = sl._STATE_ROOT_SESSION_MAX
+            sl._STATE_ROOT_SCAN_MAX_ENTRIES = 10
+            sl._STATE_ROOT_SESSION_MAX = 2
+            try:
+                self.assertEqual(
+                    sl._sorted_session_entries(state_root),
+                    ["session-4", "session-3"],
+                )
+            finally:
+                sl._STATE_ROOT_SCAN_MAX_ENTRIES = orig_scan_cap
+                sl._STATE_ROOT_SESSION_MAX = orig_session_cap
 
 
 class TestGateSummary(unittest.TestCase):
@@ -1345,6 +2604,70 @@ class TestGateSummary(unittest.TestCase):
             finally:
                 os.path.expanduser = orig
 
+    def test_ignores_non_object_rows_and_non_object_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-abc")
+            self._write_events(
+                session_dir,
+                [
+                    [],
+                    1,
+                    {"event": "finding-status-change", "details": []},
+                    {"event": "block"},
+                ],
+            )
+            orig = os.path.expanduser
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            try:
+                self.assertEqual(sl.gate_summary(), "g:1")
+            finally:
+                os.path.expanduser = orig
+
+    def test_gate_summary_honors_per_file_line_budget(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-bounded")
+            self._write_events(
+                session_dir,
+                [{"event": "block"} for _ in range(5)],
+            )
+            orig_expand = os.path.expanduser
+            orig_line_cap = sl._GATE_EVENT_FILE_MAX_LINES
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            sl._GATE_EVENT_FILE_MAX_LINES = 2
+            try:
+                self.assertEqual(sl.gate_summary("session-bounded"), "g:2")
+            finally:
+                sl._GATE_EVENT_FILE_MAX_LINES = orig_line_cap
+                os.path.expanduser = orig_expand
+
+    def test_gate_summary_saturates_each_display_count(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-capped")
+            rows = [{"event": "block"} for _ in range(5)]
+            rows.extend(
+                {
+                    "event": "finding-status-change",
+                    "details": {"finding_status": "shipped"},
+                }
+                for _ in range(5)
+            )
+            self._write_events(session_dir, rows)
+            orig_expand = os.path.expanduser
+            orig_display_cap = sl._GATE_EVENT_DISPLAY_MAX
+            os.path.expanduser = self._patch_expanduser(tmpdir)
+            sl._GATE_EVENT_DISPLAY_MAX = 2
+            try:
+                self.assertEqual(
+                    sl.gate_summary("session-capped"),
+                    "g:2 f:2",
+                )
+            finally:
+                sl._GATE_EVENT_DISPLAY_MAX = orig_display_cap
+                os.path.expanduser = orig_expand
+
     # ---- v1.48-pre session attribution ------------------------------
 
     def test_targets_own_session_not_newest(self):
@@ -1374,6 +2697,40 @@ class TestGateSummary(unittest.TestCase):
                 self.assertEqual(sl.gate_summary("session-own"), "g:2")
             finally:
                 os.path.expanduser = orig
+
+    def test_parent_retarget_cannot_supply_replacement_gate_summary(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_root = self._make_state_root(tmpdir)
+            session_dir = os.path.join(state_root, "session-retarget")
+            self._write_events(session_dir, [{"event": "allow"}])
+            replacement = (json.dumps({"event": "block"}) + "\n").encode("utf-8")
+
+            original_reader = sl._read_bounded_jsonl_objects
+            original_state_root = os.environ.get("STATE_ROOT")
+            swapped = {"done": False}
+
+            def swapping_reader(path, max_bytes, max_lines, **kwargs):
+                if (
+                    os.path.basename(path) == "gate_events.jsonl"
+                    and not swapped["done"]
+                ):
+                    swapped["done"] = True
+                    _retarget_directory(
+                        session_dir, {"gate_events.jsonl": replacement}
+                    )
+                return original_reader(path, max_bytes, max_lines, **kwargs)
+
+            os.environ["STATE_ROOT"] = state_root
+            sl._read_bounded_jsonl_objects = swapping_reader
+            try:
+                self.assertIsNone(sl.gate_summary("session-retarget"))
+            finally:
+                sl._read_bounded_jsonl_objects = original_reader
+                if original_state_root is None:
+                    os.environ.pop("STATE_ROOT", None)
+                else:
+                    os.environ["STATE_ROOT"] = original_state_root
+            self.assertTrue(swapped["done"])
 
     def test_own_session_without_events_is_none(self):
         """Own dir exists but has no events file → clean session, no token
@@ -1406,8 +2763,8 @@ class TestGateSummary(unittest.TestCase):
             finally:
                 os.path.expanduser = orig
 
-    def test_malformed_session_id_uses_legacy_fallback(self):
-        """Path-separator ids are unusable → same behavior as no id."""
+    def test_malformed_session_id_does_not_borrow_legacy_state(self):
+        """An explicit malformed id is no signal, never a cross-session read."""
         with tempfile.TemporaryDirectory() as tmpdir:
             state_root = self._make_state_root(tmpdir)
             self._write_events(os.path.join(state_root, "session-abc"), [
@@ -1416,7 +2773,7 @@ class TestGateSummary(unittest.TestCase):
             orig = os.path.expanduser
             os.path.expanduser = self._patch_expanduser(tmpdir)
             try:
-                self.assertEqual(sl.gate_summary("../escape"), "g:1")
+                self.assertIsNone(sl.gate_summary("../escape"))
             finally:
                 os.path.expanduser = orig
 
@@ -1437,6 +2794,10 @@ class TestUsableSessionId(unittest.TestCase):
         self.assertFalse(sl._usable_session_id("a/b"))
         self.assertFalse(sl._usable_session_id(".ulw_active"))
         self.assertFalse(sl._usable_session_id(".hidden"))
+        self.assertFalse(sl._usable_session_id("a..b"))
+        self.assertFalse(sl._usable_session_id("." * 3))
+        self.assertFalse(sl._usable_session_id("x" * 129))
+        self.assertFalse(sl._usable_session_id("space id"))
 
 
 class TestReadSessionState(unittest.TestCase):
@@ -1465,6 +2826,45 @@ class TestReadSessionState(unittest.TestCase):
                 self.assertEqual(state.get("workflow_mode"), "ultrawork")
             finally:
                 os.path.expanduser = orig
+
+    def test_parent_retarget_cannot_supply_replacement_session_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir = self._make_session(
+                tmpdir, "s-retarget", {"workflow_mode": "original"}
+            )
+            state_root = os.path.dirname(session_dir)
+            replacement = json.dumps(
+                {"workflow_mode": "replacement"}
+            ).encode("utf-8")
+
+            original_reader = sl._read_regular_nofollow_bytes_bounded_at
+            original_state_root = os.environ.get("STATE_ROOT")
+            swapped = {"done": False}
+
+            def swapping_reader(path, max_bytes, directory_fd=None):
+                if (
+                    os.path.basename(path) == "session_state.json"
+                    and not swapped["done"]
+                ):
+                    swapped["done"] = True
+                    _retarget_directory(
+                        session_dir, {"session_state.json": replacement}
+                    )
+                return original_reader(
+                    path, max_bytes, directory_fd=directory_fd
+                )
+
+            os.environ["STATE_ROOT"] = state_root
+            sl._read_regular_nofollow_bytes_bounded_at = swapping_reader
+            try:
+                self.assertIsNone(sl.read_session_state("s-retarget"))
+            finally:
+                sl._read_regular_nofollow_bytes_bounded_at = original_reader
+                if original_state_root is None:
+                    os.environ.pop("STATE_ROOT", None)
+                else:
+                    os.environ["STATE_ROOT"] = original_state_root
+            self.assertTrue(swapped["done"])
 
     def test_missing_session_returns_none(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1728,12 +3128,7 @@ class TestMainIntegration(unittest.TestCase):
         state_root = os.path.join(home_dir, ".claude", "quality-pack", "state")
         self.addCleanup(
             _remove_file,
-            os.path.join(
-                tempfile.gettempdir(),
-                "claude-statusline-gates7d-"
-                + hashlib.sha1(state_root.encode()).hexdigest()[:12]
-                + ".json",
-            ),
+            sl._cache_path("gates7d", state_root),
         )
 
     def test_minimal_input(self):
@@ -1883,7 +3278,12 @@ class TestMainIntegration(unittest.TestCase):
                 },
             }
             result = self.run_statusline(
-                data, env_overrides={"COLUMNS": "40", "HOME": tmpdir}
+                data,
+                env_overrides={
+                    "COLUMNS": "40",
+                    "HOME": tmpdir,
+                    "OMC_STATUSLINE_WIDTH": "invalid",
+                },
             )
             self.assertEqual(result.returncode, 0)
             lines = result.stdout.strip().split("\n")
@@ -2113,6 +3513,32 @@ class TestMainIntegration(unittest.TestCase):
         self.assertIn("RL:92%", result.stdout)
         self.assertIn("7d:65%", result.stdout)
         self.assertIn("R:", result.stdout)
+
+    def test_suppresses_boolean_and_out_of_range_percentages(self):
+        result = self.run_statusline(
+            {
+                "context_window": {"used_percentage": True},
+                "rate_limits": {
+                    "five_hour": {"used_percentage": True},
+                    "seven_day": {"used_percentage": 101},
+                },
+            }
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("0% ctx", result.stdout)
+        self.assertNotIn("RL:", result.stdout)
+        self.assertNotIn("7d:", result.stdout)
+
+    def test_terminal_controls_are_sanitized_from_payload_text(self):
+        result = self.run_statusline(
+            {
+                "model": {"display_name": "Claude\x1b[2J"},
+                "output_style": {"name": "safe\u202Espoof"},
+            }
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("\x1b[2J", result.stdout)
+        self.assertNotIn("\u202e", result.stdout)
 
     def test_does_not_crash_on_infinity_payload(self):
         """A malformed payload with Infinity must not nuke the render OR
@@ -2437,8 +3863,257 @@ class TestPersistRateLimitStatus(unittest.TestCase):
             payload = json.load(f)
         self.assertEqual(payload["five_hour"]["resets_at_ts"], 200)
         # No leaked tmp files.
-        leftovers = [n for n in os.listdir(sd) if n.startswith(".rate_limit_status.")]
+        leftovers = [
+            n
+            for n in os.listdir(sd)
+            if n.startswith(".rate_limit_status.")
+            and n != ".rate_limit_status.lock"
+        ]
         self.assertEqual(leftovers, [])
+        lock_path = os.path.join(sd, ".rate_limit_status.lock")
+        self.assertTrue(os.path.isfile(lock_path))
+        self.assertFalse(os.path.islink(lock_path))
+        self.assertEqual(os.stat(lock_path).st_mode & 0o777, 0o600)
+
+    def test_oversized_existing_sidecar_is_replaced_without_parsing(self):
+        sid = "sess-oversized-existing"
+        self._session_dir(sid)
+        target = self._sidecar_path(sid)
+        with open(target, "wb") as fh:
+            fh.write(b"{" + (b"x" * sl._RATE_LIMIT_FILE_MAX_BYTES))
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 200}},
+            }
+        )
+        with open(target) as fh:
+            payload = json.load(fh)
+        self.assertEqual(payload["five_hour"]["resets_at_ts"], 200)
+
+    def test_identical_windows_do_not_rewrite_sidecar(self):
+        sid = "sess-stable"
+        self._session_dir(sid)
+        data = {
+            "session_id": sid,
+            "rate_limits": {
+                "five_hour": {"used_percentage": 17, "resets_at": 200},
+                "seven_day": {"used_percentage": 23, "resets_at": 300},
+            },
+        }
+        sl.persist_rate_limit_status(data)
+        target = self._sidecar_path(sid)
+        before_stat = os.stat(target)
+        with open(target) as fh:
+            before_payload = json.load(fh)
+        sl.persist_rate_limit_status(data)
+        after_stat = os.stat(target)
+        with open(target) as fh:
+            after_payload = json.load(fh)
+        self.assertEqual(after_stat.st_ino, before_stat.st_ino)
+        self.assertEqual(after_stat.st_mtime_ns, before_stat.st_mtime_ns)
+        self.assertEqual(
+            after_payload["captured_at_ns"], before_payload["captured_at_ns"]
+        )
+
+    def test_newer_generation_is_not_replaced_by_delayed_tick(self):
+        sid = "sess-ordered"
+        self._session_dir(sid)
+        target = self._sidecar_path(sid)
+        # Keep a comfortable lead while remaining inside the producer's
+        # accepted +300s clock-skew envelope. A 1ms lead made this regression
+        # depend on fixture/file-system speed rather than ordering semantics.
+        future_ns = time.time_ns() + 60_000_000_000
+        with open(target, "w") as fh:
+            json.dump(
+                {
+                    "five_hour": {"resets_at_ts": 999},
+                    "captured_at_ts": future_ns // 1_000_000_000,
+                    "captured_at_ns": future_ns,
+                },
+                fh,
+            )
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 100}},
+            }
+        )
+        with open(target) as fh:
+            payload = json.load(fh)
+        self.assertEqual(payload["five_hour"]["resets_at_ts"], 999)
+        self.assertEqual(payload["captured_at_ns"], future_ns)
+
+    def test_absurd_future_generation_does_not_freeze_sidecar(self):
+        sid = "sess-future"
+        self._session_dir(sid)
+        target = self._sidecar_path(sid)
+        with open(target, "w") as fh:
+            json.dump(
+                {
+                    "five_hour": {"resets_at_ts": 999},
+                    "captured_at_ns": time.time_ns() + 10**18,
+                },
+                fh,
+            )
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 100}},
+            }
+        )
+        with open(target) as fh:
+            payload = json.load(fh)
+        self.assertEqual(payload["five_hour"]["resets_at_ts"], 100)
+
+    def test_invalid_percentages_are_not_persisted(self):
+        sid = "sess-invalid-percent"
+        self._session_dir(sid)
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {
+                    "five_hour": {"used_percentage": True},
+                    "seven_day": {"used_percentage": 101},
+                },
+            }
+        )
+        self.assertFalse(os.path.exists(self._sidecar_path(sid)))
+
+    def test_symlink_session_directory_is_refused(self):
+        sid = "sess-link"
+        outside = os.path.join(self.tmpdir, "outside")
+        os.makedirs(outside)
+        os.symlink(outside, os.path.join(self.state_root, sid))
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 100}},
+            }
+        )
+        self.assertFalse(os.path.exists(os.path.join(outside, "rate_limit_status.json")))
+
+    def test_retarget_before_lock_does_not_write_replacement_generation(self):
+        sid = "sess-retarget-before-lock"
+        session_dir = self._session_dir(sid)
+        moved_dir = session_dir + ".moved"
+        original_open = sl.os.open
+        swapped = {"done": False}
+
+        def swapping_open(candidate, flags, *args, **kwargs):
+            if (
+                candidate == ".rate_limit_status.lock"
+                and kwargs.get("dir_fd") is not None
+                and not swapped["done"]
+            ):
+                swapped["done"] = True
+                os.rename(session_dir, moved_dir)
+                os.mkdir(session_dir)
+            return original_open(candidate, flags, *args, **kwargs)
+
+        sl.os.open = swapping_open
+        try:
+            sl.persist_rate_limit_status(
+                {
+                    "session_id": sid,
+                    "rate_limits": {"five_hour": {"resets_at": 200}},
+                }
+            )
+        finally:
+            sl.os.open = original_open
+        self.assertTrue(swapped["done"])
+        self.assertFalse(os.path.exists(os.path.join(session_dir, "rate_limit_status.json")))
+        self.assertFalse(os.path.exists(os.path.join(moved_dir, "rate_limit_status.json")))
+
+    def test_retarget_after_final_check_cannot_publish_or_cleanup_in_replacement_generation(self):
+        sid = "sess-retarget-before-replace"
+        session_dir = self._session_dir(sid)
+        moved_dir = session_dir + ".moved"
+        replacement_sentinel = os.path.join(session_dir, "replacement-sentinel")
+        original_replace = sl.os.replace
+        swapped = {"done": False}
+
+        def swapping_replace(source, destination, *args, **kwargs):
+            if destination == "rate_limit_status.json" and not swapped["done"]:
+                swapped["done"] = True
+                os.rename(session_dir, moved_dir)
+                os.mkdir(session_dir)
+                with open(replacement_sentinel, "w") as fh:
+                    fh.write("keep")
+            return original_replace(source, destination, *args, **kwargs)
+
+        sl.os.replace = swapping_replace
+        try:
+            sl.persist_rate_limit_status(
+                {
+                    "session_id": sid,
+                    "rate_limits": {"five_hour": {"resets_at": 200}},
+                }
+            )
+        finally:
+            sl.os.replace = original_replace
+        self.assertTrue(swapped["done"])
+        self.assertTrue(os.path.isfile(replacement_sentinel))
+        self.assertFalse(os.path.exists(os.path.join(session_dir, "rate_limit_status.json")))
+        self.assertFalse(os.path.exists(os.path.join(moved_dir, "rate_limit_status.json")))
+        self.assertEqual(
+            [
+                name
+                for name in os.listdir(moved_dir)
+                if name.startswith(".rate_limit_status.")
+                and name != ".rate_limit_status.lock"
+            ],
+            [],
+        )
+
+    def test_busy_sidecar_lock_skips_without_blocking(self):
+        sid = "sess-busy-lock"
+        sd = self._session_dir(sid)
+        lock_path = os.path.join(sd, ".rate_limit_status.lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            started = time.monotonic()
+            sl.persist_rate_limit_status(
+                {
+                    "session_id": sid,
+                    "rate_limits": {"five_hour": {"resets_at": 100}},
+                }
+            )
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertFalse(os.path.exists(self._sidecar_path(sid)))
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def test_hardlinked_lock_is_rejected_before_chmod(self):
+        sid = "sess-hardlink-lock"
+        sd = self._session_dir(sid)
+        victim = os.path.join(self.tmpdir, "victim")
+        with open(victim, "w") as fh:
+            fh.write("do not touch")
+        os.chmod(victim, 0o644)
+        os.link(victim, os.path.join(sd, ".rate_limit_status.lock"))
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 100}},
+            }
+        )
+        self.assertEqual(os.stat(victim).st_mode & 0o777, 0o644)
+        self.assertFalse(os.path.exists(self._sidecar_path(sid)))
+
+    def test_nonregular_lock_is_rejected_before_open(self):
+        sid = "sess-directory-lock"
+        sd = self._session_dir(sid)
+        os.mkdir(os.path.join(sd, ".rate_limit_status.lock"))
+        sl.persist_rate_limit_status(
+            {
+                "session_id": sid,
+                "rate_limits": {"five_hour": {"resets_at": 100}},
+            }
+        )
+        self.assertFalse(os.path.exists(self._sidecar_path(sid)))
 
     def test_falls_back_to_home_state_root_when_env_unset(self):
         # When STATE_ROOT is not in env, persist_rate_limit_status must fall
@@ -2465,6 +4140,86 @@ class TestPersistRateLimitStatus(unittest.TestCase):
             self.assertEqual(payload["five_hour"]["resets_at_ts"], 1738425600)
         finally:
             os.path.expanduser = orig_expanduser
+
+
+class TestStateRootAttribution(unittest.TestCase):
+    def test_all_statusline_state_consumers_share_state_root_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fake_home = os.path.join(tmpdir, "home")
+            default_root = os.path.join(
+                fake_home, ".claude", "quality-pack", "state"
+            )
+            custom_root = os.path.join(tmpdir, "custom-state")
+            sid = "sess-attributed"
+            default_session = os.path.join(default_root, sid)
+            custom_session = os.path.join(custom_root, sid)
+            os.makedirs(default_session)
+            os.makedirs(custom_session)
+            now = time.time()
+
+            with open(os.path.join(default_root, ".ulw_active"), "w"):
+                pass
+            with open(os.path.join(custom_root, ".ulw_active"), "w"):
+                pass
+            with open(os.path.join(default_session, "session_state.json"), "w") as fh:
+                json.dump({"workflow_mode": "", "goal_objective": ""}, fh)
+            with open(os.path.join(custom_session, "session_state.json"), "w") as fh:
+                json.dump(
+                    {
+                        "workflow_mode": "ultrawork",
+                        "task_domain": "custom",
+                        "goal_objective": "finish custom work",
+                    },
+                    fh,
+                )
+            with open(os.path.join(default_session, "gate_events.jsonl"), "w") as fh:
+                for index in range(3):
+                    fh.write(
+                        json.dumps(
+                            {"event": "block", "ts": now, "gate": f"default-{index}"}
+                        )
+                        + "\n"
+                    )
+            with open(os.path.join(custom_session, "gate_events.jsonl"), "w") as fh:
+                fh.write(
+                    json.dumps({"event": "block", "ts": now, "gate": "custom"})
+                    + "\n"
+                )
+
+            prior_state_root = os.environ.get("STATE_ROOT")
+            original_expanduser = os.path.expanduser
+            os.environ["STATE_ROOT"] = custom_root
+            os.path.expanduser = lambda path: path.replace("~", fake_home)
+            cache_path = sl._cache_path("gates7d", custom_root)
+            self.addCleanup(_remove_file, cache_path)
+            try:
+                state = sl.read_session_state(sid)
+                self.assertEqual(sl._sessions_state_root(), custom_root)
+                self.assertEqual(state["task_domain"], "custom")
+                self.assertEqual(sl.ulw_info(sid, state=state), "custom")
+                self.assertTrue(sl.goal_armed(sid, state=state))
+                self.assertEqual(sl.gate_summary(sid), "g:1")
+                self.assertEqual(sl.gates_blocked_last_7d({}), 1)
+                self.assertEqual(sl.harness_health(), "active")
+                sl.persist_rate_limit_status(
+                    {
+                        "session_id": sid,
+                        "rate_limits": {"five_hour": {"resets_at": 200}},
+                    }
+                )
+            finally:
+                os.path.expanduser = original_expanduser
+                if prior_state_root is None:
+                    os.environ.pop("STATE_ROOT", None)
+                else:
+                    os.environ["STATE_ROOT"] = prior_state_root
+
+            self.assertTrue(
+                os.path.isfile(os.path.join(custom_session, "rate_limit_status.json"))
+            )
+            self.assertFalse(
+                os.path.exists(os.path.join(default_session, "rate_limit_status.json"))
+            )
 
 
 class TestRunGit(unittest.TestCase):
@@ -2499,6 +4254,28 @@ class TestRunGit(unittest.TestCase):
             self.assertEqual(captured["timeout"], 2)
         finally:
             subprocess.run = original_run
+
+    def test_dirty_probe_is_output_bounded(self):
+        calls = []
+        original_run = sl.subprocess.run
+
+        def spy_run(command, *args, **kwargs):
+            calls.append((command, kwargs))
+            if kwargs.get("stdout") is subprocess.PIPE:
+                raise AssertionError("dirty probe must never capture repository output")
+            return subprocess.CompletedProcess(command, returncode=1)
+
+        sl.subprocess.run = spy_run
+        try:
+            self.assertTrue(sl._git_tracked_files_dirty("/tmp/repo"))
+        finally:
+            sl.subprocess.run = original_run
+        self.assertEqual(len(calls), 1)
+        command, kwargs = calls[0]
+        self.assertIn("diff-index", command)
+        self.assertNotIn("status", command)
+        self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["timeout"], 2)
 
 
 class TestVisibleWidth(unittest.TestCase):
@@ -2646,6 +4423,70 @@ class TestGitInfoCache(unittest.TestCase):
             self.assertEqual(second, {"branch": "", "dirty": False})
             self.assertEqual(len(calls), 1, "second tick must hit the cache")
 
+    def test_uncached_git_info_derives_dirty_from_quiet_predicate(self):
+        with tempfile.TemporaryDirectory() as cwd:
+            cache_file = sl.cache_path_for(cwd)
+            self.addCleanup(_remove_file, cache_file)
+            original_run_git = sl.run_git
+            original_dirty = sl._git_tracked_files_dirty
+            dirty_calls = []
+
+            def fake_run_git(cwd_arg, *args):
+                if args[:2] == ("rev-parse", "--show-toplevel"):
+                    return subprocess.CompletedProcess(args, 0, stdout=cwd_arg + "\n")
+                if args[:2] == ("branch", "--show-current"):
+                    return subprocess.CompletedProcess(args, 0, stdout="main\n")
+                raise AssertionError(f"unexpected output-producing Git call: {args!r}")
+
+            def fake_dirty(cwd_arg):
+                dirty_calls.append(cwd_arg)
+                return True
+
+            sl.run_git = fake_run_git
+            sl._git_tracked_files_dirty = fake_dirty
+            try:
+                self.assertEqual(sl.git_info(cwd), {"branch": "main", "dirty": True})
+            finally:
+                sl.run_git = original_run_git
+                sl._git_tracked_files_dirty = original_dirty
+            self.assertEqual(dirty_calls, [cwd])
+
+
+class TestBoundedStatuslineInput(unittest.TestCase):
+    class RecordingStdin:
+        def __init__(self, payload):
+            self.payload = payload
+            self.requested = None
+
+        def read(self, size=-1):
+            self.requested = size
+            return self.payload[:size] if size >= 0 else self.payload
+
+    def test_reader_requests_only_one_byte_past_limit_and_rejects_overflow(self):
+        orig_stdin = sys.stdin
+        orig_limit = sl._STATUSLINE_STDIN_MAX_CHARS
+        reader = self.RecordingStdin("x" * 33)
+        sys.stdin = reader
+        sl._STATUSLINE_STDIN_MAX_CHARS = 32
+        try:
+            self.assertIsNone(sl._read_statusline_stdin_bounded())
+            self.assertEqual(reader.requested, 33)
+        finally:
+            sl._STATUSLINE_STDIN_MAX_CHARS = orig_limit
+            sys.stdin = orig_stdin
+
+    def test_reader_accepts_payload_at_exact_limit(self):
+        orig_stdin = sys.stdin
+        orig_limit = sl._STATUSLINE_STDIN_MAX_CHARS
+        reader = self.RecordingStdin("  {}  ")
+        sys.stdin = reader
+        sl._STATUSLINE_STDIN_MAX_CHARS = len(reader.payload)
+        try:
+            self.assertEqual(sl._read_statusline_stdin_bounded(), "{}")
+        finally:
+            sl._STATUSLINE_STDIN_MAX_CHARS = orig_limit
+            sys.stdin = orig_stdin
+
 
 class TestMalformedPayloadResilience(unittest.TestCase):
     """v1.48 (release-reviewer F5/F9): a rendering bug must never blank the
@@ -2666,11 +4507,26 @@ class TestMalformedPayloadResilience(unittest.TestCase):
             )
 
     def test_raising_payload_emits_fallback_line(self):
-        # total_cost_usd:"x" genuinely raises inside format_cost (verified
-        # by bypassing the guard) — the guard must exit 0 AND still emit
-        # a line, because empty stdout blanks the bar exactly like a
-        # crash would.
-        result = self._run('{"cost": {"total_cost_usd": "x"}}')
+        # Inject a failure at stdin itself so this continues to exercise the
+        # outer __main__ guard even as individual payload fields become more
+        # defensive. A malformed telemetry value should no longer be our
+        # mechanism for manufacturing an exception.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = statusline_subprocess_env(HOME=tmpdir)
+            code = (
+                "import runpy,sys\n"
+                "class RaisingStdin:\n"
+                "    def read(self, _size=-1): raise RuntimeError('injected')\n"
+                "sys.stdin=RaisingStdin()\n"
+                f"runpy.run_path({STATUSLINE_PATH!r}, run_name='__main__')\n"
+            )
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
         self.assertEqual(result.returncode, 0)
         # Exact-match the bare fallback: "oh-my-claude" also appears in
         # NORMAL line-one renders, so assertIn would stay green if the
@@ -2680,6 +4536,35 @@ class TestMalformedPayloadResilience(unittest.TestCase):
             "oh-my-claude",
             "raising payload must emit exactly the bare fallback line",
         )
+
+    def test_wrong_typed_cost_renders_without_crash(self):
+        result = self._run('{"cost": {"total_cost_usd": "x"}}')
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.strip())
+        self.assertNotEqual(result.stdout.strip(), "oh-my-claude")
+
+    def test_huge_integer_telemetry_renders_without_fallback(self):
+        huge = "9" * 400
+        payload = (
+            '{"context_window":{"used_percentage":' + huge + "},"
+            'cost":{"total_cost_usd":' + huge
+            + ',"total_duration_ms":' + huge + "},"
+            'usage":{"input_tokens":' + huge
+            + ',"output_tokens":' + huge + "},"
+            'rate_limits":{"five_hour":{"used_percentage":' + huge
+            + ',"resets_at":' + huge + "}}}"
+        )
+        result = self._run(payload)
+        self.assertEqual(result.returncode, 0)
+        self.assertTrue(result.stdout.strip())
+        self.assertNotEqual(result.stdout.strip(), "oh-my-claude")
+
+    def test_huge_integer_validators_fail_closed_without_overflow(self):
+        huge = int("9" * 400)
+        self.assertIsNone(sl._valid_percentage(huge))
+        self.assertIsNone(sl._valid_reset_timestamp(huge))
+        self.assertIsNone(sl._valid_nonnegative_count(huge))
+        self.assertIsNone(sl._valid_nonnegative_number(huge))
 
     def test_wrong_typed_percentage_renders_without_crash(self):
         # This payload does NOT raise (the renderer tolerates it) — the

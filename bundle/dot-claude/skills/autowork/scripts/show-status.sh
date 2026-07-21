@@ -160,32 +160,30 @@ if [[ "${EXPLAIN_MODE}" -eq 1 ]]; then
       [[ -z "${_name}" ]] && continue
       [[ "${_name}" == "EOF" ]] && break
 
-      # Resolve current value via the same precedence chain common.sh
-      # uses: project conf (PWD/.claude/oh-my-claude.conf) → user conf
-      # (~/.claude/oh-my-claude.conf) → default. Common.sh eagerly seeds
-      # OMC_* variables with defaults at source-time, so a "shell env vs
-      # default" distinction is not reliable from this script's vantage
-      # point. The conf-file value is the actionable signal — that's
-      # what the user actually configured. Env-var overrides still
-      # produce a `*` marker because OMC_FOO != default at the conf-
-      # check level. Direct grep avoids the read_conf_value 2-arg form
-      # complication and works whether or not omc-config.sh's helpers
-      # leaked into scope.
+      # common.sh has already loaded and validated the runtime configuration:
+      # valid environment override > nearest allowed walk-up project conf >
+      # user conf > built-in default. Read that settled OMC_* value instead of
+      # re-parsing files here. Re-parsing used to misreport user-authority
+      # Definition/Constitution controls when a project conf contained a
+      # denied row, missed project confs above PWD, and advertised malformed
+      # values that the runtime had rejected. Three statusline-only manifest
+      # flags are not consumed by common.sh; their Python/grep consumers read
+      # environment then user conf only, never the project overlay.
       _cur=""
-      _proj_conf="${PWD}/.claude/oh-my-claude.conf"
-      _user_conf="${HOME}/.claude/oh-my-claude.conf"
-      for _conf in "${_proj_conf}" "${_user_conf}"; do
-        [[ -f "${_conf}" ]] || continue
-        # `|| true` neutralizes the pipeline's exit status: grep exits 1
-        # on no-match, and depending on shell-flag inheritance into the
-        # `$(...)` subshell, that 1 has historically aborted the
-        # explain-render mid-loop. Best-effort posture documented above.
-        _conf_val="$(grep -E "^${_name}=" "${_conf}" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
-        if [[ -n "${_conf_val}" ]]; then
-          _cur="${_conf_val}"
-          break
-        fi
-      done
+      _runtime_name="OMC_$(printf '%s' "${_name}" | tr '[:lower:]' '[:upper:]')"
+      case "${_name}" in
+        installation_drift_check|statusline_retention|statusline_width)
+          if ! _cur="$(runtime_env_override_value "${_name}")"; then
+            _cur="$(read_last_runtime_valid_conf_value \
+              "${HOME}/.claude/oh-my-claude.conf" "${_name}")"
+          fi
+          ;;
+        *)
+          if declare -p "${_runtime_name}" >/dev/null 2>&1; then
+            _cur="${!_runtime_name}"
+          fi
+          ;;
+      esac
       [[ -z "${_cur}" ]] && _cur="${_default}"
 
       _delta_marker=""

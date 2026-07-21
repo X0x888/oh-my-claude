@@ -2,8 +2,9 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_OMC_PIN_OBSERVER_PATH_ON_SOURCE=1
 . "${HOME}/.claude/skills/autowork/scripts/common.sh"
+unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 HOOK_JSON="$(_omc_read_hook_stdin)"
 
 SESSION_ID="$(json_get '.session_id')"
@@ -13,12 +14,177 @@ if [[ -z "${SESSION_ID}" || "${SOURCE}" != "compact" ]]; then
   exit 0
 fi
 
+validate_session_id "${SESSION_ID}" 2>/dev/null || exit 0
+
+if omc_interrupted_dispatch_transaction_present "${SESSION_ID}"; then
+  log_anomaly "session-start-compact-handoff" \
+    "interrupted Agent admission journal; compact rehydrate refused" \
+    2>/dev/null || true
+  jq -nc --arg ctx \
+    "Compact continuation paused because a prior Agent authorization was interrupted mid-transaction. Partial pending/start/Council state and pre-compact bytes were not injected. Run the exact /ulw-off reset, reactivate /ulw, and dispatch only the role still required with a fresh identity." '
+    {hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+  '
+  exit 0
+fi
 ensure_session_dir
 
-_clear_quality_constitution_authorization_unlocked() {
-  rm -f "$(session_file "quality_constitution_authorization.json")" 2>/dev/null || true
+# Compact rehydrate can continue in place without another UserPromptSubmit.
+# Cold-retire a planner WAL before any ordinary state lock, then settle reviewer
+# and receipt/claim recovery and prove every predicate absent. Remember that
+# recovery occurred: already-rendered compact files may contain pre-recovery
+# bytes and therefore cannot be injected even after canonical convergence.
+_compact_plan_wal="$(session_file ".plan-txn.active")"
+_compact_reviewer_wal="$(session_file ".reviewer-transaction.wal")"
+_compact_publication_recovered=0
+_compact_planner_rebind_id=""
+_compact_had_plan_wal=0
+_compact_publication_recovery_needed=0
+if [[ -e "${_compact_plan_wal}" || -L "${_compact_plan_wal}" ]]; then
+  _compact_had_plan_wal=1
+fi
+if [[ "${_compact_had_plan_wal}" -eq 1 \
+      || -e "${_compact_reviewer_wal}" || -L "${_compact_reviewer_wal}" ]] \
+    || omc_publication_recovery_needed "${SESSION_ID}"; then
+  _compact_publication_recovery_needed=1
+fi
+if [[ "${_compact_publication_recovery_needed}" -eq 1 ]]; then
+  _compact_publication_recovered=1
+  if [[ "${_compact_had_plan_wal}" -eq 1 ]]; then
+    _compact_cold_plan_json="$(bash \
+      "${HOME}/.claude/skills/autowork/scripts/record-plan.sh" \
+        --recover-cold-resume "${SESSION_ID}" </dev/null 2>/dev/null || true)"
+    _compact_planner_rebind_id="$(jq -r '
+      select(.schema_version == 1 and .recovered == true)
+      | .rebind_id // empty
+    ' <<<"${_compact_cold_plan_json}" 2>/dev/null || true)"
+    if [[ ! "${_compact_planner_rebind_id}" \
+          =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$ \
+        || -e "${_compact_plan_wal}" || -L "${_compact_plan_wal}" ]]; then
+      _compact_planner_rebind_id=""
+    fi
+  fi
+  if { [[ "${_compact_had_plan_wal}" -eq 1 \
+          && -z "${_compact_planner_rebind_id}" ]]; } \
+      || ! omc_recover_active_publication_transactions "${SESSION_ID}" \
+      || [[ -e "${_compact_plan_wal}" || -L "${_compact_plan_wal}" \
+        || -e "${_compact_reviewer_wal}" || -L "${_compact_reviewer_wal}" ]] \
+      || omc_publication_recovery_needed "${SESSION_ID}"; then
+    log_anomaly "session-start-compact-handoff" \
+      "publication WAL recovery failed before compact rehydrate (${SESSION_ID})" \
+      2>/dev/null || true
+    jq -nc --arg ctx \
+      "Compact continuation paused because a prior planner or reviewer publication transaction is still active or invalid. Its provisional plan, clocks, or evidence were not injected. Re-run the retained publication callback to finish recovery; if the journal is corrupt, inspect it or use /ulw-off as the explicit reset." '
+      {hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+    '
+    exit 0
+  fi
+fi
+if [[ -e "${_compact_plan_wal}" || -L "${_compact_plan_wal}" \
+    || -e "${_compact_reviewer_wal}" || -L "${_compact_reviewer_wal}" ]] \
+    || omc_publication_recovery_needed "${SESSION_ID}"; then
+  log_anomaly "session-start-compact-handoff" \
+    "publication recovery remained unsettled before compact boundary (${SESSION_ID})" \
+    2>/dev/null || true
+  exit 1
+fi
+
+# Only a settled generation may clear the one-turn Constitution grant or bind
+# compact continuation. This ordinary lock cannot mint recovery authority.
+_compact_begin_boundary_unlocked() {
+  omc_clear_quality_constitution_authorization_unlocked || return 1
+  is_ultrawork_mode || return 20
+  capture_ulw_enforcement_interval
 }
-with_state_lock _clear_quality_constitution_authorization_unlocked || true
+_compact_capture_rc=0
+with_state_lock _compact_begin_boundary_unlocked \
+  || _compact_capture_rc=$?
+if [[ "${_compact_capture_rc}" -eq 76 ]]; then
+  jq -nc --arg ctx \
+    "Compact continuation paused because Agent admission became interrupted while the handoff was starting. No compact state was consumed or injected. Run the exact /ulw-off reset before continuing." '
+    {hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+  '
+  exit 0
+elif [[ "${_compact_capture_rc}" -eq 20 ]]; then
+  exit 0
+elif [[ "${_compact_capture_rc}" -ne 0 ]]; then
+  log_anomaly "session-start-compact-handoff" \
+    "unused Quality Constitution authorization could not be invalidated (${SESSION_ID})" \
+    2>/dev/null || true
+  jq -nc --arg ctx \
+    "Compact continuation paused because the prior turn's one-use Quality Constitution authorization could not be invalidated safely. No compact manifest was injected. Resolve the session-state lock or unsafe authorization node, then retry the compact handoff; do not reuse the old apply-authorized command." '
+    {hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+  '
+  exit 0
+fi
+export _OMC_ULW_CAPTURED_GENERATION
+
+# PreCompact may have been the process that cold-retired the planner. In that
+# normal order the fixed WAL is already gone by SessionStart, so recover the
+# exact rebind token from its rollback-authenticated durable handoff. Keep the
+# sidecar until record-pending-agent registers the token; repeated SessionStart
+# delivery is safe and prevents a process death between stdout and dispatch
+# from losing the only usable replacement identity.
+_compact_cold_handoff_file="$(session_file \
+  "plan_cold_recovery_handoff.json")"
+if [[ -e "${_compact_cold_handoff_file}" \
+    || -L "${_compact_cold_handoff_file}" ]]; then
+  _compact_cold_handoff="$(omc_read_plan_cold_recovery_handoff \
+    "${SESSION_ID}" 2>/dev/null || true)"
+  _compact_handoff_rebind_id="$(jq -r '.rebind_id // empty' \
+    <<<"${_compact_cold_handoff}" 2>/dev/null || true)"
+  if [[ ! "${_compact_handoff_rebind_id}" \
+        =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$ ]]; then
+    log_anomaly "session-start-compact-handoff" \
+      "invalid cold planner rebind handoff (${SESSION_ID})" \
+      2>/dev/null || true
+    jq -nc --arg ctx \
+      "Compact continuation paused because its cold planner recovery handoff is invalid. No pre-recovery compact bytes were injected. Inspect the handoff and causal tombstones, or use /ulw-off as the explicit reset." '
+      {hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+    '
+    exit 0
+  fi
+  if [[ -n "${_compact_planner_rebind_id}" \
+      && "${_compact_planner_rebind_id}" \
+        != "${_compact_handoff_rebind_id}" ]]; then
+    log_anomaly "session-start-compact-handoff" \
+      "cold planner rebind identity mismatch (${SESSION_ID})" \
+      2>/dev/null || true
+    exit 1
+  fi
+  _compact_rebind_registry="$(session_file "dispatch_rebind_ids.log")"
+  if [[ -s "${_compact_rebind_registry}" ]] \
+      && awk -F '\t' -v wanted="${_compact_handoff_rebind_id}" \
+        '$1 == wanted { found=1 } END { exit(found ? 0 : 1) }' \
+        "${_compact_rebind_registry}" 2>/dev/null; then
+    _clear_consumed_compact_plan_handoff_unlocked() {
+      local current
+      is_ultrawork_mode || return 20
+      current="$(omc_read_plan_cold_recovery_handoff \
+        "${SESSION_ID}" 2>/dev/null)" || return 1
+      [[ "$(jq -r '.rebind_id // empty' <<<"${current}")" \
+          == "${_compact_handoff_rebind_id}" ]] || return 1
+      awk -F '\t' -v wanted="${_compact_handoff_rebind_id}" \
+        '$1 == wanted { found=1 } END { exit(found ? 0 : 1) }' \
+        "${_compact_rebind_registry}" 2>/dev/null || return 1
+      rm -f "${_compact_cold_handoff_file}"
+    }
+    _compact_clear_handoff_rc=0
+    with_state_lock _clear_consumed_compact_plan_handoff_unlocked \
+      || _compact_clear_handoff_rc=$?
+    if [[ "${_compact_clear_handoff_rc}" -eq 20 ]]; then
+      exit 0
+    elif [[ "${_compact_clear_handoff_rc}" -ne 0 ]]; then
+      log_anomaly "session-start-compact-handoff" \
+        "consumed cold planner handoff could not be retired (${SESSION_ID})" \
+        2>/dev/null || true
+      exit 1
+    fi
+    _compact_planner_rebind_id=""
+  else
+    _compact_publication_recovered=1
+    _compact_planner_rebind_id="${_compact_handoff_rebind_id}"
+  fi
+fi
 
 # Marker lines are a readability aid, not a collision-proof boundary. Quote
 # every attacker-influenced payload line so an embedded END marker stays nested
@@ -31,8 +197,12 @@ handoff_file="$(session_file "compact_handoff.md")"
 snapshot_file="$(session_file "precompact_snapshot.md")"
 
 # Prefer the post-compact handoff wrapper. It intentionally omits the native
-# summary already supplied by the runtime and carries only the priority manifest.
-if [[ -f "${handoff_file}" ]]; then
+# summary already supplied by the runtime and carries only the priority
+# manifest. If this SessionStart had to recover publication, omit both existing
+# files: PreCompact necessarily rendered them before convergence.
+if [[ "${_compact_publication_recovered}" -eq 1 ]]; then
+  snapshot_text="[A planner/reviewer publication transaction was recovered at the compact boundary. The pre-recovery compact manifest was deliberately omitted. Continue from the settled durable session artifacts and re-evaluate live gates before claiming completion.]"
+elif [[ -f "${handoff_file}" ]]; then
   snapshot_text="$(cat "${handoff_file}")"
 elif [[ -f "${snapshot_file}" ]]; then
   snapshot_text="$(cat "${snapshot_file}")"
@@ -86,15 +256,15 @@ else
   :
 fi
 
-write_state_batch \
-  "last_compact_rehydrate_ts" "$(now_epoch)" \
-  "directive_context_force_full" "1"
-
 # Build the injected context as an array of directives. Each directive is a
 # separate paragraph so the downstream classifier can latch onto the strongest
 # signal first (ULW affirmation > base continuation > pending work).
 
 context_parts=()
+
+if [[ -n "${_compact_planner_rebind_id}" ]]; then
+  context_parts+=("The planner native callback interrupted at compaction is dead and was retired after exact rollback recovery. Do not wait for or resume that old native call. Dispatch a fresh equivalent planner with [review-rebind:${_compact_planner_rebind_id}] before implementation, then require its new receipt-bound plan result.")
+fi
 
 # Gap 1 — ULW mode affirmation. If the session was in ultrawork before the
 # compact, the native summary may drop that framing; re-assert it explicitly
@@ -234,9 +404,47 @@ fi
 context_text="$(printf '%s\n\n' "${context_parts[@]}")"
 context_text="${context_text}"$'\n\n'"${snapshot_text}"
 
-jq -nc --arg context "${context_text}" '{
+compact_output="$(jq -nc --arg context "${context_text}" '{
   hookSpecificOutput: {
     hookEventName: "SessionStart",
     additionalContext: $context
   }
-}'
+}')" || exit 1
+
+# Deterministic regression seam after the complete output has been rendered but
+# before the single current-interval stamp/output transaction.
+if [[ -n "${OMC_TEST_COMPACT_REHYDRATE_READY_FILE:-}" \
+    && -n "${OMC_TEST_COMPACT_REHYDRATE_RELEASE_FILE:-}" ]]; then
+  : >"${OMC_TEST_COMPACT_REHYDRATE_READY_FILE}" || exit 1
+  while [[ ! -e "${OMC_TEST_COMPACT_REHYDRATE_RELEASE_FILE}" ]]; do
+    sleep 0.01
+  done
+fi
+
+# Close both last-read races under one mutex. The rehydrate clocks and the exact
+# context bytes become visible together only while this captured generation is
+# still active and no dispatch/reset quarantine exists.
+_compact_commit_and_emit_unlocked() {
+  is_ultrawork_mode || return 20
+  omc_interrupted_dispatch_transaction_present "${SESSION_ID}" \
+    && return 76
+  _write_state_batch_unlocked \
+    "last_compact_rehydrate_ts" "$(now_epoch)" \
+    "directive_context_force_full" "1" \
+    || return 1
+  printf '%s\n' "${compact_output}"
+}
+
+_compact_emit_rc=0
+with_state_lock _compact_commit_and_emit_unlocked || _compact_emit_rc=$?
+if [[ "${_compact_emit_rc}" -eq 20 ]]; then
+  exit 0
+elif [[ "${_compact_emit_rc}" -eq 76 ]]; then
+  jq -nc --arg ctx \
+    "Compact continuation paused because Agent admission became interrupted while the handoff was being prepared. The rendered manifest was discarded. Run the exact /ulw-off reset before continuing." '
+    {hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}
+  '
+  exit 0
+elif [[ "${_compact_emit_rc}" -ne 0 ]]; then
+  exit 1
+fi
