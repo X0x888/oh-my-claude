@@ -581,7 +581,7 @@ if [[ "${_omc_guard_global_active}" -eq 0 ]]; then
     _omc_guard_cleanup_snapshot
   fi
 fi
-unset _omc_guard_jq_candidate _omc_guard_sid _omc_guard_state_root
+unset _omc_guard_jq_candidate _omc_guard_state_root
 unset _omc_guard_session_dir _omc_guard_needs_common _omc_guard_txn
 unset _omc_guard_state _omc_guard_owner
 unset _omc_guard_resume_class
@@ -611,7 +611,7 @@ unset _OMC_PIN_OBSERVER_PATH_ON_SOURCE
 SESSION_ID="${_omc_guard_sid}"
 TOOL_NAME="${_omc_guard_early_tool}"
 COMMAND_TEXT="${_omc_guard_early_command}"
-unset _omc_guard_early_tool _omc_guard_early_command
+unset _omc_guard_sid _omc_guard_early_tool _omc_guard_early_command
 
 validate_session_id "${SESSION_ID}" 2>/dev/null \
   || _omc_guard_static_deny malformed

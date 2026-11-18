@@ -1960,6 +1960,25 @@ assert_eq "concurrency: later unique loser work reaches timing rollup" "1" \
   "$(jq -sr --arg sid "${race_loser}" '[.[] | select(.session_id == $sid and .tokens_main_out == 7)] | length' \
     "${FAKE_HOME}/.claude/quality-pack/timing.jsonl" 2>/dev/null || printf 0)"
 
+# The PreTool recovery guard skips its markerless fast path whenever the
+# shared ULW marker exists, so every tool call then crosses the common.sh
+# boundary. stderr is captured on purpose: a strict-mode crash there is
+# non-blocking for Claude Code and would otherwise look like a silent allow.
+GUARD_SCRIPT="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/dispatch-recovery-guard.sh"
+guard_marker="${FAKE_HOME}/.claude/quality-pack/state/.ulw_active"
+guard_exit=0
+mkdir -p "${guard_marker%/*}"
+: > "${guard_marker}"
+printf '%s' '{"session_id":"guard-slow-path-001","tool_name":"Read","tool_input":{},"hook_event_name":"PreToolUse"}' \
+  | HOME="${FAKE_HOME}" STATE_ROOT="${TEST_STATE_ROOT}" bash "${GUARD_SCRIPT}" \
+    > "${TEST_TMP}/.guard_stdout" 2> "${TEST_TMP}/.guard_stderr" || guard_exit=$?
+rm -f "${guard_marker}"
+assert_eq "dispatch guard: marker-present healthy session exits 0" "0" "${guard_exit}"
+assert_not_contains "dispatch guard: slow path keeps the validated session id bound" \
+  "unbound variable" "$(cat "${TEST_TMP}/.guard_stderr")"
+assert_not_contains "dispatch guard: healthy session is not denied" \
+  '"permissionDecision":"deny"' "$(cat "${TEST_TMP}/.guard_stdout")"
+
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
   exit 1

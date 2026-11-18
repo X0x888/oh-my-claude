@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `dispatch-recovery-guard.sh` no longer crashes with `_omc_guard_sid: unbound variable` on every PreToolUse call once the shared ULW marker exists. The validated session id was unset before it was rebound to `SESSION_ID`, which also left the interrupted-dispatch fence failing open. Regression case in `tests/test-session-resume.sh`.
+
 ## [1.51.0] - 2026-07-22
 
 ### Definition of Excellent: frozen ambition, criterion proof, and a blind frontier
