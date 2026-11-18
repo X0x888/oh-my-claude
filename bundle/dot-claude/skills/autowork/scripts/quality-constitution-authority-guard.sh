@@ -75,7 +75,7 @@ targets_qc_authority_receipt() {
 
 qc_lexical_path() {
   local value="${1:-}" base="${2:-}" part="" result="" index=0
-  local -a parts stack
+  local -a parts=() stack=()
   [[ -n "${value}" && "${value}" != *$'\n'* && "${value}" != *$'\r'* ]] || return 1
   case "${value}" in
     [~]) value="${HOME}" ;;
@@ -332,6 +332,7 @@ tool_input_targets_qc_path() {
     [[ -n "${candidate}" ]] || continue
     candidates[${#candidates[@]}]="${candidate}"
   done < <(qc_tool_input_path_candidates)
+  (( ${#candidates[@]} )) || return 1
   for candidate in "${candidates[@]}"; do
     "${matcher}" "${candidate}" && return 0
   done
