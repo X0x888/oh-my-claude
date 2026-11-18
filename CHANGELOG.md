@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `quality-constitution-authority-guard.sh` no longer crashes under strict mode on two array expansions: `${#stack[@]}` on a declared-but-unassigned local array (Bash 5.3, every call with a session id) and an empty `"${candidates[@]}"` (Bash 3.2, connector calls without path-like fields). Both left the Constitution authority guard failing open. Regression case in `tests/test-quality-gates.sh`.
+
 ## [1.51.0] - 2026-07-22
 
 ### Definition of Excellent: frozen ambition, criterion proof, and a blind frontier

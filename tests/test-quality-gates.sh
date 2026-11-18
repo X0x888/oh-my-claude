@@ -608,6 +608,26 @@ write_state_batch "workflow_mode" "ultrawork" "task_domain" "coding" \
 result="$(run_stop_guard_check)"
 assert_not_contains "passive MCP does not clear verify" "allow:all_clear" "${result}"
 
+# The Constitution authority guard must survive strict mode on every supported
+# Bash: 5.3 rejects ${#arr[@]} on a declared-but-unassigned local array, and
+# 3.2 rejects expanding an empty one. A crash here is a non-blocking hook
+# failure, so the guard would fail open; stderr is asserted for that reason.
+qc_guard_script="${REPO_ROOT}/bundle/dot-claude/skills/autowork/scripts/quality-constitution-authority-guard.sh"
+qc_guard_home="${TEST_STATE_ROOT}/qc-guard-home"
+mkdir -p "${qc_guard_home}/.claude/quality-pack/state"
+run_qc_authority_guard() {
+  qc_guard_exit=0
+  qc_guard_stderr="$(printf '%s' "$1" \
+    | HOME="${qc_guard_home}" STATE_ROOT="${TEST_STATE_ROOT}" LC_ALL=C \
+      bash "${qc_guard_script}" 2>&1 >/dev/null)" || qc_guard_exit=$?
+}
+run_qc_authority_guard '{"session_id":"qc-guard-001","tool_name":"Read","tool_input":{"file_path":"/tmp/example.txt"},"hook_event_name":"PreToolUse","cwd":"/tmp"}'
+assert_eq "qc authority guard: path normalization exits 0" "0" "${qc_guard_exit}"
+assert_eq "qc authority guard: path normalization stays silent" "" "${qc_guard_stderr}"
+run_qc_authority_guard '{"session_id":"qc-guard-001","tool_name":"mcp__example__search","tool_input":{"query":"hello"},"hook_event_name":"PreToolUse","cwd":"/tmp"}'
+assert_eq "qc authority guard: connector without path fields exits 0" "0" "${qc_guard_exit}"
+assert_eq "qc authority guard: connector without path fields stays silent" "" "${qc_guard_stderr}"
+
 
 printf '\n=== Results: %d passed, %d failed ===\n' "${pass}" "${fail}"
 if [[ "${fail}" -gt 0 ]]; then
